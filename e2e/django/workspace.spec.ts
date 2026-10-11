@@ -196,27 +196,25 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await expectNoHorizontalOverflow(page);
     });
 
-    // 486b: was "a details dialog over the sheet closes it"; the details are now a non-blocking view.
-    test('one blocking surface at a time: opening the company view over the sheet closes it and leaves nothing inert', async ({page}) => {
+    // 486b: was "a details dialog over the sheet closes it"; the view is not a blocking surface,
+    // so the sheet opens over it (the view cannot be reached by pointer while the sheet is open)
+    // and closing the sheet leaves the same view, at the same scroll position.
+    test('the assistant sheet opens over the company view and closing it returns to the same view', async ({page}) => {
         await page.setViewportSize({width: 375, height: 700});
         await login(page);
         await page.goto('/');
-        await page.locator('[data-testid="assistant-launcher"]').click();
-        await expect(page.locator('[data-testid="assistant-panel"]')).toBeVisible();
-        // Trigger the company details dialog programmatically: the sheet
-        // inerts the rankings rows, so a real pointer click cannot reach
-        // them — the dialog opens over the sheet (e.g. from a recovered
-        // state) and the sheet must yield.
         await page.evaluate(() => {
-            document.querySelector<HTMLElement>('tr[aria-label="View details for E2E Alpha Corp"]')?.click();
+            document.querySelector<HTMLElement>('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')?.click();
         });
         await expect(page.getByTestId('company-view')).toBeVisible();
-        // 486b: the sheet must still yield to the view; once it is gone nothing is blocking.
+        const before = await page.evaluate(() => Math.round(window.scrollY));
+        await page.locator('[data-testid="assistant-launcher"]').click();
+        await expect(page.locator('[data-testid="assistant-panel"]')).toBeVisible();
+        await expect(page.getByTestId('company-view')).toHaveCount(1);
+        await page.locator('[data-testid="assistant-close"]').click();
         await expect(page.locator('[data-testid="assistant-panel"]')).toHaveCount(0);
-        const inertCount = await page.evaluate(
-            () => document.querySelectorAll('.app-shell[inert], main.app-content[inert], main#main-content[inert]').length,
-        );
-        expect(inertCount).toBe(0);
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        await expect.poll(() => page.evaluate((y) => Math.abs(Math.round(window.scrollY) - y), before)).toBeLessThanOrEqual(1);
         await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
     });
 

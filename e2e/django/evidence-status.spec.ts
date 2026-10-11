@@ -157,6 +157,14 @@ test('a focused Retry stays inside the card body when scores arrive late at 320p
     const dialog = await openDialog(page, 'E2E Beta Labs');
     const retry = dialog.getByRole('button', {name: 'Retry'});
     await retry.focus();
+    // The page scrolls to the focused control (smooth under Bootstrap): measure once it has settled.
+    let lastY = -1;
+    await expect.poll(async () => {
+        const y = await page.evaluate(() => Math.round(window.scrollY));
+        const settled = y === lastY;
+        lastY = y;
+        return settled;
+    }).toBe(true);
     const loadingBox = (await retry.boundingBox())!;
     await expect(dialog.getByText('Loading scores')).toHaveCount(0);
     expect(Math.abs((await retry.boundingBox())!.y - loadingBox.y)).toBeLessThanOrEqual(1);

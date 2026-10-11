@@ -1444,6 +1444,44 @@ describe('OrganizationList', () => {
             expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 42});
         });
 
+        test('after Ask the context is the assistant\'s: leaving the view keeps it, and Clear context still takes the view away', async () => {
+            const workspace = document.createElement('div');
+            workspace.id = 'assistant-workspace';
+            document.body.appendChild(workspace);
+            try {
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                fireEvent.click(screen.getAllByText('Organization 1')[0]);
+                fireEvent.click(await screen.findByTestId('company-chat-cta'));
+
+                fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+                expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 1});
+
+                fireEvent.click(screen.getAllByText('Organization 1')[0]);
+                await screen.findByTestId('company-view');
+                fireEvent.click(await screen.findByTestId('company-chat-cta'));
+                act(() => clearWorkspaceContext());
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            } finally {
+                workspace.remove();
+            }
+        });
+
+        test('applying assistant filters shows the results instead of leaving them hidden behind the view', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('company-view');
+
+            act(() => {
+                expect(applyWorkspaceFilters({rtoPolicy: 'H'})).toBe(true);
+            });
+
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            expect(screen.getByTestId('organization-results-region')).not.toHaveAttribute('hidden');
+            expect(screen.getByTestId('filter-chip-rto')).toBeInTheDocument();
+            expect(new URLSearchParams(window.location.search).has('company')).toBe(false);
+        });
+
         test('crank:private-state-purged closes the view, even when the store held nothing', async () => {
             render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
             fireEvent.click(screen.getAllByText('Organization 1')[0]);

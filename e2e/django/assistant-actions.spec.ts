@@ -202,8 +202,7 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.getByRole('button', {name: 'Remote filter applied'})).toBeDisabled();
         await expect(open).toBeEnabled();
         await expect(page.getByTestId('assistant-actions-stale')).toHaveText('');
-        // 486b: Ask no longer closes the company view, so leave it first to prove Open reopens it.
-        await page.getByRole('button', {name: 'Back to results'}).click();
+        // 486b: applying a filter shows the results, so the view is gone; Open reopens it.
         await expect(page.getByTestId('company-view')).toHaveCount(0);
         await open.click();
         await expect(page.getByTestId('company-view')).toBeVisible();

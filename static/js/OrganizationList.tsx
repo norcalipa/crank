@@ -263,10 +263,17 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // Company id this list last reported to the workspace, so a close only
     // removes context the list itself set (never the Ask CTA's).
     private reportedOrganizationId: number | null = null;
+    // Company the user asked the assistant about from the view: the context
+    // is then the assistant's, so leaving the view must not clear it, while
+    // "Clear context" still takes the view with it (issue #486).
+    private askedOrganizationId: number | null = null;
 
     // Applies assistant-proposed filters (issue #484), one history entry, on
     // top of the current search; page resets to 1. Only enum values reach here.
     applyAssistantFilters = (filters: WorkspaceFilters): boolean => {
+        // Filters act on the results: show them, leaving the company view in
+        // place of going back through history (issue #486).
+        this.leaveViewInPlace();
         const rtoPolicy = filters.rtoPolicy ?? this.state.rtoPolicy;
         const acceleratedVesting = filters.acceleratedVesting === true || this.state.acceleratedVesting;
         if (rtoPolicy === this.state.rtoPolicy && acceleratedVesting === this.state.acceleratedVesting) {
@@ -329,7 +336,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.restoreAfterHydration();
         const shown = this.state.view?.organization;
         if (shown
-            && this.reportedOrganizationId === shown.id
+            && (this.reportedOrganizationId === shown.id || this.askedOrganizationId === shown.id)
             && getWorkspaceSnapshot().context?.organizationId !== shown.id) {
             this.closeView();
         }
@@ -561,6 +568,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
         const generation = ++this.modalGeneration;
         this.closeRequested = false;
+        this.askedOrganizationId = null;
         const row = this.state.organizations.find(org => org.id === id) ?? null;
         closeSuggestCompany();
         if (source === 'user') {
@@ -649,6 +657,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             window.history.back();
             return;
         }
+        this.leaveViewInPlace();
+    };
+
+    private leaveViewInPlace = () => {
+        if (!this.state.view) {
+            return;
+        }
         const params = allowlistedParams(window.location.search);
         params.delete('company');
         const query = params.toString();
@@ -681,6 +696,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         if (!organization) {
             return;
         }
+        this.askedOrganizationId = organization.id;
+        this.reportedOrganizationId = null;
         openAssistant({surface: 'company', organizationId: organization.id, organizationName: organization.name});
         // The assistant may never reach a composer (initialization error,
         // gated account); the shell still moves focus into it.
