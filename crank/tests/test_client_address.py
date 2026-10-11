@@ -426,6 +426,208 @@ def switch_problems(configmap, document, today):
     return problems
 
 
+# Everything a merge can change that reaches a container's environment.
+SWITCH_CONFIGMAP = "crank-config"
+MANIFEST_DIRS = ("k8s", "deploy")
+WORKFLOW_DIR = ".github/workflows"
+IMAGE_FILES = ("Dockerfile*", "*.Dockerfile", "docker-compose*.yml")
+# Secrets nothing in the repository creates or changes: the operator makes
+# them in the cluster. A merge cannot put a key into one, so the gate accepts
+# them by name only; any other Secret a container loads must be accounted for.
+OUT_OF_BAND_SECRETS = frozenset({"db-connect-credentials"})
+_CONTAINER_LISTS = ("containers", "initContainers", "ephemeralContainers")
+_SECRET_COMMAND = re.compile(r"create\s+secret\s+generic\s+([A-Za-z0-9.-]+)((?:\\\n|[^\n|])*)")
+_SECRET_LITERAL = re.compile(r"--from-literal=([A-Za-z0-9_.-]+)=")
+_SECRET_FILE_NAME = re.compile(r"secret\S*\.ya?ml", re.IGNORECASE)
+
+
+def is_secret_file(path):
+    """Files that may hold secret values: the gate never opens them."""
+    name = Path(path).name.lower()
+    return "secret" in name or name.startswith(".env")
+
+
+def read_deployment_sources(root=REPO_ROOT):
+    """``(manifests, texts)`` by repository path, skipping secrets files unread."""
+    root = Path(root)
+    manifests = {}
+    for directory in MANIFEST_DIRS:
+        for path in sorted((root / directory).rglob("*")):
+            if path.is_file() and not is_secret_file(path):
+                manifests[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+    paths = sorted((root / WORKFLOW_DIR).glob("*"))
+    for pattern in IMAGE_FILES:
+        paths.extend(sorted(root.glob(pattern)))
+    texts = {
+        path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
+        for path in paths
+        if path.is_file() and not is_secret_file(path)
+    }
+    return manifests, texts
+
+
+def _containers(node):
+    """Every container definition anywhere inside a manifest document."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _CONTAINER_LISTS and isinstance(value, list):
+                yield from (item for item in value if isinstance(item, dict))
+            yield from _containers(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _containers(item)
+
+
+def _mentions_switch(text):
+    return any(
+        SWITCH_KEY in line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def _applies_secret_file(text):
+    """A line that hands a secrets file to ``kubectl apply``, piped or named."""
+    return any(
+        _SECRET_FILE_NAME.search(line) and "kubectl" in line and "apply" in line
+        for line in text.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+
+def workflow_secret_keys(texts):
+    """``{secret name: keys}`` for Secrets a workflow creates from literals.
+
+    A Secret created from a file or an env file maps to None: its keys cannot
+    be read from the workflow text.
+    """
+    found = {}
+    for text in texts.values():
+        for name, arguments in _SECRET_COMMAND.findall(text):
+            if "--from-file" in arguments or "--from-env-file" in arguments:
+                found[name] = None
+            elif found.get(name, set()) is not None:
+                found.setdefault(name, set()).update(_SECRET_LITERAL.findall(arguments))
+    return found
+
+
+def deployment_problems(manifests, texts):
+    """``(crank-config, problems)``: every other way the switch could arrive.
+
+    The switch may be set in exactly one place, the ``data`` of the ConfigMap
+    ``crank-config``, which is what ``switch_problems`` then holds to the
+    verification record. Anything else that could put it into a container's
+    environment is a problem whatever the record says, and so is any source
+    of environment this gate cannot read.
+    """
+    problems = []
+    configmaps = {}
+    containers = []
+    secrets_defined = {}
+    deployments = 0
+    for name, text in sorted(manifests.items()):
+        try:
+            documents = list(yaml.safe_load_all(text))
+        except yaml.YAMLError:
+            problems.append(f"{name} cannot be parsed, so it cannot be checked for {SWITCH_KEY}")
+            continue
+        for document in documents:
+            if not isinstance(document, dict):
+                continue
+            kind = document.get("kind")
+            metadata = document.get("metadata")
+            title = metadata.get("name") if isinstance(metadata, dict) else None
+            if kind == "ConfigMap":
+                data = document.get("data")
+                configmaps.setdefault(title, []).append(
+                    (name, document, data if isinstance(data, dict) else {})
+                )
+            elif kind == "Secret":
+                keys = set()
+                for field in ("data", "stringData"):
+                    if isinstance(document.get(field), dict):
+                        keys.update(document[field])
+                secrets_defined.setdefault(title, set()).update(keys)
+            deployments += kind == "Deployment"
+            for container in _containers(document):
+                containers.append((f"{name} {kind}/{title}", container))
+
+    if not deployments:
+        problems.append("no Deployment was found, so nothing was checked")
+    for title, entries in sorted(configmaps.items(), key=lambda item: str(item[0])):
+        for name, _document, data in entries:
+            if title != SWITCH_CONFIGMAP and SWITCH_KEY in data:
+                problems.append(
+                    f"{SWITCH_KEY} is set in ConfigMap {title} ({name}): "
+                    f"it may only be set in {SWITCH_CONFIGMAP}"
+                )
+    canonical = configmaps.get(SWITCH_CONFIGMAP, [])
+    if len(canonical) != 1:
+        problems.append(
+            f"ConfigMap {SWITCH_CONFIGMAP} must be defined exactly once "
+            f"(found {len(canonical)})"
+        )
+
+    secret_names = set()
+    for where, container in containers:
+        env = container.get("env")
+        for entry in env if isinstance(env, list) else []:
+            if isinstance(entry, dict) and entry.get("name") == SWITCH_KEY:
+                problems.append(
+                    f"{SWITCH_KEY} is a container env entry in {where}: "
+                    f"it may only be set in ConfigMap {SWITCH_CONFIGMAP}"
+                )
+        sources = container.get("envFrom")
+        for source in sources if isinstance(sources, list) else []:
+            source = source if isinstance(source, dict) else {}
+            config_ref, secret_ref = source.get("configMapRef"), source.get("secretRef")
+            if isinstance(config_ref, dict) and set(source) == {"configMapRef"}:
+                if config_ref.get("name") not in configmaps:
+                    problems.append(
+                        f"{where} loads ConfigMap {config_ref.get('name')}, "
+                        "which this gate cannot read"
+                    )
+            elif isinstance(secret_ref, dict) and set(source) == {"secretRef"}:
+                secret_names.add((secret_ref.get("name"), where))
+            else:
+                problems.append(f"{where} has an envFrom source this gate cannot read")
+
+    created = workflow_secret_keys(texts)
+    for title, where in sorted(secret_names, key=str):
+        keys = set(secrets_defined.get(title, ()))
+        if title in created:
+            if created[title] is None:
+                problems.append(
+                    f"Secret {title} ({where}) is created from a file this gate does not read"
+                )
+                continue
+            keys |= created[title]
+        elif title not in secrets_defined and title not in OUT_OF_BAND_SECRETS:
+            problems.append(
+                f"{where} loads Secret {title}, and this gate cannot show that it "
+                f"does not carry {SWITCH_KEY}"
+            )
+        if SWITCH_KEY in keys:
+            problems.append(f"{SWITCH_KEY} is a key of Secret {title}: it is not a secret")
+
+    canonical_files = {name for name, _document, _data in canonical}
+    for name, text in sorted({**manifests, **texts}.items()):
+        if name not in canonical_files and _mentions_switch(text):
+            problems.append(
+                f"{name} mentions {SWITCH_KEY}: it may only be set in ConfigMap "
+                f"{SWITCH_CONFIGMAP}"
+            )
+        if _applies_secret_file(text):
+            problems.append(
+                f"{name} applies a secrets file, which this gate does not read"
+            )
+    return (canonical[0][1] if len(canonical) == 1 else None), problems
+
+
+def gate_problems(manifests, texts, document, today):
+    """Why the checked-in deployment and verification records may not merge."""
+    configmap, problems = deployment_problems(manifests, texts)
+    return problems + switch_problems(configmap, document, today)
+
+
 class SwitchGateTests(SimpleTestCase):
     today = datetime.date(2026, 10, 12)
 
@@ -562,6 +764,351 @@ class SwitchGateTests(SimpleTestCase):
 
 
 # --- Through the production server class (acceptance criterion 16) -----------
+
+
+class DeploymentGateTests(SimpleTestCase):
+    """The switch is refused wherever else a merge could put it.
+
+    Each case edits the checked-in manifests and workflows in memory, so the
+    tests follow the real deployment rather than a list of file names.
+    """
+
+    today = datetime.date(2026, 10, 12)
+    agent_config = "k8s/crank-agent-config.yml"
+    web = "k8s/crank.yml"
+    cronjob = "deploy/cronjob-job-pipeline.yaml"
+    workflow = ".github/workflows/deploy-home.yml"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.checked_in = read_deployment_sources()
+
+    def setUp(self):
+        self.manifests, self.texts = (dict(group) for group in self.checked_in)
+
+    def record(self, **overrides):
+        record = {
+            "date": "2026-10-12",
+            "verified_by": "Operator Name",
+            "g1_public_path": "pass",
+            "g2_private_path": "pass",
+            "g2_method": "nodeport-addresses",
+            "edge_header_checks": "pass",
+        }
+        record.update(overrides)
+        return record
+
+    def problems(self, *records):
+        return gate_problems(
+            self.manifests, self.texts, {"verifications": list(records)}, self.today
+        )
+
+    def edit(self, name, change):
+        """Apply ``change`` to the parsed documents of one manifest."""
+        documents = list(yaml.safe_load_all(self.manifests[name]))
+        change(documents)
+        self.manifests[name] = yaml.safe_dump_all(documents)
+
+    def first_container(self, documents, kind):
+        document = next(d for d in documents if isinstance(d, dict) and d.get("kind") == kind)
+        return next(_containers(document))
+
+    def assert_refused(self, expected):
+        """Refused with no record, a failed record and even a passing one."""
+        failed = self.record(g1_public_path="fail", g2_private_path="fail")
+        for records in ((), (failed,), (self.record(),)):
+            with self.subTest(records=len(records), failed=records == (failed,)):
+                problems = self.problems(*records)
+                self.assertTrue(
+                    any(expected in problem for problem in problems), problems
+                )
+
+    def test_checked_in_deployment_passes(self):
+        document = yaml.safe_load(RECORD_PATH.read_text(encoding="utf-8"))
+        manifests, texts = self.checked_in
+        self.assertEqual(gate_problems(manifests, texts, document, datetime.date.today()), [])
+        self.assertEqual(self.problems(), [])
+
+    def test_the_scan_covers_the_real_deployment(self):
+        manifests, texts = self.checked_in
+        self.assertIn("k8s/crank-configmap.yml", manifests)
+        self.assertIn(self.agent_config, manifests)
+        self.assertIn(self.web, manifests)
+        self.assertIn(self.cronjob, manifests)
+        self.assertIn(self.workflow, texts)
+        self.assertIn(".github/workflows/update-home-deployment.yml", texts)
+        self.assertIn("Dockerfile", texts)
+        self.assertIn("Base.Dockerfile", texts)
+        configmap, problems = deployment_problems(manifests, texts)
+        self.assertEqual(problems, [])
+        self.assertEqual(
+            configmap, yaml.safe_load(CONFIGMAP_PATH.read_text(encoding="utf-8"))
+        )
+        # The web container's environment sources are all accounted for.
+        web = list(yaml.safe_load_all(manifests[self.web]))
+        sources = self.first_container(web, "Deployment")["envFrom"]
+        self.assertEqual(
+            [next(iter(source.values()))["name"] for source in sources],
+            [
+                "crank-config",
+                "crank-agent-config",
+                "db-connect-credentials",
+                "crank-capability-secrets",
+            ],
+        )
+        self.assertEqual(
+            workflow_secret_keys(texts)["crank-capability-secrets"],
+            {
+                "LLM_API_KEY",
+                "YELP_API_KEY",
+                "USAJOBS_AUTH_KEY",
+                "USAJOBS_USER_AGENT_EMAIL",
+                "FIRECRAWL_API_KEY",
+            },
+        )
+
+    def test_secrets_files_are_never_opened(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in (
+                "k8s/app.yml",
+                "k8s/app-secrets.yml",
+                "k8s/nested/Secret-values.yaml",
+                "deploy/.env",
+                "deploy/.env.production",
+                ".github/workflows/deploy.yml",
+                ".github/workflows/secrets.yml",
+                "Dockerfile",
+            ):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text("kind: List\n", encoding="utf-8")
+            (root / "k8s" / "directory").mkdir()
+            opened = []
+            real = Path.read_text
+
+            def read_text(path, *args, **kwargs):
+                opened.append(path.relative_to(root).as_posix())
+                return real(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", read_text):
+                manifests, texts = read_deployment_sources(root)
+        self.assertEqual(sorted(manifests), ["k8s/app.yml"])
+        self.assertEqual(sorted(texts), [".github/workflows/deploy.yml", "Dockerfile"])
+        self.assertEqual(
+            sorted(opened), [".github/workflows/deploy.yml", "Dockerfile", "k8s/app.yml"]
+        )
+        for name in (*self.checked_in[0], *self.checked_in[1]):
+            self.assertFalse(is_secret_file(name), name)
+        self.assertTrue(is_secret_file("k8s/crank-capability-secrets.yml"))
+        self.assertTrue(is_secret_file(".env"))
+
+    def test_on_in_the_one_allowed_place_follows_the_record(self):
+        def switch_on(documents):
+            documents[0]["data"][SWITCH_KEY] = "cloudflare"
+
+        self.edit("k8s/crank-configmap.yml", switch_on)
+        self.assertEqual(self.problems(self.record()), [])
+        self.assertEqual(self.problems(), [f"{SWITCH_KEY} is on without a verification record"])
+        failed = self.record(g1_public_path="fail")
+        self.assertEqual(
+            self.problems(failed), ["the last record does not pass g1_public_path"]
+        )
+
+    def test_another_configmap_is_refused(self):
+        def add(documents):
+            documents[0]["data"][SWITCH_KEY] = "cloudflare"
+
+        self.edit(self.agent_config, add)
+        self.assert_refused(f"{SWITCH_KEY} is set in ConfigMap crank-agent-config")
+
+    def test_a_new_configmap_in_a_new_manifest_is_refused(self):
+        self.manifests["k8s/extra.yml"] = yaml.safe_dump(
+            {
+                "kind": "ConfigMap",
+                "metadata": {"name": "crank-extra"},
+                "data": {SWITCH_KEY: "cloudflare"},
+            }
+        )
+        self.assert_refused(f"{SWITCH_KEY} is set in ConfigMap crank-extra (k8s/extra.yml)")
+
+    def test_a_second_definition_of_the_configmap_is_refused(self):
+        self.manifests["deploy/shadow.yaml"] = yaml.safe_dump(
+            {
+                "kind": "ConfigMap",
+                "metadata": {"name": SWITCH_CONFIGMAP},
+                "data": {SWITCH_KEY: "cloudflare"},
+            }
+        )
+        self.assert_refused("ConfigMap crank-config must be defined exactly once (found 2)")
+
+    def test_a_missing_configmap_is_refused(self):
+        del self.manifests["k8s/crank-configmap.yml"]
+        self.assert_refused("ConfigMap crank-config must be defined exactly once (found 0)")
+        self.assert_refused("loads ConfigMap crank-config, which this gate cannot read")
+        self.assert_refused("the ConfigMap has no data mapping")
+
+    def test_a_container_env_entry_is_refused(self):
+        for name, kind in ((self.web, "Deployment"), (self.cronjob, "CronJob")):
+            self.setUp()
+            for entry in (
+                {"name": SWITCH_KEY, "value": "cloudflare"},
+                {"name": SWITCH_KEY, "valueFrom": {"configMapKeyRef": {"name": "x", "key": "y"}}},
+            ):
+                def add(documents, kind=kind, entry=entry):
+                    self.first_container(documents, kind)["env"] = [
+                        "ignored", {"name": "OTHER", "value": "1"}, entry,
+                    ]
+
+                with self.subTest(name=name, entry=sorted(entry)):
+                    self.edit(name, add)
+                    self.assert_refused(f"{SWITCH_KEY} is a container env entry in {name} {kind}/")
+
+    def test_an_init_container_env_entry_is_refused(self):
+        def add(documents):
+            pod = next(d for d in documents if d.get("kind") == "Deployment")["spec"]["template"]
+            pod["spec"]["initContainers"] = [
+                {"name": "init", "env": [{"name": SWITCH_KEY, "value": "cloudflare"}]}
+            ]
+
+        self.edit(self.web, add)
+        self.assert_refused(f"{SWITCH_KEY} is a container env entry in {self.web} Deployment/")
+
+    def test_a_command_line_that_sets_it_is_refused(self):
+        def add(documents):
+            self.first_container(documents, "CronJob")["command"] = [
+                "env", f"{SWITCH_KEY}=cloudflare", "python", "manage.py", "check",
+            ]
+
+        self.edit(self.cronjob, add)
+        self.assert_refused(f"{self.cronjob} mentions {SWITCH_KEY}")
+
+    def test_a_workflow_literal_is_refused(self):
+        cases = (
+            f"          k3s kubectl -n crank set env deployment/crank {SWITCH_KEY}=cloudflare\n",
+            f"        env:\n          {SWITCH_KEY}: cloudflare\n",
+        )
+        for addition in cases:
+            self.setUp()
+            with self.subTest(addition=addition.strip()[:40]):
+                self.texts[self.workflow] += addition
+                self.assert_refused(f"{self.workflow} mentions {SWITCH_KEY}")
+
+    def test_a_secret_carrying_the_switch_is_refused(self):
+        text = self.texts[self.workflow]
+        literal = "--from-literal=LLM_API_KEY='' \\\n"
+        self.assertIn(literal, text)
+        self.texts[self.workflow] = text.replace(
+            literal, literal + f"            --from-literal={SWITCH_KEY}=cloudflare \\\n"
+        )
+        self.assert_refused(f"{SWITCH_KEY} is a key of Secret crank-capability-secrets")
+        self.setUp()
+        self.manifests["k8s/inline.yml"] = yaml.safe_dump(
+            {
+                "kind": "Secret",
+                "metadata": {"name": "db-connect-credentials"},
+                "stringData": {SWITCH_KEY: "cloudflare"},
+            }
+        )
+        self.assert_refused(f"{SWITCH_KEY} is a key of Secret db-connect-credentials")
+
+    def test_an_image_default_is_refused(self):
+        for name in ("Dockerfile", "Base.Dockerfile", "docker-compose.yml"):
+            self.setUp()
+            with self.subTest(name=name):
+                self.texts[name] += f"\nENV {SWITCH_KEY}=cloudflare\n"
+                self.assert_refused(f"{name} mentions {SWITCH_KEY}")
+
+    def test_a_comment_naming_the_switch_is_allowed(self):
+        self.manifests[self.agent_config] += f"  # {SWITCH_KEY} lives in crank-config.\n"
+        self.texts[self.workflow] += f"# {SWITCH_KEY} is never set here.\n"
+        self.assertEqual(self.problems(), [])
+
+    def test_environment_sources_the_gate_cannot_read_are_refused(self):
+        cases = (
+            ({"configMapRef": {"name": "elsewhere"}}, "loads ConfigMap elsewhere, which this gate cannot read"),
+            ({"secretRef": {"name": "new-secret"}}, "loads Secret new-secret, and this gate cannot show"),
+            ({"configMapRef": {"name": "crank-config"}, "prefix": "X_"}, "has an envFrom source this gate cannot read"),
+            ({"somethingElse": {"name": "x"}}, "has an envFrom source this gate cannot read"),
+            ("crank-config", "has an envFrom source this gate cannot read"),
+        )
+        for source, expected in cases:
+            self.setUp()
+
+            def add(documents, source=source):
+                self.first_container(documents, "Deployment")["envFrom"].append(source)
+
+            with self.subTest(expected=expected):
+                self.edit(self.web, add)
+                self.assert_refused(expected)
+
+    def test_a_secret_defined_in_a_readable_manifest_is_accounted_for(self):
+        self.manifests["k8s/inline.yml"] = yaml.safe_dump(
+            {"kind": "Secret", "metadata": {"name": "new-secret"}, "data": {"A": "", "B": ""}}
+        )
+
+        def add(documents):
+            self.first_container(documents, "Deployment")["envFrom"].append(
+                {"secretRef": {"name": "new-secret"}}
+            )
+
+        self.edit(self.web, add)
+        self.assertEqual(self.problems(), [])
+
+    def test_a_secret_made_from_a_file_is_refused(self):
+        for flag in ("--from-env-file=/tmp/values.env", "--from-file=/tmp/values"):
+            self.setUp()
+            with self.subTest(flag=flag):
+                self.texts[self.workflow] += (
+                    "          k3s kubectl -n crank create secret generic crank-capability-secrets \\\n"
+                    f"            {flag} \\\n"
+                    "            --dry-run=client -o yaml | k3s kubectl apply -f -\n"
+                    "          k3s kubectl -n crank create secret generic crank-capability-secrets \\\n"
+                    "            --from-literal=LATER='' | k3s kubectl apply -f -\n"
+                )
+                self.assert_refused(
+                    "Secret crank-capability-secrets (k8s/crank-cronjob.yml CronJob/"
+                )
+                self.assert_refused("is created from a file this gate does not read")
+
+    def test_a_workflow_that_applies_a_secrets_file_is_refused(self):
+        for line in (
+            "envsubst < /tmp/crank-capability-secrets.yml | k3s kubectl apply -f -",
+            "k3s kubectl apply -f /tmp/crank-capability-secrets.yml",
+            "kubectl apply --filename=k8s/Crank-Secrets.yaml",
+        ):
+            self.setUp()
+            with self.subTest(line=line):
+                self.texts[self.workflow] += f"          {line}\n"
+                self.assert_refused(
+                    f"{self.workflow} applies a secrets file, which this gate does not read"
+                )
+
+    def test_copying_a_secrets_file_without_applying_it_is_allowed(self):
+        # Today's workflows copy the file to the node and never apply it.
+        self.assertRegex(self.texts[self.workflow], r"scp [^\n]*crank-capability-secrets\.yml")
+        self.texts[self.workflow] += (
+            "          # kubectl apply -f /tmp/crank-capability-secrets.yml\n"
+        )
+        self.assertEqual(self.problems(), [])
+
+    def test_unreadable_and_empty_inputs_are_refused(self):
+        self.manifests["k8s/broken.yml"] = "kind: [unclosed\n"
+        self.manifests["k8s/scalar.yml"] = "just text\n---\n- a\n- b\n"
+        self.assert_refused(f"k8s/broken.yml cannot be parsed, so it cannot be checked for {SWITCH_KEY}")
+        self.manifests, self.texts = {}, {}
+        self.assert_refused("no Deployment was found, so nothing was checked")
+
+    def test_documents_without_the_usual_shape_are_tolerated(self):
+        self.manifests["k8s/odd.yml"] = yaml.safe_dump_all(
+            [
+                {"kind": "ConfigMap", "metadata": "name", "data": ["not", "a", "mapping"]},
+                {"kind": "Pod", "spec": {"containers": ["text", {"name": "c", "envFrom": "x"}]}},
+            ]
+        )
+        self.assertEqual(self.problems(), [])
 
 
 def _echo(request):
