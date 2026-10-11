@@ -478,6 +478,72 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
         });
     }
 
+    // Short panels where a notice does not fit above the composer (a phone with its keyboard up, a phone on its
+    // side): the body scrolls as a last resort, and what it gives up is the top, never the composer.
+    const composerOnScreen = (page: Page) => page.evaluate(() => {
+        const form = document.querySelector('#job-search-chat form')!.getBoundingClientRect();
+        const field = document.querySelector<HTMLElement>('[data-testid="assistant-composer"]')!;
+        const box = field.getBoundingClientRect();
+        const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return {
+            cutOff: Math.max(0, Math.round(form.bottom - window.innerHeight), Math.round(-form.top)),
+            hit: !!top && (top === field || field.contains(top)),
+            focusInComposer: document.activeElement === field,
+            bodyScrollTop: document.querySelector('.assistant-panel-body')!.scrollTop,
+        };
+    });
+    for (const size of [{width: 375, height: 380}, {width: 667, height: 375}]) {
+        for (const wideFont of [false, true]) {
+            test(`${size.width}x${size.height}${wideFont ? ' in the wider font' : ''}: More shows every item, and a failed send or a status notice leaves the composer whole`, async ({page}) => {
+                test.setTimeout(120_000);
+                await page.setViewportSize({width: 1280, height: 900});
+                await page.goto('/');
+                await setPriorities(page, TEN);
+                await openChat(page);
+                await ensureConversation(page, 3);
+                await page.setViewportSize(size);
+                await openChat(page, wideFont);
+
+                // More: all four items are on screen and reachable, and the panel body has not moved.
+                const more = (await page.getByTestId('conversation-more').boundingBox())!;
+                await page.mouse.click(more.x + more.width / 2, more.y + more.height / 2);
+                await expect(page.getByTestId('conversation-menu')).toBeVisible();
+                const items = await page.getByTestId('conversation-menu').evaluate((menu) => Array.from(menu.querySelectorAll('button'), (item) => {
+                    const box = item.getBoundingClientRect();
+                    const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+                    return {name: item.textContent!.trim(), whole: box.top >= -0.5 && box.bottom <= window.innerHeight + 0.5, hit: !!top && (top === item || item.contains(top))};
+                }));
+                expect(items).toHaveLength(4);
+                expect(items.filter((item) => !item.whole || !item.hit), 'every More item is whole and reachable').toEqual([]);
+                expect((await composerOnScreen(page)).bodyScrollTop, 'the panel body stays at its top while More is open').toBe(0);
+                // Escape on a sheet closes the whole assistant (not this issue's), so the menu is left by a new load.
+                await openChat(page, wideFont);
+
+                // A send that fails: the error arrives above the composer while the reader is still in it.
+                await page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
+                    ? route.fulfill({status: 503, contentType: 'application/json',
+                        body: JSON.stringify({error: {type: 'assistant_unavailable', message: 'The assistant is unavailable right now. Try again shortly.'}})})
+                    : route.fallback()));
+                await page.getByTestId('assistant-composer').evaluate((el: HTMLElement) => el.focus({preventScroll: true}));
+                await page.keyboard.type('And which of them are hiring now?');
+                await page.keyboard.press('Enter');
+                await expect(page.getByTestId('failed-turn')).toBeVisible();
+                await expect.poll(() => composerOnScreen(page), {message: 'after a failed send the focused composer is whole and reachable'})
+                    .toMatchObject({cutOff: 0, hit: true, focusInComposer: true});
+                await page.unrouteAll({behavior: 'ignoreErrors'});
+
+                // A status notice on an untouched load: nothing is focused in the composer, and it is whole.
+                await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('crank:jobsearch:')).forEach((key) => localStorage.removeItem(key)));
+                await page.route('**/api/agent/assistant-status/', (route) => route.fulfill({status: 200, contentType: 'application/json',
+                    body: JSON.stringify({state: 'temporarily_unavailable', actions: ['retry'], checked_at: '2026-10-10T00:00:00Z'})}));
+                await openChat(page, wideFont);
+                await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
+                await expect.poll(() => composerOnScreen(page), {message: 'with a status notice on load the composer is whole and reachable'})
+                    .toMatchObject({cutOff: 0, hit: true, focusInComposer: false});
+            });
+        }
+    }
+
     test('more than 48px above the end nothing moves and the pill counts the replies; at the end the late availability notice is followed', async ({page}) => {
         test.setTimeout(120_000);
         await page.setViewportSize({width: 375, height: 667});
