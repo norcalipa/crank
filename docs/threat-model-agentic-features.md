@@ -432,8 +432,10 @@ Sign-up is open, so a limit that is only per account can be multiplied by
 creating accounts. Company corrections therefore have two layers.
 
 - **Per account (always on):** 10 stored corrections and 60 rejected attempts
-  an hour. All counters are reserved before the work and released afterwards,
-  so a burst cannot grant more than the limit.
+  an hour. Every allowance is reserved before the work and released
+  afterwards, so a burst cannot grant more than the limit. The stored hour
+  starts at the first request and the rejected hour at the first rejected
+  attempt, both as before #538.
 - **Per client address (off by default):** 20 stored and 120 rejected an hour
   per IPv4 address or IPv6 /64, across all accounts. The per-account caps are
   checked first; this layer can only add refusals. A refusal says which layer
@@ -444,9 +446,25 @@ creating accounts. Company corrections therefore have two layers.
   `X-Forwarded-For`, `X-Real-IP`, `True-Client-IP`, `Forwarded` and
   `REMOTE_ADDR` are never read as a client address: the first four are
   client-controlled and the last is a node address for every request.
-- **Unidentified requests** (header missing, duplicated or malformed) get the
+- **Unidentified requests** (header missing, duplicated or malformed, or an
+  address no visitor can have: unspecified, loopback, private, shared
+  `100.64.0.0/10`, link-local, multicast, reserved, and `::/8`) get the
   per-account caps only. They are not refused and not pooled: a shared
-  "unknown" bucket would let a few accounts lock every user out.
+  "unknown" bucket, or one bucket for every request that arrived with a
+  loopback or private address, would let a few accounts lock every user out.
+  Refusing special-purpose addresses does not stop a forger, who would send a
+  public address; it keeps a misrouted or misconfigured path visible (warning
+  reason `special`, `on, not identified` on the staff page).
+- **Requests in flight (shared-address risk):** a request holds its place
+  against each cap until it finishes, so each cap also bounds concurrent
+  requests: 10 per account as before, and now 20 per address. More than 20
+  simultaneous submissions from one address (a large office or carrier NAT)
+  can therefore be refused with `limit_scope: network` although fewer than 20
+  end up stored, and that `429` carries the rest of the stored hour as
+  `Retry-After`, because the stored counter cannot tell a held place from a
+  spent one. Against the rejected-attempt caps the two are counted apart and
+  such a refusal carries `Retry-After: 1`. Unlikely at this site's volume;
+  the remedy if it is seen is to raise `COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR`.
 - **At rest:** the limiter's cache keys carry a keyed digest of the address
   for up to one hour. No address is written to the database, logs or
   telemetry. The staff diagnostics page shows the viewing staff member their
@@ -459,16 +477,20 @@ creating accounts. Company corrections therefore have two layers.
 **Dependency on the operator gate.** Anyone who can open a connection to the
 pod can send `CF-Connecting-IP`, and the app cannot tell a tunnel request from
 a direct one. The header is trustworthy only while Cloudflare is the only way
-in. `docs/runbook-client-address.md` is the gate that confirms this; a CI test
-refuses the production switch without a passing record in
-`docs/client-address-verification.yaml`. The record is an attestation, not
-proof.
+in. `docs/runbook-client-address.md` is the gate that confirms this. A CI test
+refuses a merge that sets the switch in the ConfigMap `crank-config` without a
+passing record in `docs/client-address-verification.yaml`, and refuses one
+that sets it anywhere else a merge could: another ConfigMap, a container
+`env:` entry or command line, a Secret a workflow creates, a workflow, or an
+image default. It does not open secrets files and cannot see the cluster, so
+a value set there by hand is outside it; the runbook's V1 step checks for
+that. The record is an attestation, not proof.
 
 **Tests:** `crank/tests/test_client_address.py` (parsing, the single header,
 production-only, the warning, the underscore-header twin through Django's WSGI
 request handler, the switch gate), `crank/tests/views/test_company_corrections.py`
-(two clients behind one peer, accounting for every outcome, concurrency against
-real Redis), `crank/tests/test_checks.py` (`crank.W003`, `crank.W004`).
+(two clients behind one peer, accounting for every outcome, the rejected hour
+compared with `main`, requests in flight, concurrency against real Redis), `crank/tests/test_checks.py` (`crank.W003`, `crank.W004`).
 
 **Residual risks; owner: web/API maintainers and the operator.**
 

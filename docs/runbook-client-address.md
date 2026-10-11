@@ -53,9 +53,11 @@ The table says who is supposed to; the gate below is what makes it true.
 ## What the switch does
 
 - `CLIENT_IP_SOURCE` names a source, not a header. The only source is
-  `cloudflare`, which reads `CF-Connecting-IP`. Any other value is ignored
-  (system check `crank.W003`), and any value outside `ENV=prod` is ignored
-  (`crank.W004`). Neither stops the app from starting.
+  `cloudflare`, which reads `CF-Connecting-IP`. In production any other value
+  is ignored (system check `crank.W003`). Outside `ENV=prod` the variable is
+  not read at all; `python manage.py check` prints `crank.W004` when it finds
+  the variable set in such an environment. Neither stops the app from
+  starting.
 - With the source on and an address identified, each IPv4 address or IPv6 /64
   may store at most `COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR` (20)
   corrections and make at most `COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR`
@@ -63,7 +65,31 @@ The table says who is supposed to; the gate below is what makes it true.
   (10 and 60) are checked first and are not loosened.
 - A request whose header is missing, duplicated or malformed is not refused and
   is not put in a shared bucket: it gets the per-account limits only, and the
-  app logs `client address unavailable` at most once every 10 minutes.
+  app logs `client address unavailable` at most once every 10 minutes, with
+  the reason (`missing`, `multiple`, `invalid` or `special`) and never the
+  value.
+- The same applies to an address no visitor can have (reason `special`):
+  unspecified (`0.0.0.0/8`, `::`), loopback (`127.0.0.0/8`, `::1`), private
+  (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), shared
+  (`100.64.0.0/10`), link-local (`169.254.0.0/16`, `fe80::/10`), multicast
+  (`224.0.0.0/4`, `ff00::/8`), reserved (`240.0.0.0/4`) and all of `::/8`,
+  including the mapped and embedded IPv4 forms of the above. Cloudflare never
+  reports one of these for a visitor, so seeing `special` means a request
+  reached the pod by another path, or Pseudo IPv4 is set to "Overwrite
+  headers" (G1 step 5). It is not a defence against forging: a forger would
+  send a public address.
+- The hour for stored corrections starts at the first request of the hour. The
+  hour for rejected attempts starts at the first rejected attempt. Both are
+  unchanged from before #538 for the per-account limits, whether the switch
+  is on or off.
+- A request holds its place against each limit until it finishes, so limits
+  also cap requests in flight. A request refused only because others from the
+  same account or address were still in flight gets a `429`. Against the
+  rejected-attempt limits that refusal carries `Retry-After: 1`. Against the
+  stored limits (10 per account as before, 20 per address) it carries the
+  rest of the hour, as it did before #538, even if none of the requests in
+  flight ends up stored; the app cannot tell the two cases apart there. It
+  takes more than 20 simultaneous submissions from one address to see this.
 - The limiter keeps a keyed digest of the address in the cache for up to one
   hour. No address is written to the database, logs or telemetry.
 
@@ -200,6 +226,21 @@ cluster.
    `g1_public_path: pass`, `g2_private_path` of `pass` or `waived`,
    `edge_header_checks: pass`, a name, and a date that is not in the future.
    The record is the operator's attestation; CI cannot check that it is true.
+
+   `data` of the ConfigMap `crank-config` is the only place the switch may be
+   set. The same test reads every manifest under `k8s/` and `deploy/`, the
+   deploy workflows, the Dockerfiles and `docker-compose.yml`, and fails,
+   whatever the record says, if `CLIENT_IP_SOURCE` appears in another
+   ConfigMap, a container `env:` entry or command line, a Secret created by a
+   workflow or defined in a manifest, a workflow, or an image default. It also
+   fails if a container loads a ConfigMap or Secret it cannot account for, or
+   if a workflow applies a secrets file.
+
+   What CI cannot see: the contents of secrets files (it never opens them; no
+   workflow applies one), the `db-connect-credentials` Secret, which the
+   operator creates in the cluster, and anything changed in the cluster by
+   hand (`kubectl edit`, `kubectl set env`, a key added to a Secret). V1 below
+   is the check for those.
 4. Merge only after the "Deploy to Kubernetes (prod)" run of the release that
    contains the limiter has finished. The manifest-only workflow deploys image
    tag `latest`, and that run is what moves `latest`.
@@ -212,29 +253,71 @@ per-address layer stays off and production keeps the per-account limits.
 - **V1.** `k3s kubectl -n crank exec deploy/crank -- printenv CLIENT_IP_SOURCE`
   prints `cloudflare`. If it is empty the pods did not restart (expected when
   the Deployment was already on `latest`): run
-  `k3s kubectl -n crank rollout restart deployment/crank`.
+  `k3s kubectl -n crank rollout restart deployment/crank`. Before enabling,
+  the same command must print nothing: a value then was set in the cluster by
+  hand, outside what CI checks, and must be removed first.
 - **V2.** Signed in as staff at `https://crank.fyi/staff/release-diagnostics/`:
   "Client address source" says `cloudflare`, and "Client address for this
-  request" matches your public address (for IPv6, its /64).
-- **V3.** In the browser console on that page:
+  request" matches your public address (for IPv6, its /64). While the switch
+  is off the two rows read `none` and `off (no address is read)`; `on, not
+  identified` means the switch is on and this request carried no usable
+  address, which is a failure here.
+- **V3.** In the browser console on that page, send your own
+  `CF-Connecting-IP` and read the row that comes back:
 
   ```js
   fetch('/staff/release-diagnostics/', {headers: {'CF-Connecting-IP': '203.0.113.9'}})
-    .then(async r => console.log(r.status, (await r.text()).includes('203.0.113.9')))
+    .then(async r => {
+      const page = new DOMParser().parseFromString(await r.text(), 'text/html');
+      const row = [...page.querySelectorAll('th')]
+        .find(th => th.textContent === 'Client address for this request');
+      console.log(r.status, row ? row.nextElementSibling.textContent : 'no such row');
+    });
   ```
 
-  Pass: the second value is `false`. The expected result is Cloudflare's Error
-  1000 page; the page still showing your real address also passes. If it is
-  `true`, **roll back at once**: the edge is passing a client-supplied value.
+  There are three possible results. "The forged value is not on the page" is
+  not enough to pass: the third result does not show it either.
+
+  | What the edge did | What the script prints | Result |
+  |---|---|---|
+  | Rejected the request | `403 no such row` (Cloudflare's Error 1000 page). This is the expected result. | **Pass** |
+  | Replaced the header | `200` and the same address as in V2. | **Pass** |
+  | Forwarded the header | `200 203.0.113.9`, or `200 on, not identified` (the app received your value beside the edge's and refused both). | **Fail: roll back at once** |
+
+  Either failing result means any client can send the header and so choose its
+  bucket or drop out of the per-address layer. Any other output (another
+  status, another address) is also a failure until explained.
 - **V4.** The same page from a second network (a phone on mobile data) shows a
   different address.
 - **V5.** Submit one correction through the site, then reject it in admin. It
-  returns 201, and the pod logs have no `client address unavailable` warning.
+  returns 201, and the logs of **every** pod
+  (`k3s kubectl -n crank logs -l app.kubernetes.io/name=crank --since=15m`)
+  have no `client address unavailable` warning. The warning is written by one
+  pod, at most once every 10 minutes, so one pod's logs are not enough.
 
 ## Roll back
 
-Revert the enablement pull request. The value returns to empty, the layer is
-off, and the counters expire within the hour. Check with V1.
+1. Revert the enablement pull request and let its deploy finish.
+2. Restart the pods now, without waiting to see whether the deploy did:
+   `k3s kubectl -n crank rollout restart deployment/crank`, then
+   `k3s kubectl -n crank rollout status deployment/crank`. If the Deployment
+   was already on `latest` the revert changes no pod, and the pods keep the
+   switch until something restarts them.
+3. A rollback has passed when both of these hold:
+   - `printenv CLIENT_IP_SOURCE` prints **nothing** in **every** pod:
+
+     ```sh
+     for p in $(k3s kubectl -n crank get pods -l app.kubernetes.io/name=crank -o name); do
+       k3s kubectl -n crank exec "$p" -- printenv CLIENT_IP_SOURCE || echo "$p: empty"
+     done
+     ```
+
+     Every line must end in `empty`. (This is V1 with the opposite expected
+     result: there `cloudflare` is the pass, here it is the failure.)
+   - the staff page shows "Client address source" `none` and "Client address
+     for this request" `off (no address is read)`.
+
+The layer is then off, and the per-address counters expire within the hour.
 
 Do not use `kubectl set env`: it adds a container-level variable that later
 deploys do not remove.
