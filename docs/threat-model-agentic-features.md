@@ -500,7 +500,8 @@ Secrets the operator creates; the contents of secrets-named files and of
 `.env-prod`, which it never opens; a secrets file copied to another name and
 applied under it; a name assembled at run time (by the shell, `envsubst`, a
 YAML escape inside a command, or a Dockerfile `ENV` named by a build
-argument); files that are not UTF-8 text or not tracked; and environment set
+argument); a command written inside a test or document that may name the
+switch; files that are not UTF-8 text or not tracked; and environment set
 outside the repository at run time. The runbook lists these under "What CI
 cannot see", and its V1 step, which reads the value the running pod has, is
 the check for them. The record is an attestation, not proof.

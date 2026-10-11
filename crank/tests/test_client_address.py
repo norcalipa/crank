@@ -448,6 +448,9 @@ SWITCH_READERS = frozenset(
     }
 )
 SWITCH_READER_DIRS = ("crank/tests/", "docs/")
+# Inside those directories only tests, documents and the record may name it;
+# a shell script put there is read like any other script.
+SWITCH_READER_SUFFIXES = (".py", ".md", ".yaml")
 # Test data that is malformed on purpose. A file that cannot be parsed
 # cannot be applied either, so here (and only here) it is not a problem.
 MALFORMED_FIXTURE_DIR = "crank/tests/fixtures/"
@@ -479,7 +482,9 @@ def is_secret_file(path):
 
 
 def may_name_switch(name):
-    return name in SWITCH_READERS or name.startswith(SWITCH_READER_DIRS)
+    return name in SWITCH_READERS or (
+        name.startswith(SWITCH_READER_DIRS) and name.endswith(SWITCH_READER_SUFFIXES)
+    )
 
 
 def tracked_files(root=REPO_ROOT):
@@ -1311,8 +1316,11 @@ class DeploymentGateTests(SimpleTestCase):
                 )
 
     def test_a_script_that_applies_a_secrets_file_is_refused(self):
-        self.texts["scripts/deploy.sh"] = "kubectl apply -f k8s/crank-capability-secrets.yml\n"
-        self.assert_refused("scripts/deploy.sh applies a secrets file")
+        for name in ("scripts/deploy.sh", "docs/deploy.sh"):
+            self.setUp()
+            with self.subTest(name=name):
+                self.texts[name] = "kubectl apply -f k8s/crank-capability-secrets.yml\n"
+                self.assert_refused(f"{name} applies a secrets file")
 
     def test_a_list_wrapper_is_looked_inside(self):
         extra = {
@@ -1375,6 +1383,9 @@ class DeploymentGateTests(SimpleTestCase):
             "crank/views/job_search.py",
             "crank/settings/dev.py",
             "README.md",
+            "docs/deploy.sh",
+            "crank/tests/deploy.sh",
+            "crank/tests/fixtures/values.txt",
         ):
             self.setUp()
             with self.subTest(name=name):
@@ -1389,7 +1400,15 @@ class DeploymentGateTests(SimpleTestCase):
                 self.assertTrue(may_name_switch(name))
                 self.manifests[name] = f"note: {SWITCH_KEY} is read in production\n"
                 self.assertEqual(self.problems(), [])
-        for name in ("crank/settings/dev.py", "crank/views/job_search.py", "docs.yml", "k8s/x.yml"):
+        for name in (
+            "crank/settings/dev.py",
+            "crank/views/job_search.py",
+            "docs.yml",
+            "k8s/x.yml",
+            "docs/deploy.sh",
+            "crank/tests/deploy",
+            "crank/tests/fixtures/extra.json",
+        ):
             self.assertFalse(may_name_switch(name), name)
         # The allow-list is exactly what names the switch in the checkout today.
         manifests, texts = self.checked_in

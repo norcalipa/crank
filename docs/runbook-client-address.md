@@ -243,8 +243,9 @@ cluster.
      workflow, a composite action, a script, a Dockerfile,
      `docker-compose.yml` or application code. Only the code that reads the
      switch (`crank/settings/base.py`, `crank/settings/prod.py`,
-     `crank/checks.py`, `crank/client_address.py`, `crank/release.py`),
-     `crank/tests/` and `docs/` may name it;
+     `crank/checks.py`, `crank/client_address.py`, `crank/release.py`) and
+     the Python, Markdown and `.yaml` files under `crank/tests/` and `docs/`
+     may name it;
    - a workflow creates a Secret that carries it, or creates one from a file;
    - a container loads a ConfigMap or Secret the test cannot account for;
    - a workflow or script hands a secrets-named file to `kubectl apply`, on
@@ -272,6 +273,9 @@ cluster.
    - a name put together at run time instead of written out: by the shell,
      by `envsubst`, by a YAML escape inside a command, or by a Dockerfile
      `ENV` whose name is a build argument;
+   - a command written inside a test or a document that may name the
+     switch, if a workflow were changed to run that file: those files are
+     not read as commands;
    - files that are not UTF-8 text, and files git does not track;
    - environment set outside the repository at run time: on the node, in a
      `.env` file written into a running container or a mounted volume, or in
