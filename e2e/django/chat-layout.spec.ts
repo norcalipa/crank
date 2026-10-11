@@ -358,13 +358,17 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
             const card = await failedTurn.evaluate((el) => {
                 const r = el.getBoundingClientRect();
                 const bounds = el.closest('[role="log"]')!.getBoundingClientRect();
-                const covered = Array.from(el.querySelectorAll('button')).filter((button) => {
+                const covered: string[] = [];
+                el.querySelectorAll('button').forEach((button) => {
                     const box = button.getBoundingClientRect();
                     const middle = box.top + box.height / 2;
-                    if (middle <= bounds.top || middle >= bounds.bottom) return false;
+                    // A centre on the transcript's edge line belongs to the bar beside it: a hit test there is not the button's.
+                    if (middle <= bounds.top + 1 || middle >= bounds.bottom - 1) return;
                     const top = document.elementFromPoint(box.left + box.width / 2, middle);
-                    return !top || !button.contains(top);
-                }).map((button) => (button.textContent || '').trim());
+                    if (top && button.contains(top)) return;
+                    const over = top ? `${top.tagName.toLowerCase()}.${String(top.className).split(' ')[0]}${top.getAttribute('data-testid') ? `[${top.getAttribute('data-testid')}]` : ''}` : 'nothing';
+                    covered.push(`${(button.textContent || '').trim()} (middle ${Math.round(middle)} in ${Math.round(bounds.top)}-${Math.round(bounds.bottom)}, under ${over})`);
+                });
                 return {height: r.height, room: bounds.height, topInside: r.top >= bounds.top - 1, bottomInside: r.bottom <= bounds.bottom + 1, covered};
             });
             expect(card.bottomInside, 'the failed-turn card ends inside the transcript').toBe(true);
