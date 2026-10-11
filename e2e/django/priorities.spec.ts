@@ -980,8 +980,8 @@ interface ReaderState {
     viewportHeight: number;
     // The transcript's box: 4.5rem is the least it keeps under an open block.
     transcriptBox: number;
-    panelScrollRange: number;
-    panelScrollTop: number;
+    bodyScrollRange: number;
+    bodyScrollTop: number;
     focus: {name: string; inBlock: boolean; inside: boolean; hit: boolean} | null;
     // Named controls of the open step: inside the viewport and reached by a pointer at their centre.
     controls: Record<string, boolean>;
@@ -1044,8 +1044,8 @@ async function readerState(page: Page): Promise<ReaderState> {
             open: !!section.querySelector('.priorities-scroll'),
             viewportHeight: vh,
             transcriptBox: card.querySelector<HTMLElement>('[role="log"]')!.offsetHeight,
-            panelScrollRange: body.scrollHeight - body.clientHeight,
-            panelScrollTop: body.scrollTop,
+            bodyScrollRange: body.scrollHeight - body.clientHeight,
+            bodyScrollTop: body.scrollTop,
             focus,
             controls,
             covered,
@@ -1110,10 +1110,10 @@ function readerProblems(step: string, now: ReaderState, before: ReaderState | nu
     // the block or the transcript still has height to give. Only below the floor, with the open block at its
     // 11rem and the transcript at its 4.5rem, may it scroll, as a plain scroller that starts at its top.
     const belowFloor = now.open && now.block <= BLOCK_MIN_PX + 1 && now.transcriptBox <= TRANSCRIPT_MIN_PX + 1;
-    if (now.panelScrollRange > 1 && !belowFloor) problems.push(`the panel scrolls ${now.panelScrollRange}px beside the transcript`);
-    if (now.panelScrollRange <= 1 && now.panelScrollTop !== 0) problems.push(`the panel is scrolled ${now.panelScrollTop}px`);
+    if (now.bodyScrollRange > 1 && !belowFloor) problems.push(`the panel scrolls ${now.bodyScrollRange}px beside the transcript`);
+    if (now.bodyScrollRange <= 1 && now.bodyScrollTop !== 0) problems.push(`the panel is scrolled ${now.bodyScrollTop}px`);
     // No jump: a reader at the end of the conversation is still there at every step where the panel does not scroll.
-    if (before && before.lastToComposer !== null && now.lastToComposer !== null && now.panelScrollRange <= 1) {
+    if (before && before.lastToComposer !== null && now.lastToComposer !== null && now.bodyScrollRange <= 1) {
         if (before.lastToComposer >= -1 && now.lastToComposer < -1) problems.push(`the conversation jumped: its last message is ${-now.lastToComposer}px below the composer band`);
         if (!now.open && !before.pill && now.pill) problems.push('"Jump to latest" appeared');
     }
@@ -1334,7 +1334,7 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
             expect(start.first).toBeGreaterThanOrEqual(0);
             const expectSamePlace = async (step: string) => {
                 const state = await settledReader(page);
-                expect(state.panelScrollRange, `${step}: the panel body does not scroll`).toBeLessThanOrEqual(1);
+                expect(state.bodyScrollRange, `${step}: the panel body does not scroll`).toBeLessThanOrEqual(1);
                 const now = await place();
                 expect(Math.abs(now.scrollTop - start.scrollTop), `${step}: the transcript's scrollTop`).toBeLessThanOrEqual(1);
                 expect(now.first, `${step}: the first message in view`).toBe(start.first);
@@ -1386,7 +1386,7 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
             expect(now.focus?.inBlock, 'the focus is still in the block').toBe(true);
             expect(now.blockTopInView, 'the open block starts on screen').toBe(true);
             expect(now.blockVisible, 'the block, or its first 11rem, is on screen').toBeGreaterThanOrEqual(Math.min(now.block, 176) - 1);
-            expect(now.panelScrollTop, 'the panel body was not scrolled').toBe(0);
+            expect(now.bodyScrollTop, 'the panel body was not scrolled').toBe(0);
             expect(now.covered, 'the block covers no chat bar').toEqual([]);
             const bars = await chatBars(page);
             expect(bars.positions, 'nothing in the chat is sticky').not.toContain('sticky');
@@ -1455,7 +1455,7 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
                 await page.keyboard.press('Enter');
                 await expect(chips).toHaveCount(10);
                 const opened = await check('Enter on the row', before, ['Reset priorities']);
-                modes.push(`${height}:${opened.panelScrollRange > 1 ? 'below the floor' : 'the body does not scroll'}`);
+                modes.push(`${height}:${opened.bodyScrollRange > 1 ? 'below the floor' : 'the body does not scroll'}`);
                 await page.keyboard.press('Enter');
                 await expect(chips).toHaveCount(0);
                 await check('Enter again', before, []);
