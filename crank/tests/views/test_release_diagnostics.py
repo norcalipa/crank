@@ -128,7 +128,9 @@ class ReleaseDiagnosticsViewTests(TestCase):
             HTTP_X_FORWARDED_FOR="198.51.100.8",
             REMOTE_ADDR="192.0.2.10",
         )
-        self.assertEqual(self._rows(response), ("none", "not identified"))
+        # Off is worded differently from a failure to identify while on.
+        self.assertEqual(self._rows(response), ("none", "off (no address is read)"))
+        self.assertNotContains(response, "not identified")
         for address in ("198.51.100.7", "198.51.100.8", "192.0.2.10"):
             self.assertNotContains(response, address)
 
@@ -152,8 +154,24 @@ class ReleaseDiagnosticsViewTests(TestCase):
         network = self.client.get(url, HTTP_CF_CONNECTING_IP="2001:db8:1:2::9")
         self.assertEqual(self._rows(network), ("cloudflare", "2001:db8:1:2::/64"))
         unidentified = self.client.get(url, HTTP_X_FORWARDED_FOR="198.51.100.8")
-        self.assertEqual(self._rows(unidentified), ("cloudflare", "not identified"))
+        self.assertEqual(self._rows(unidentified), ("cloudflare", "on, not identified"))
         self.assertNotContains(unidentified, "198.51.100.8")
+        for value in ("198.51.100.7, 198.51.100.8", "127.0.0.1", "10.1.2.3", "::1"):
+            with self.subTest(value=value):
+                refused = self.client.get(url, HTTP_CF_CONNECTING_IP=value)
+                self.assertEqual(self._rows(refused), ("cloudflare", "on, not identified"))
+                self.assertNotContains(refused, "198.51.100.8")
+                self.assertNotContains(refused, "127.0.0.1")
+                self.assertNotContains(refused, "10.1.2.3")
+
+    @override_settings(ENV="staging", CLIENT_IP_SOURCE="cloudflare")
+    def test_client_address_rows_outside_production_read_off(self):
+        self.client.force_login(self.staff)
+        response = self.client.get(
+            reverse("release-diagnostics"), HTTP_CF_CONNECTING_IP="198.51.100.7"
+        )
+        self.assertEqual(self._rows(response), ("none", "off (no address is read)"))
+        self.assertNotContains(response, "198.51.100.7")
 
     @override_settings(ENV="prod", CLIENT_IP_SOURCE="cloudflare")
     def test_client_address_is_never_shown_to_non_staff(self):
