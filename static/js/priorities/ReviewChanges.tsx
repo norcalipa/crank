@@ -30,6 +30,8 @@ export interface ReviewChangesProps {
     choicePaths?: ReadonlySet<string>;
     // Editor field labels by path, so the diff names a field as the editor does.
     labels?: Record<string, string>;
+    // The bounded sidebar block: the change comes before the note, and Cancel sits beside the primary action.
+    compact?: boolean;
     testId?: string;
 }
 
@@ -55,6 +57,8 @@ function ChangeValue({value, path, currency, importance, choice}: {
 }
 
 const CURRENCY_PATH = 'compensation.currency';
+// The bounded block offers More in its pinned row while about half of the row below is still out of sight.
+export const MORE_BELOW_PX = 22;
 
 export function ChangeList({changes, label, labels, currency, choicePaths}: {
     changes: PreferenceChange[];
@@ -93,7 +97,7 @@ export function ChangeList({changes, label, labels, currency, choicePaths}: {
 export default function ReviewChanges({
     changes, scope = 'account', pending = false, error = null, stale = false,
     heading = 'Review your changes', applyLabel, onApply, onCancel, onEdit, onApplySearchOnly, onReviewLatest,
-    labels, currency, choicePaths, conflicts = [], testId = 'priorities-review',
+    labels, currency, choicePaths, conflicts = [], compact = false, testId = 'priorities-review',
 }: ReviewChangesProps) {
     const headingId = `priorities-review-${React.useId()}`;
     const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -101,22 +105,89 @@ export default function ReviewChanges({
         headingRef.current?.focus();
     }, []);
     const isSearch = scope === 'search';
+    // The bounded block pins one action row. While Edit and This search only are below it, a More button in that row leads to them.
+    const rootRef = React.useRef<HTMLDivElement>(null);
+    const [moreBelow, setMoreBelow] = React.useState(false);
+    const hasSecondRow = compact && (!!onEdit || (!!onApplySearchOnly && !isSearch));
+    React.useEffect(() => {
+        const root = rootRef.current as HTMLDivElement;
+        const scroller = hasSecondRow ? root.closest<HTMLElement>('.priorities-scroll') : null;
+        if (!scroller) {
+            setMoreBelow(false);
+            return undefined;
+        }
+        const measure = () => setMoreBelow(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > MORE_BELOW_PX);
+        measure();
+        scroller.addEventListener('scroll', measure);
+        const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+        observer?.observe(scroller);
+        observer?.observe(root);
+        return () => {
+            scroller.removeEventListener('scroll', measure);
+            observer?.disconnect();
+        };
+    }, [hasSecondRow]);
+    // More is only shown inside the block's scroller, with a second row to lead to: that row takes the focus.
+    // A second-row button that takes the focus (by Tab, or through More) shows its row: the pinned group only
+    // reaches its own place once the list is at its end.
+    const revealSecondRow = () => {
+        const scroller = compact ? rootRef.current?.closest<HTMLElement>('.priorities-scroll') : null;
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    };
+    // A press already has its button under the pointer: moving the row then would take it away before the click.
+    const pressing = React.useRef(false);
+    const revealOnFocus = () => { if (!pressing.current) revealSecondRow(); };
+    const press = {
+        onPointerDown: () => { pressing.current = true; },
+        onPointerUp: () => { pressing.current = false; },
+        onPointerCancel: () => { pressing.current = false; },
+        onPointerLeave: () => { pressing.current = false; },
+        // A tap sends its mouse events before the focus, after its pointerup: they hold the press as well.
+        onMouseDown: () => { pressing.current = true; },
+        onMouseUp: () => { pressing.current = false; },
+        onMouseLeave: () => { pressing.current = false; },
+    };
+    // A failure's message arrives above the pinned row and pushes the second row out of sight: a focus held there
+    // moves to the pinned row, where the message and the focus are both on screen.
+    React.useEffect(() => {
+        const root = rootRef.current;
+        if (!error || !compact || !root) return;
+        const held = document.activeElement;
+        if (held?.matches('.priorities-review-edit, .priorities-review-search') && root.contains(held)) {
+            root.querySelector<HTMLElement>('.chat-actions > button:not(.priorities-review-more):not(:disabled)')?.focus();
+        }
+    }, [error, compact]);
+    const showMore = () => {
+        const root = rootRef.current as HTMLDivElement;
+        // While a request runs the second row is disabled: the focus goes to a button that stays.
+        const target = root.querySelector<HTMLElement>('.priorities-review-edit:not(:disabled), .priorities-review-search:not(:disabled):not([aria-disabled="true"])')
+            ?? root.querySelector<HTMLElement>('.chat-actions > button:not(.priorities-review-more):not(:disabled)');
+        target?.focus();
+        revealSecondRow();
+    };
+    const note = (
+        <p className="priorities-scope-note">
+            {isSearch
+                ? 'These changes apply to this search only. They are not saved.'
+                : onApplySearchOnly
+                    ? 'Save these to your account, or use them for this search only.'
+                    : 'These changes will be saved to your account and used for matching.'}
+        </p>
+    );
+    const cancel = (
+        <button type="button" className="btn btn-sm btn-link text-light priorities-review-cancel"
+                onClick={onCancel} disabled={pending}>Cancel</button>
+    );
     return (
-        <div className="priorities-card priorities-review" data-testid={testId}
-             role="group" aria-labelledby={headingId}>
+        <div className={`priorities-card priorities-review${compact ? ' priorities-review-compact' : ''}`} data-testid={testId}
+             role="group" aria-labelledby={headingId} ref={rootRef}>
             <h3 id={headingId} className="h6 priorities-heading" tabIndex={-1} ref={headingRef}>
                 {heading}
             </h3>
             <span className="visually-hidden" role="status">
                 {changes.length === 1 ? '1 change to review' : `${changes.length} changes to review`}
             </span>
-            <p className="priorities-scope-note">
-                {isSearch
-                    ? 'These changes apply to this search only. They are not saved.'
-                    : onApplySearchOnly
-                        ? 'Save these to your account, or use them for this search only.'
-                        : 'These changes will be saved to your account and used for matching.'}
-            </p>
+            {!compact && note}
             {conflicts.length > 0 && (
                 <p className="pref-change-conflict" role="status" data-testid="priorities-review-conflicts">
                     <i className="fa-solid fa-code-merge me-1" aria-hidden="true"></i>
@@ -130,6 +201,7 @@ export default function ReviewChanges({
                     Nothing would change. Edit a priority to continue.
                 </p>
             )}
+            {compact && note}
             {error && (
                 <div className="pref-change-error" role="alert" data-testid="priorities-review-error">
                     <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
@@ -144,7 +216,10 @@ export default function ReviewChanges({
                     </button>
                 ) : (
                     <button type="button" className="btn btn-sm btn-primary"
-                            onClick={onApply} disabled={pending || changes.length === 0} aria-busy={pending}>
+                            // In the bounded block the button keeps the focus through the request, so a failed Apply leaves it there.
+                            onClick={() => { if (!(compact && pending)) onApply(); }}
+                            disabled={(pending && !compact) || changes.length === 0}
+                            aria-disabled={compact && pending ? true : undefined} aria-busy={pending}>
                         {pending ? (
                             <>
                                 <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
@@ -153,18 +228,29 @@ export default function ReviewChanges({
                         ) : (isSearch ? 'Apply to this search' : (applyLabel ?? 'Apply to account'))}
                     </button>
                 )}
+                {compact && cancel}
+                {moreBelow && (
+                    <button type="button" className="btn btn-sm btn-outline-light priorities-review-more"
+                            data-testid="priorities-review-more" aria-label="More options" onClick={showMore}>
+                        <i className="fa-solid fa-ellipsis" aria-hidden="true"></i>
+                        <span className="priorities-review-more-text">More</span>
+                    </button>
+                )}
                 {onEdit && (
-                    <button type="button" className="btn btn-sm btn-link text-light"
-                            onClick={onEdit} disabled={pending}>Edit</button>
+                    <button type="button" className="btn btn-sm btn-link text-light priorities-review-edit"
+                            onClick={onEdit} onFocus={revealOnFocus} {...press} disabled={pending}>Edit</button>
                 )}
                 {onApplySearchOnly && !isSearch && (
-                    <button type="button" className="btn btn-sm btn-outline-light"
-                            onClick={onApplySearchOnly} disabled={pending || changes.length === 0}>
+                    <button type="button" className="btn btn-sm btn-outline-light priorities-review-search"
+                            // In the bounded block the button keeps the focus through the request, as Apply does.
+                            onClick={() => { if (!(compact && pending)) onApplySearchOnly(); }}
+                            onFocus={revealOnFocus} {...press}
+                            disabled={(pending && !compact) || changes.length === 0}
+                            aria-disabled={compact && pending ? true : undefined}>
                         This search only
                     </button>
                 )}
-                <button type="button" className="btn btn-sm btn-link text-light"
-                        onClick={onCancel} disabled={pending}>Cancel</button>
+                {!compact && cancel}
             </div>
         </div>
     );

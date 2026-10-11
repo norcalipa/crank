@@ -99,6 +99,11 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         {selector: /^\.chat-confirm-dismiss$/, value: '1'},
         {selector: /^\.assistant-panel #job-search-chat > section\[data-scroll-owner='panel'\] > \.card-header$/, value: '4'},
         {selector: /^#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer$/, value: '3'},
+        // The priorities block, where it is pinned (data-pinned) while the
+        // panel body scrolls, sits above the transcript inside the assistant
+        // panel body only; the chat's pinned header (4) is offset below it
+        // (issue #480).
+        {selector: /^\.assistant-panel-body:has\(#job-search-chat > \[data-scroll-owner='panel'\]\) > \.priorities-sidebar\[data-pinned\]$/, value: '5'},
     ];
 
     // Splits a stylesheet into (selector, declarations) rules. Pairing both
@@ -467,5 +472,19 @@ describe('job-match figures, notices and contained transcript (issue #473 visual
         const rule = popupCss.split('\n').filter((line) => line.includes('.chat-bubble-assistant:has(.org-card)'));
         expect(rule).toHaveLength(1);
         expect(rule[0]).toMatch(/^@container assistant-panel \(max-width: 20rem\) \{ #job-search-chat \.chat-bubble-assistant:has\(\.org-card\) \{ max-width: 100% !important; \} \}$/);
+    });
+});
+
+describe('collapsed priorities row and review step (issue #480 adversarial review round 3)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+
+    it('puts the counts on their own line on phones up to 374px and in the 768-999px drawer', () => {
+        expect(popupCss).toMatch(
+            /@media \(max-width: 374\.98px\), \(min-width: 768px\) and \(max-width: 999\.98px\) \{\s*\.priorities-summary \{ flex-direction: column; \}/,
+        );
+    });
+
+    it('dims This search only while its request runs', () => {
+        expect(popupCss).toMatch(/\.priorities-review-search\[aria-disabled='true'\] \{ opacity: 0\.65; \}/);
     });
 });
