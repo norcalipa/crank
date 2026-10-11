@@ -671,7 +671,7 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         expect(notice()).toHaveAttribute('data-recheck', 'idle');
     });
 
-    test('a re-read that fails after a successful re-check shows the load error with focus on the heading', async () => {
+    test('a re-read that fails after a successful re-check keeps the list with a retry notice and the pressed control focused', async () => {
         let refreshed = false;
         global.fetch = jest.fn((url: string) => {
             if (url.includes('/api/job-matches/refresh/')) {
@@ -692,8 +692,10 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button');
         button.focus();
         fireEvent.click(button);
-        expect(await screen.findByTestId('job-match-error')).toHaveTextContent('We couldn’t load your job matches.');
-        await waitFor(() => expect(heading()).toHaveFocus());
+        expect(await screen.findByTestId('refresh-failed-notice')).toHaveTextContent('Couldn’t refresh.');
+        expect(screen.queryByTestId('job-match-error')).not.toBeInTheDocument();
+        expect(screen.getByTestId('ranked-job-matches')).toBeInTheDocument();
+        expect(button).toHaveFocus();
     });
 
     test('the header refresh re-checks when the notice is showing and keeps its focus', async () => {
@@ -716,15 +718,20 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         expect(screen.getAllByRole('button', {name: 'Refresh matches'})).toHaveLength(1);
     });
 
-    test('the stale banner alone still reloads without a recompute request and keeps focus', async () => {
+    test('the stale banner alone still re-reads without a recompute request and keeps focus on its button', async () => {
         const stale = {...settledJob(), revision: {stale: true, generated_at: '2026-09-22T08:00:00Z'}};
         const fetchMock = await renderRanked([stale]);
         expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument();
         const before = fetchMock.mock.calls.length;
-        fireEvent.click(within(screen.getByTestId('stale-notice')).getByRole('button', {name: 'Refresh matches'}));
+        const button = within(screen.getByTestId('stale-notice')).getByRole('button', {name: 'Check again'});
+        button.focus();
+        fireEvent.click(button);
         await waitFor(() => expect(fetchMock.mock.calls.length).toBe(before + 3));
         expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/refresh/'))).toBe(false);
-        await waitFor(() => expect(screen.getByRole('heading', {name: 'Your Job Matches'})).toHaveFocus());
+        // Still stale: the notice and its button stay, and so does focus.
+        await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+        expect(button).toBeInTheDocument();
+        expect(button).toHaveFocus();
     });
 
     test('the header refresh does not move focus to the heading', async () => {

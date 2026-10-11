@@ -35,7 +35,7 @@ const PANEL_STATUS_PAYLOADS: Record<string, Record<string, unknown>> = {
         message: (
             'Your matches come from the job sources that are working, but not '
             + 'every source is returning listings, so some openings may be '
-            + 'missing. Results refresh automatically.'
+            + 'missing.'
         ),
         actions: ['retry', 'explore_companies', 'suggest_company', 'help'],
         refreshing: true,

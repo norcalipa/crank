@@ -55,11 +55,12 @@ def _source_catalog_health(*, now, enabled_sources, freshness_window):
 
 
 def _coverage(*, now, freshness_window) -> dict | None:
-    """Bounded coverage facts over enabled sources, or None when not partial.
+    """Bounded coverage facts over enabled sources, or None when none degrade.
 
-    Partial coverage means at least one enabled source is delivering and at
-    least one is not (failing or stale), so results exist but may be
-    incomplete.
+    Partial coverage means at least one enabled source is not delivering
+    (failing or stale), so results exist but may be incomplete.  When every
+    enabled source is degraded, ``failing_sources == enabled_sources``: the
+    last-known results are all that is left (issue #485).
     """
     enabled_sources = list(
         JobSourceCatalog.objects.filter(enabled=True).order_by("pk")
@@ -70,7 +71,7 @@ def _coverage(*, now, freshness_window) -> dict | None:
     degraded = _source_catalog_health(
         now=now, enabled_sources=enabled_sources, freshness_window=freshness_window
     )
-    if not (0 < degraded < enabled_count):
+    if degraded == 0:
         return None
     return {"enabled_sources": enabled_count, "failing_sources": degraded}
 
@@ -483,13 +484,18 @@ def derive_state(
 
     if match_count > 0:
         if coverage is not None:
+            all_degraded = coverage["failing_sources"] >= coverage["enabled_sources"]
             return EmptyState(
                 state=PARTIAL_COVERAGE,
                 title="Coverage is limited right now",
                 message=(
-                    "Your matches come from the job sources that are working, "
-                    "but not every source is returning listings, so some "
-                    "openings may be missing. Results refresh automatically."
+                    "No job source is returning listings right now, so these "
+                    "are the last results we have and some openings may be "
+                    "missing."
+                    if all_degraded
+                    else "Your matches come from the job sources that are "
+                    "working, but not every source is returning listings, so "
+                    "some openings may be missing."
                 ),
                 actions=["retry", "explore_companies", "suggest_company", "help"],
                 staff_detail=(
@@ -510,6 +516,9 @@ def derive_state(
             message="You have job matches ready to review.",
             actions=[],
             refreshing=refreshing,
+            inventory=_inventory_facts(
+                now=now, active_listings_count=active_listings_count
+            ),
         )
 
     # Genuine evaluated zero-match: surface the user's own hard constraints
