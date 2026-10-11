@@ -6,7 +6,7 @@ import * as React from 'react';
 
 import {useTranscriptScroll} from './useTranscriptScroll';
 
-function Harness({assistantCount, extra = 0, loading = false, contentKey, band = false}: {assistantCount: number; extra?: number; loading?: boolean; contentKey?: string; band?: boolean}) {
+function Harness({assistantCount, extra = 0, loading = false, contentKey, band = false, log = true}: {assistantCount: number; extra?: number; loading?: boolean; contentKey?: string; log?: boolean; band?: boolean}) {
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: assistantCount + extra,
         assistantCount,
@@ -18,11 +18,13 @@ function Harness({assistantCount, extra = 0, loading = false, contentKey, band =
         <div className="assistant-panel-body" data-testid="panel">
             <section>
                 <div className="card-header" data-testid="header"/>
-                <div ref={historyRef} data-testid="log">
-                    <article data-testid="a1"/>
-                    <article data-testid="a2"/>
-                    <button data-testid="older-link">older</button>
-                </div>
+                {log && (
+                    <div ref={historyRef} data-testid="log">
+                        <article data-testid="a1"/>
+                        <article data-testid="a2"/>
+                        <button data-testid="older-link">older</button>
+                    </div>
+                )}
                 <div className="chat-footer" data-testid="footer">
                     {band ? <form data-testid="band"><textarea data-testid="composer"/></form> : <textarea data-testid="composer"/>}
                 </div>
@@ -229,6 +231,34 @@ describe('useTranscriptScroll', () => {
         scrollTo.mockClear();
         rerender(<Harness assistantCount={2} extra={1}/>);
         expect(scrollTo).toHaveBeenLastCalledWith({top: 3000, behavior: 'smooth'});
+    });
+
+    test('a reader who asked for reduced motion gets a jump, not a smooth scroll, when a message arrives', () => {
+        const matchMedia = window.matchMedia;
+        window.matchMedia = jest.fn().mockReturnValue({matches: true}) as unknown as typeof window.matchMedia;
+        try {
+            const {rerender} = render(<Harness assistantCount={2}/>);
+            const log = screen.getByTestId('log');
+            const scrollTo = jest.fn();
+            log.scrollTo = scrollTo;
+            metrics(log, {scrollHeight: 3000, scrollTop: 0, clientHeight: 200});
+            rerender(<Harness assistantCount={2} extra={1}/>);
+            expect(scrollTo).toHaveBeenLastCalledWith({top: 3000, behavior: 'auto'});
+        } finally {
+            window.matchMedia = matchMedia;
+        }
+    });
+
+    test('a viewport resize after the transcript has gone hides the jump pill', () => {
+        const {rerender} = render(<Harness assistantCount={1}/>);
+        const log = screen.getByTestId('log');
+        fireEvent.wheel(log);
+        metrics(log, {scrollHeight: 1000, scrollTop: 0, clientHeight: 200});
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        rerender(<Harness assistantCount={1} log={false}/>);
+        act(() => { fireEvent(window, new Event('resize')); });
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
     });
 
     test('a viewport resize keeps a following reader at the end and leaves an away reader in place', () => {
