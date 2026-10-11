@@ -600,12 +600,14 @@ test.describe('one transcript scroller (issue #483)', () => {
         });
     }
 
-    test('below the floor the panel body scrolls as a plain scroller, starting at its top, with nothing pinned', async ({page}) => {
+    test('below the floor the panel body scrolls as a plain scroller, keeping the focused composer whole, with nothing pinned', async ({page}) => {
         await page.setViewportSize({width: 320, height: 420});
         await loadPanel(page, 'priorities=400&open=1');
         const reading = await settledPanel(page);
         expect(reading.bodyScrollRange).toBeGreaterThan(1);
-        expect(reading.bodyScrollTop).toBe(0);
+        // The composer takes focus on load, so the body is scrolled only by what cuts the composer band off.
+        expect(reading.composerInViewport, 'the focused composer is whole').toBe(true);
+        expect(reading.bodyScrollTop).toBeLessThan(40);
         expect(reading.blockHeight, 'the open block keeps 11rem').toBeGreaterThanOrEqual(176);
         expect(reading.logHeight).toBeGreaterThanOrEqual(70);
         expect(reading.positions).not.toContain('sticky');
