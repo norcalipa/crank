@@ -119,7 +119,7 @@ class ClientAddressTests(SimpleTestCase):
         expected = self.resolve("2001:db8:1:2::1")
         self.assertEqual(self.resolve("2001:DB8:1:2::ABCD"), expected)
         self.assertEqual(self.resolve("2001:0db8:0001:0002:0000:0000:0000:0001"), expected)
-        self.assertEqual(self.resolve("::5").bucket, "::/64")
+        self.assertEqual(self.resolve("2001:db8::5").bucket, "2001:db8::/64")
 
     def test_different_addresses_have_different_keys(self):
         self.assertNotEqual(self.resolve("198.51.100.7").key, self.resolve("198.51.100.8").key)
@@ -160,9 +160,67 @@ class ClientAddressTests(SimpleTestCase):
                 self.assertIsNone(self.resolve(value))
 
     def test_a_45_character_literal_is_accepted(self):
-        value = "0000:0000:0000:0000:0000:ffff:100.100.100.100"
+        value = "2001:0db8:0000:0000:0000:0000:100.100.100.100"
         self.assertEqual(len(value), module.MAX_ADDRESS_LENGTH)
-        self.assertEqual(self.resolve(value).bucket, "100.100.100.100")
+        self.assertEqual(self.resolve(value).bucket, "2001:db8::/64")
+
+    def test_special_purpose_addresses_are_not_identified(self):
+        """No visitor has one of these, so none may become a shared bucket."""
+        cases = (
+            "0.0.0.0", "0.1.2.3", "10.0.0.1", "10.255.255.255", "100.64.0.1",
+            "100.127.255.254", "127.0.0.1", "127.255.255.254", "169.254.0.1",
+            "172.16.0.1", "172.31.255.254", "192.168.0.1", "192.168.255.254",
+            "224.0.0.1", "239.255.255.250", "240.0.0.1", "255.255.255.255",
+            "::", "::1", "::2", "::10.0.0.1", "::198.51.100.7",
+            "::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1",
+            "::ffff:0.0.0.0", "0:0:0:0:0:ffff:a9fe:1", "fc00::1", "fd12:3456::1",
+            "fdff:ffff:ffff:ffff::1", "fe80::1", "febf::1", "ff02::1",
+        )
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertEqual(module._bucket(value), (None, "special"))
+                self.assertIsNone(self.resolve(value))
+
+    def test_addresses_next_to_special_ranges_are_identified(self):
+        cases = {
+            "1.0.0.0": "1.0.0.0",
+            "9.255.255.255": "9.255.255.255",
+            "11.0.0.0": "11.0.0.0",
+            "100.63.255.255": "100.63.255.255",
+            "100.128.0.0": "100.128.0.0",
+            "126.255.255.255": "126.255.255.255",
+            "128.0.0.0": "128.0.0.0",
+            "169.253.255.255": "169.253.255.255",
+            "169.255.0.0": "169.255.0.0",
+            "172.15.255.255": "172.15.255.255",
+            "172.32.0.0": "172.32.0.0",
+            "192.167.255.255": "192.167.255.255",
+            "192.169.0.0": "192.169.0.0",
+            "223.255.255.255": "223.255.255.255",
+            "100::1": "100::/64",
+            "fbff::1": "fbff::/64",
+            "fe00::1": "fe00::/64",
+            "fe7f::1": "fe7f::/64",
+            "fec0::1": "fec0::/64",
+            "feff::1": "feff::/64",
+            # Documentation ranges stay usable in tests and captures.
+            "192.0.2.1": "192.0.2.1",
+            "203.0.113.9": "203.0.113.9",
+            "2001:db8::1": "2001:db8::/64",
+        }
+        for value, bucket in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(module._bucket(value), (bucket, None))
+
+    def test_special_purpose_networks_are_the_documented_list(self):
+        self.assertEqual(
+            [str(network) for network in module.SPECIAL_PURPOSE_NETWORKS],
+            [
+                "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+                "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4",
+                "240.0.0.0/4", "::/8", "fc00::/7", "fe80::/10", "ff00::/8",
+            ],
+        )
 
     def test_non_string_values_are_missing(self):
         for value in (None, 5, b"198.51.100.7", ["198.51.100.7"]):
@@ -187,6 +245,7 @@ class ClientAddressTests(SimpleTestCase):
             ({}, "missing"),
             ({HEADER: "198.51.100.7, 198.51.100.8"}, "multiple"),
             ({HEADER: "not-an-address-538"}, "invalid"),
+            ({HEADER: "127.0.0.1"}, "special"),
         )
         for meta, reason in cases:
             cache.clear()

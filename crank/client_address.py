@@ -30,6 +30,32 @@ MAX_ADDRESS_LENGTH = 45
 #: One subscriber normally holds at least a /64 and can use any address in it.
 IPV6_BUCKET_PREFIX = 64
 
+#: Addresses no visitor can have on the public Internet: unspecified,
+#: private, shared (carrier NAT, also used by overlay networks), loopback,
+#: link-local, multicast and reserved space. The trusted edge never reports
+#: one, so a request carrying one arrived by another path or through a
+#: misconfigured edge and is treated as not identified: it must never put
+#: unrelated clients into one shared bucket.
+SPECIAL_PURPOSE_NETWORKS = tuple(
+    ipaddress.ip_network(network)
+    for network in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        # ``::``, ``::1`` and addresses with an IPv4 address embedded.
+        "::/8",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+    )
+)
+
 WARNING_CACHE_KEY = "client-address-unavailable-warning"
 WARNING_INTERVAL_SECONDS = 10 * 60
 
@@ -67,6 +93,11 @@ def _bucket(value):
         return None, "invalid"
     if address.version == 6 and address.ipv4_mapped is not None:
         address = address.ipv4_mapped
+    if any(
+        address.version == network.version and address in network
+        for network in SPECIAL_PURPOSE_NETWORKS
+    ):
+        return None, "special"
     if address.version == 4:
         return str(address), None
     network = ipaddress.IPv6Network((int(address), IPV6_BUCKET_PREFIX), strict=False)

@@ -107,34 +107,36 @@ def check_client_ip_source(app_configs=None, **kwargs) -> list[Warning]:
     from crank.client_address import TRUSTED_HEADERS
 
     value = getattr(settings, "CLIENT_IP_SOURCE", "")
-    if value == "":
-        return []
     hint = (
         "The value is ignored and per-address limits stay off. Allowed "
         "values: empty, or one of "
         + ", ".join(sorted(TRUSTED_HEADERS))
         + ". See docs/runbook-client-address.md."
     )
-    warnings = []
-    if not isinstance(value, str) or value not in TRUSTED_HEADERS:
-        warnings.append(
-            Warning(
-                "CLIENT_IP_SOURCE is not a recognised client address source.",
-                hint=hint,
-                obj=settings,
-                id="crank.W003",
-            )
-        )
     if str(getattr(settings, "ENV", "")).strip().lower() != "prod":
-        warnings.append(
+        # Only the production settings read the variable, so outside
+        # production the setting is normally empty whatever the environment
+        # holds: look at the environment itself.
+        if value == "" and not os.environ.get("CLIENT_IP_SOURCE", "").strip():
+            return []
+        return [
             Warning(
                 "CLIENT_IP_SOURCE is set outside production.",
                 hint=hint,
                 obj=settings,
                 id="crank.W004",
             )
+        ]
+    if value == "" or (isinstance(value, str) and value in TRUSTED_HEADERS):
+        return []
+    return [
+        Warning(
+            "CLIENT_IP_SOURCE is not a recognised client address source.",
+            hint=hint,
+            obj=settings,
+            id="crank.W003",
         )
-    return warnings
+    ]
 
 
 __all__ = [
