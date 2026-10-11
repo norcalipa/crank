@@ -117,8 +117,37 @@ class ReleaseDiagnosticsViewTests(TestCase):
         import re
 
         html = response.content.decode()
-        rows = dict(re.findall(r'<tr><th scope="row">([^<]+)</th><td>([^<]*)</td></tr>', html))
+        rows = dict(
+            re.findall(
+                r'<tr><th scope="row">([^<]+)</th><td(?: class="[^"]*")?>([^<]*)</td></tr>', html
+            )
+        )
         return rows["Client address source"], rows["Client address for this request"]
+
+    @override_settings(
+        ENV="prod",
+        CLIENT_IP_SOURCE="cloudflare",
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    )
+    def test_the_address_cell_may_wrap_on_a_narrow_screen(self):
+        # The longest bucket (four full groups and "/64") is one unbreakable
+        # word; without this the table is wider than a 320 px screen.
+        self.client.force_login(self.staff)
+        response = self.client.get(
+            reverse("release-diagnostics"),
+            HTTP_CF_CONNECTING_IP="2001:db8:aaaa:bbbb:1:2:3:4",
+        )
+        self.assertContains(
+            response,
+            '<th scope="row">Client address for this request</th>'
+            '<td class="release-diagnostics-address">2001:db8:aaaa:bbbb::/64</td>',
+        )
+        html = " ".join(response.content.decode().split())
+        self.assertIn(
+            "@media (max-width: 374.98px) { .release-diagnostics-address "
+            "{ overflow-wrap: anywhere; } }",
+            html,
+        )
 
     def test_client_address_rows_default_to_off(self):
         self.client.force_login(self.staff)
