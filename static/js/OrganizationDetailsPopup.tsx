@@ -3,16 +3,10 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
-import CompanyDetails, {
-    COMPANY_ID_PLACEHOLDER, CompanyDetailsOrganization, CorrectionSource, companyChatUrl, companySignInUrl,
-} from './company/CompanyDetails';
+import CompanyDetails, {CompanyDetailsOrganization, CorrectionSource} from './company/CompanyDetails';
 import {openSuggestCompany} from './suggestCompany/controller';
 import {openAssistant} from './workspace/store';
 import {WORKSPACE_FOCUS_EVENT} from './workspace/types';
-
-// Kept as this module's exports for its existing importers; the definitions
-// moved with the content they belong to (issue #486).
-export {COMPANY_ID_PLACEHOLDER, companyChatUrl, companySignInUrl};
 
 type Organization = CompanyDetailsOrganization;
 
