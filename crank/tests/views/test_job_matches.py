@@ -287,6 +287,8 @@ class CommittedGenerationReadGateTests(TestCase):
             base_url="https://jobs.example.test",
             approval_state=JobSourceCatalog.ApprovalState.APPROVED,
             enabled=True,
+            # Never having succeeded would read as degraded (issue #485).
+            last_crawl_at=timezone.now(),
         )
         now = timezone.now()
         self.listing = JobListing.all_objects.create(

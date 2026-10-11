@@ -130,6 +130,9 @@ class JobMatchStatusViewTests(TestCase):
 
     def test_ok_state_with_matches(self):
         source = self.make_source(enabled=True)
+        # A source that has never succeeded is degraded (issue #485).
+        source.last_crawl_at = timezone.now()
+        source.save()
         listing = self.make_listing(source, "Active")
         prefs = {
             "compensation": {"minimum_salary": 100000, "currency": "USD", "equity_minimum_percent": None},
@@ -326,6 +329,7 @@ class RefreshingWithResultsTests(TestCase):
             adapter_key="synthetic.v1",
             base_url="https://jobs.example.test",
             enabled=True,
+            last_crawl_at=timezone.now(),
         )
         listing = self.make_listing("Active")
         self.make_preference()
@@ -570,6 +574,8 @@ class PartialCoverageTests(TestCase):
     def test_ok_state_carries_inventory_with_last_success(self):
         from crank.models.crawl_run import CrawlRun
 
+        self.healthy.approval_state = JobSourceCatalog.ApprovalState.APPROVED
+        self.healthy.save()
         CrawlRun.objects.create(
             source_type=CrawlRun.SourceType.JOB,
             job_source=self.degraded,
