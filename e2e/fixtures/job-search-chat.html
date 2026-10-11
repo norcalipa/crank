@@ -8,6 +8,15 @@
     <title>Job Search Chat — E2E fixture</title>
     <link rel="stylesheet" href="/static/css/bootstrap.min.css">
     <link rel="stylesheet" href="/static/css/popup.css">
+    <!-- This fixture stands in for the assistant panel, not for the workspace shell: the rail keeps its full
+         width beside the docked panel, as mobile-width.spec.ts pins it for this page. The real page collapses
+         the rail beside an open panel below 1440px. -->
+    <style>
+        @media (min-width: 1280px) and (max-width: 1439.98px) {
+            body.assistant-docked { --app-rail-width: 240px; }
+            body.assistant-docked .app-nav-rail { width: 240px; }
+        }
+    </style>
 </head>
 <body>
     <a href="#main-content" class="skip-to-content" data-skip-to-content>Skip to content</a>
