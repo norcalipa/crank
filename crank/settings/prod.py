@@ -58,6 +58,11 @@ ACCOUNT_DEFAULT_HTTP_PROTOCOL = 'https'
 # so is_secure() / build_absolute_uri() report https and the OAuth redirect_uri
 # stays consistent between login initiation and the token-exchange callback.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# Named source of the trusted client address ("cloudflare" or empty). Leave it
+# empty until the operator gate in docs/runbook-client-address.md has passed:
+# anyone who can reach the pod without going through Cloudflare can forge the
+# header this turns on.
+CLIENT_IP_SOURCE = os.environ.get("CLIENT_IP_SOURCE", "").strip().lower()
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

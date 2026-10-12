@@ -1,6 +1,5 @@
-/* Expose the device home-indicator inset (iPhone X+) to JS: env() is not
-   directly readable via getComputedStyle, so surface it through a custom
-   property that the viewport-reactive chat shell reads in measureCardHeight. */
+/* Name the device home-indicator inset (iPhone X+) once, as a custom property,
+   so the dock and launcher rules below share it. */
 :root {
     --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
 
@@ -1195,7 +1194,7 @@ body.app-nav-drawer-open {
     /* Tighten the gap between the yielding history and the bottom stack
        (overrides the .mb-3 utility, which is !important). */
     #job-search-chat .card-body [role='log'] {
-        margin-bottom: .5rem !important;
+        margin-bottom: .25rem !important;
     }
 
     /* Keep the notice itself as compact as the touch-target contract allows. */
@@ -2350,18 +2349,22 @@ body.app-nav-drawer-open {
     padding: .75rem 1rem;
 }
 
+/* One scroller (issue #483): the chat takes the room the panel has left and
+   never shrinks below its own bars, so the transcript is the only element
+   that scrolls. The panel body's own overflow is a last resort for panels too
+   short for the bars. */
 .assistant-panel-body #job-search-chat {
     display: flex;
     flex-direction: column;
-    flex: 1 1 auto;
-    min-height: 0;
+    flex: 1 0 auto;
 }
 
-/* Panel-scroll mode (issue #483): the panel body is the one scroller, so the
-   chat keeps its natural height instead of shrinking inside it. */
-.assistant-panel-body #job-search-chat:has(> [data-scroll-owner='panel']) {
-    flex: 0 0 auto;
-    min-height: auto;
+/* The card fills the chat and ends where the visual viewport ends: an
+   on-screen keyboard that does not resize the page takes
+   --chat-keyboard-inset (measured by the chat) off its bottom. */
+.assistant-panel-body #job-search-chat > section.card {
+    flex: 1 1 auto;
+    margin-bottom: var(--chat-keyboard-inset, 0px);
 }
 
 /* Shape-matched loading skeleton for the lazy chat chunk: mirrors the
@@ -2445,8 +2448,8 @@ body.app-nav-drawer-open {
         padding: 1rem;
     }
 
-    /* Anchored composer (visual review #472 round 2, item 6): a sticky
-       surface with a top border closes the dead field between the
+    /* Anchored composer (visual review #472 round 2, item 6): a surface
+       with a top border closes the dead field between the
        conversation and the input so the layout reads as one continuous
        column flowing into the composer. */
     body.assistant-docked #job-search-chat form {
@@ -3087,7 +3090,17 @@ body.app-nav-drawer-open {
     }
 
     .assistant-panel--sheet #job-search-chat .card-header {
-        padding: .5rem .75rem;
+        padding: .25rem .75rem;
+    }
+
+    /* Top only: the bottom padding is part of what the composer band's
+       negative margin reaches across to sit flush with the sheet's edge. */
+    .assistant-panel--sheet #job-search-chat .card-body {
+        padding-top: .25rem;
+    }
+
+    .assistant-panel--sheet .priorities-sidebar {
+        padding-block: .25rem .5rem;
     }
 }
 
@@ -3390,7 +3403,7 @@ body.assistant-open .app-content .table-responsive,
 }
 
 /* Inline panels overlay the transcript instead of resizing it, so opening one
-   never changes the scroll owner or pushes the composer away (issue #483). */
+   never moves the composer or changes the transcript's height (issue #483). */
 #job-search-chat .card-header {
     position: relative;
     z-index: 4;
@@ -3515,9 +3528,32 @@ body.assistant-open .app-content .table-responsive,
     min-height: 0;
 }
 
+/* The transcript is the chat's one scroller. Its flex-basis is a length, not
+   auto or a percentage, so the card's minimum height is its header and footer
+   and never the whole conversation. */
+#job-search-chat .chat-transcript {
+    flex: 1 1 0px;
+    min-height: 0;
+    overflow-y: auto;
+    margin-bottom: .25rem;
+}
+
+@media (min-width: 768px) {
+    .assistant-panel #job-search-chat .card-body {
+        padding-top: .5rem;
+    }
+}
+
+/* Docked and drawer: the transcript's box and the composer band read as two
+   boxes. Short panels keep the tighter gap for the transcript. */
+@media (min-width: 768px) and (min-height: 481px) {
+    .assistant-panel #job-search-chat .chat-transcript {
+        margin-bottom: .5rem;
+    }
+}
+
 /* The jump pill lives in the footer and floats over the transcript bottom, so
-   showing it never takes layout height and, in panel-scroll mode, it rides
-   with the sticky composer band. */
+   showing it never takes layout height. */
 #job-search-chat .chat-footer {
     position: relative;
 }
@@ -3526,7 +3562,9 @@ body.assistant-open .app-content .table-responsive,
     position: absolute;
     left: 0;
     right: 0;
-    bottom: calc(100% + 1.5rem);
+    /* An on-screen keyboard leaves the transcript little room: the pill drops
+       toward the footer by up to 1.5rem so it does not slide under the header. */
+    bottom: calc(100% + 1.5rem - min(1.5rem, var(--chat-keyboard-inset, 0px)));
     margin: 0;
     pointer-events: none;
     z-index: 2;
@@ -3545,53 +3583,6 @@ body.assistant-open .app-content .table-responsive,
 #job-search-chat .chat-jump-row .btn {
     pointer-events: auto;
     box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .5);
-}
-
-/* Panel-scroll mode: pin the header (with More) and the composer band (which
-   carries the jump pill) so they stay reachable whatever the reader has scrolled to. */
-.assistant-panel #job-search-chat > section[data-scroll-owner='panel'] > .card-header {
-    position: sticky;
-    top: 0;
-    z-index: 4;
-    background: #212529;
-}
-
-/* The sticky bars must sit flush with the scrollport, so the scroller keeps no
-   block padding of its own while the panel body scrolls. */
-.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) {
-    padding-block: 0;
-}
-
-.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > :first-child {
-    margin-top: .75rem;
-}
-
-/* In panel mode the sticky header can sit right above the band, so a pill
-   floating above the band would be painted over by it. Keep it in the band's
-   own flow instead. */
-#job-search-chat > [data-scroll-owner='panel'] .chat-footer > .chat-jump-row {
-    position: static;
-    margin: 0 0 .5rem;
-}
-
-#job-search-chat > [data-scroll-owner='panel'] .chat-footer {
-    padding-bottom: calc(.5rem + env(safe-area-inset-bottom));
-    position: sticky;
-    bottom: 0;
-    z-index: 3;
-    padding-top: .5rem;
-    background: #111722;
-    border-top: 1px solid rgba(255, 255, 255, .10);
-}
-
-/* Scroll-into-view of transcript content stays clear of the pinned bands. It is
-   a margin on the content, not scroll-padding on the panel body: padding would
-   also scroll the panel whenever focus lands on something inside a band. The
-   headings and tabindex targets the assistant focuses (the save card) are
-   included, not just links and buttons. */
-#job-search-chat > [data-scroll-owner='panel'] [role='log'] :is(article, a, button, h3, h4, [tabindex]) {
-    scroll-margin-top: var(--chat-band-top, 0);
-    scroll-margin-bottom: var(--chat-band-bottom, 0);
 }
 
 #job-search-chat .chat-loading-status {
@@ -4087,70 +4078,39 @@ span.priority-chip-button { cursor: default; }
 }
 /* Sidebar: one collapsed summary row; every expanded step is bounded to 60% of
    the panel body and scrolls inside, so the conversation keeps its height.
-   The bound also leaves the chat a floor. The chat card needs 20rem to scroll
-   its own transcript; with less the panel body scrolls and the open block is
-   pinned above the chat. A floor between the two would leave the panel a few
-   stray pixels of scroll, so the floor steps from one to the other:
-   - sheets: 17rem (the block gets the room, the panel scrolls) until the
-     panel is tall enough to give the chat its 20rem as well (42.5rem);
-   - wider panels: 20.5rem, and where the 11rem minimum cannot leave that
-     (under 31.5rem) the block takes 13.5rem and the panel scrolls. */
-.assistant-panel-body { --priorities-body-pad: 0px; }
+   The chat below never shrinks under its own bars (issue #483), so where room
+   is short the open block is what gives way, down to 11rem. */
 .priorities-sidebar {
-    --priorities-room: calc(100% - var(--priorities-body-pad));
-    --priorities-chat-floor: calc(17rem + clamp(0px, (var(--priorities-room) - 42.5rem) * 999, 3rem));
-    --priorities-min: 11rem;
     flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     min-height: 0;
     overflow-y: auto;
     max-height: 60%;
-    max-height: min(60%, max(var(--priorities-min), calc(var(--priorities-room) - var(--priorities-chat-floor))));
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid #495057;
     margin-bottom: 0;
 }
-@media (min-width: 768px) {
-    .priorities-sidebar {
-        --priorities-chat-floor: 20.5rem;
-        --priorities-min: calc(11rem + clamp(0px, (31.5rem - var(--priorities-room)) * 999, 2.5rem));
-        padding-inline: 1rem;
-    }
+.priorities-sidebar:has(.priorities-scroll) {
+    flex-shrink: 1;
+    min-height: min(11rem, 100%);
 }
-/* Panel-scroll mode drops the body's block padding, which the percentages
-   resolve against: take it off so the bound is the same in both modes, and
-   give the block the dropped top padding back so it does not move. */
-.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) { --priorities-body-pad: 1rem; }
-@media (min-width: 768px) {
-    .assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) { --priorities-body-pad: 1.5rem; }
-    body.assistant-docked .assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) { --priorities-body-pad: 2rem; }
+/* While the block is open the transcript under it keeps a few lines. */
+.assistant-panel-body:has(> .priorities-sidebar .priorities-scroll) #job-search-chat .chat-transcript {
+    min-height: 4.5rem;
 }
-.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > .priorities-sidebar { margin-top: calc(var(--priorities-body-pad) / 2); }
+@media (min-width: 768px) {
+    .priorities-sidebar { padding-inline: 1rem; }
+}
 @media (pointer: fine) {
     .priorities-sidebar .priorities-actions .btn { min-height: 2.25rem; }
 }
-/* When the chat does not fit under the block the panel body scrolls. The open
-   block, and the row while it holds the focus, stay pinned where that leaves
-   the chat room (data-pinned, set by the component); otherwise they scroll
-   away with the panel. Pinned, the block keeps the offset it had at rest. */
-.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > .priorities-sidebar[data-pinned] {
-    position: sticky;
-    top: calc(var(--priorities-body-pad) / 2);
-    z-index: 5;
-    background: var(--bs-body-bg);
-    box-shadow: 0 calc(var(--priorities-body-pad) / -2) 0 var(--bs-body-bg);
-}
-/* The chat's own pinned header then sits below the block, never under it. */
-.assistant-panel-body:has(> .priorities-sidebar[data-pinned]) #job-search-chat > section[data-scroll-owner='panel'] > .card-header {
-    top: calc(var(--priorities-open-h, 0px) + var(--priorities-body-pad) / 2);
-}
-.assistant-panel-body:has(> .priorities-sidebar[data-pinned]) #job-search-chat > [data-scroll-owner='panel'] [role='log'] :is(article, a, button, h3, h4, [tabindex]) {
-    scroll-margin-top: calc(var(--chat-band-top, 0px) + var(--priorities-open-h, 0px) + var(--priorities-body-pad) / 2);
-}
 .priorities-sidebar > * { flex: 0 0 auto; }
 /* The one scroller of the block; it contains the chips' hidden text, so the section itself never scrolls. */
-.priorities-sidebar .priorities-scroll { position: relative; flex: 1 1 auto; min-height: 0; max-height: none; overflow-x: hidden; }
+.priorities-sidebar .priorities-scroll { position: relative; flex: 1 1 auto; min-height: 0; max-height: none; overflow-x: hidden; isolation: isolate; }
+/* The pinned footer paints over the fields that scroll under it (Bootstrap lifts an input group's button). The
+   scroller above is its own stacking context, so the shared token orders nothing outside the block. */
+.priorities-sidebar .priorities-footer { z-index: var(--z-assistant); }
 /* A field that takes the focus is scrolled clear of the editor's pinned footer (44px button, padding, rule), not
    under it. Only the editor: the review's pinned buttons are themselves in that band and would scroll its list. */
 .priorities-scroll:has(> .priorities-editor) { scroll-padding-bottom: calc(2.75rem + 1.5rem); }
@@ -4158,6 +4118,21 @@ span.priority-chip-button { cursor: default; }
 /* The shortest open block (11rem) shows the editor's first field whole above its pinned footer. */
 .priorities-sidebar .priorities-legend { margin-bottom: 0; }
 .priorities-sidebar .priorities-field { gap: 0.125rem; }
+@media (max-height: 480px) {
+    /* Short panels: the collapsed row is one line. Its summary stays in the toggle's accessible name. */
+    .assistant-panel-body > .priorities-sidebar { padding-block: 0 .25rem; }
+    .priorities-sidebar .priorities-summary-toggle[aria-expanded='false'] .priorities-summary {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
+}
 @media (max-height: 420px) {
     /* With a keyboard up the block is 10rem or less: the title's line goes to the first field (the form keeps its name). */
     .priorities-sidebar .priorities-step-title {
@@ -4255,7 +4230,6 @@ span.priority-chip-button { cursor: default; }
     border-top: 1px solid #495057;
     box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.8);
 }
-.assistant-panel-body #job-search-chat { flex: 0 0 auto; }
 .priorities-main .priorities-scroll,
 .priorities-main .priorities-review,
 .priorities-main .priorities-applied,
@@ -4678,20 +4652,68 @@ span.priority-chip-button { cursor: default; }
     padding-inline: .25rem;
 }
 
+/* Short panels (a keyboard up, a phone on its side): the transcript gets the
+   line the disclaimer takes. It stays for assistive technology and returns
+   above 480px. */
+@media (max-height: 480px) {
+    #job-search-chat form .chat-disclaimer {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
+
+    /* The transcript can be under 64px here: the pill sits on the footer's top
+       edge so its centre stays clear of the chat header, which is stacked above. */
+    #job-search-chat .chat-footer > .chat-jump-row {
+        bottom: 100%;
+    }
+
+    /* The More menu opens beside its own button, not over it, so the button
+       stays pressable to close it; it scrolls inside itself, so every item is
+       reachable without the panel body moving. */
+    .chat-more-menu {
+        top: 0;
+        right: calc(100% + .25rem);
+        min-width: 0;
+        width: max-content;
+        max-width: calc(100cqw - 7.5rem);
+        max-height: calc(100vh - 11rem);
+        max-height: calc(100dvh - 11rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+
+    /* The 300px drawer has no room beside the button for the items to stay on
+       one line; below it they do, and the button stays uncovered. */
+    .assistant-panel--drawer .chat-more-menu {
+        top: calc(100% + .25rem);
+        right: 0;
+        min-width: 14rem;
+        width: auto;
+        max-width: calc(100vw - 2rem);
+        max-height: calc(100vh - 14rem);
+        max-height: calc(100dvh - 14rem);
+    }
+
+    /* The empty state's lead fits the few lines a short transcript has. */
+    #job-search-chat .empty-history-lead {
+        font-size: .875rem;
+        line-height: 1.3;
+    }
+}
+
 /* Shortest sheets (320x640): win back transcript height and keep panels
    above the composer band. */
 @media (max-width: 340px) {
     .assistant-panel--sheet #job-search-chat .chat-pref-alert {
         padding: .25rem .5rem;
         margin-bottom: .25rem;
-    }
-
-    .assistant-panel--sheet .priorities-sidebar {
-        padding-block: .25rem .5rem;
-    }
-
-    .assistant-panel--sheet #job-search-chat .card-header {
-        padding-block: .25rem;
     }
 
     .assistant-panel--sheet #job-search-chat form {
@@ -4703,7 +4725,6 @@ span.priority-chip-button { cursor: default; }
     }
 
     .assistant-panel--sheet #job-search-chat .chat-transcript {
-        margin-bottom: .5rem !important;
         padding: .5rem !important;
     }
 }

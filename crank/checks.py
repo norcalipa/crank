@@ -97,8 +97,51 @@ def check_capability_config(app_configs=None, **kwargs) -> list[Warning]:
     ]
 
 
+@register()
+def check_client_ip_source(app_configs=None, **kwargs) -> list[Warning]:
+    """Warn when ``CLIENT_IP_SOURCE`` is set but will be ignored (issue #538).
+
+    Both cases are warnings so a typo cannot stop new pods from starting: the
+    value is ignored and no header is read as a client address.
+    """
+    from crank.client_address import TRUSTED_HEADERS
+
+    value = getattr(settings, "CLIENT_IP_SOURCE", "")
+    hint = (
+        "The value is ignored and per-address limits stay off. Allowed "
+        "values: empty, or one of "
+        + ", ".join(sorted(TRUSTED_HEADERS))
+        + ". See docs/runbook-client-address.md."
+    )
+    if str(getattr(settings, "ENV", "")).strip().lower() != "prod":
+        # Only the production settings read the variable, so outside
+        # production the setting is normally empty whatever the environment
+        # holds: look at the environment itself.
+        if value == "" and not os.environ.get("CLIENT_IP_SOURCE", "").strip():
+            return []
+        return [
+            Warning(
+                "CLIENT_IP_SOURCE is set outside production.",
+                hint=hint,
+                obj=settings,
+                id="crank.W004",
+            )
+        ]
+    if value == "" or (isinstance(value, str) and value in TRUSTED_HEADERS):
+        return []
+    return [
+        Warning(
+            "CLIENT_IP_SOURCE is not a recognised client address source.",
+            hint=hint,
+            obj=settings,
+            id="crank.W003",
+        )
+    ]
+
+
 __all__ = [
     "check_capability_config",
+    "check_client_ip_source",
     "check_job_search_provider",
     "is_non_dev_environment",
 ]

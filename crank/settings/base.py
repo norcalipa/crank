@@ -183,6 +183,15 @@ JOB_SEARCH_TURN_MAX_ATTEMPTS = int(os.environ.get("JOB_SEARCH_TURN_MAX_ATTEMPTS"
 JOB_SEARCH_TURN_LEASE_SECONDS = int(os.environ.get("JOB_SEARCH_TURN_LEASE_SECONDS", "300"))
 COMPANY_REQUEST_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_REQUEST_RATE_LIMIT_PER_HOUR", "5"))
 COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", "10"))
+COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", "60"))
+# Per client address across all accounts (issue #538). These apply only while
+# a trusted client address is resolved; see CLIENT_IP_SOURCE below.
+COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR", "20"))
+COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", "120"))
+# Named source of the trusted client address. Empty means none: no header is
+# ever read as a client address. Only crank/settings/prod.py reads this from
+# the environment; see docs/runbook-client-address.md before setting it.
+CLIENT_IP_SOURCE = ""
 JOB_SEARCH_PROVIDER = os.environ.get("JOB_SEARCH_PROVIDER", "demo")
 REDIS_MASTER_URL = os.environ.get("REDIS_MASTER_URL", "redis://redis-master:6379/0")
 

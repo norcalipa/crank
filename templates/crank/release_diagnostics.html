@@ -3,6 +3,13 @@
 {% extends "base.html" %}
 {% block head_title %}Release Diagnostics — CRank{% endblock %}
 {% block content %}
+<style>
+  /* An IPv6 bucket is one unbreakable word. From 375 px up it fits on one
+     line; below that the table has no room for it, so it may wrap. */
+  @media (max-width: 374.98px) {
+    .release-diagnostics-address { overflow-wrap: anywhere; }
+  }
+</style>
 <div class="container mt-4 readable-page-container">
     <h1>Release Diagnostics</h1>
     <p class="lead">Deploy-integrity signals for the currently running release. Secrets and user content are never shown.</p>
@@ -45,6 +52,8 @@
             <tr><th scope="row">LLM configured</th><td>{{ diagnostics.config.llm_configured }}</td></tr>
             <tr><th scope="row">Job pipeline enabled</th><td>{{ diagnostics.config.job_pipeline_enabled }}</td></tr>
             <tr><th scope="row">Crawl scheduling enabled</th><td>{{ diagnostics.config.crawl_scheduling_enabled }}</td></tr>
+            <tr><th scope="row">Client address source</th><td>{{ diagnostics.config.client_ip_source }}</td></tr>
+            <tr><th scope="row">Client address for this request</th><td class="release-diagnostics-address">{{ client_address_text }}</td></tr>
         </tbody>
     </table>
 

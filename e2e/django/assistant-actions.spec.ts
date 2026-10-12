@@ -23,18 +23,11 @@ async function ask(page: Page, text: string): Promise<void> {
 }
 
 // The adopted #542 rule: the jump pill shows exactly when the reader is more
-// than 48px from the bottom of whichever element scrolls the transcript.
+// than 48px from the bottom of the transcript, the only element that scrolls.
 async function expectPillFollowsPosition(page: Page): Promise<void> {
     await expect.poll(async () => {
         const away = await page.evaluate(() => {
             const log = document.querySelector('[role="log"]') as HTMLElement;
-            const panel = log.closest('.assistant-panel-body') as HTMLElement | null;
-            const owner = document.querySelector('#job-search-chat > [data-scroll-owner]')?.getAttribute('data-scroll-owner');
-            if (owner === 'panel' && panel) {
-                // Panel mode: the log's bottom edge relative to the pinned footer, as the hook measures it.
-                const footer = log.closest('section')!.querySelector('.chat-footer') as HTMLElement;
-                return log.getBoundingClientRect().bottom - footer.getBoundingClientRect().top > 48;
-            }
             return log.scrollHeight - log.clientHeight - log.scrollTop > 48;
         });
         const shown = await page.getByTestId('jump-to-latest').count();
@@ -403,18 +396,36 @@ test.describe('assistant actions (issue #484)', () => {
         });
     }
 
-    test('in panel scroll mode (320x420) the save card is scrolled clear of the sticky footer', async ({page}) => {
+    // One scroller (issue #483): at 320x420 the transcript is shorter than the card, so Save and the field
+    // label cannot both show at once. Save is revealed; the label is one scroll of the transcript away.
+    test('at 320x420 the panel does not scroll; Save is revealed unobstructed and the changes are a transcript scroll away', async ({page}) => {
         const {review, save} = await openSaveCard(page, 420);
-        await expect(page.locator('#job-search-chat > [data-scroll-owner="panel"]')).toHaveCount(1);
-        await expectUnobstructed(page, save);
-        await expectUnobstructed(page, review.getByText('Work arrangement'));
-        // The browser's own reveals (focus, find) also stop above the pinned footer.
-        const clear = await page.evaluate(() => {
-            const heading = document.querySelector('[data-testid="assistant-action-review"] h3, [data-testid="assistant-action-review"] h4') as HTMLElement;
-            const footer = document.querySelector('#job-search-chat .chat-footer') as HTMLElement;
-            return {margin: parseFloat(getComputedStyle(heading).scrollMarginBottom), footer: footer.getBoundingClientRect().height};
+        const panel = () => page.evaluate(() => {
+            const body = document.querySelector('.assistant-panel-body') as HTMLElement;
+            const card = document.querySelector('[data-testid="job-search-chat"]') as HTMLElement;
+            return {
+                range: body.scrollHeight - body.clientHeight,
+                top: body.scrollTop,
+                positions: ['.card-header', '.chat-footer'].map((selector) => getComputedStyle(card.querySelector(selector)!).position),
+            };
         });
-        expect(clear.margin).toBeGreaterThanOrEqual(clear.footer);
+        await expectUnobstructed(page, save);
+        const revealed = await panel();
+        expect(revealed.range, 'the panel body does not scroll').toBeLessThanOrEqual(1);
+        expect(revealed.top).toBe(0);
+        expect(revealed.positions, 'no chat bar is pinned over the transcript').not.toContain('sticky');
+        await expectPillFollowsPosition(page);
+
+        // The field label: brought into view by scrolling the transcript, and under no bar there.
+        const changes = review.getByText('Work arrangement');
+        await changes.evaluate((el) => {
+            const log = el.closest('[role="log"]') as HTMLElement;
+            log.scrollTop -= log.getBoundingClientRect().top - el.getBoundingClientRect().top + 4;
+        });
+        await expectUnobstructed(page, changes);
+        const scrolled = await panel();
+        expect(scrolled.range).toBeLessThanOrEqual(1);
+        expect(scrolled.top, 'only the transcript moved').toBe(0);
         await expectPillFollowsPosition(page);
     });
 

@@ -276,6 +276,19 @@ class ConfigModesTests(SimpleTestCase):
     def test_safe_provider_is_reported(self):
         self.assertEqual(config_modes()["job_search_provider"], "usa_jobs")
 
+    def test_client_ip_source_defaults_to_none(self):
+        self.assertEqual(config_modes()["client_ip_source"], "none")
+
+    @override_settings(ENV="prod", CLIENT_IP_SOURCE="cloudflare")
+    def test_client_ip_source_reports_the_effective_source(self):
+        self.assertEqual(config_modes()["client_ip_source"], "cloudflare")
+
+    def test_client_ip_source_never_echoes_an_ignored_value(self):
+        ignored = (("dev", "cloudflare"), ("staging", "cloudflare"), ("prod", "x-forwarded-for"))
+        for env, value in ignored:
+            with self.subTest(env=env), override_settings(ENV=env, CLIENT_IP_SOURCE=value):
+                self.assertEqual(config_modes()["client_ip_source"], "none")
+
 
 class CountsTests(TestCase):
     def setUp(self):
