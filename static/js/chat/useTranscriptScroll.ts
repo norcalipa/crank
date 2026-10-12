@@ -6,7 +6,12 @@ const NEAR_BOTTOM_PX = 48;
 // Our own scrollTo/scrollTop writes (a smooth scroll fires scroll events for a
 // while) must not read as the reader scrolling away.
 const PROGRAMMATIC_WINDOW_MS = 1000;
+// A scroll this soon after the reader's own input is the reader's, whatever the box did.
+const INPUT_WINDOW_MS = 300;
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+
+// A pinch zoom shrinks the visual viewport too; only an unscaled one can be an on-screen keyboard.
+export const isUnscaledViewport = (viewport: VisualViewport): boolean => Math.abs((viewport.scale ?? 1) - 1) < 0.01;
 
 // Exactly one element scrolls the conversation: the transcript, at every
 // size. The assistant panel's body only scrolls as a last resort, when the
@@ -26,6 +31,9 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     const nearBottomRef = React.useRef(true);
     const seenAssistantRef = React.useRef(assistantCount);
     const programmaticUntilRef = React.useRef(0);
+    // The transcript's height as its resize step last saw it, and when the reader last gave input.
+    const boxHeightRef = React.useRef<number | null>(null);
+    const lastInputRef = React.useRef(0);
     const emptyRef = React.useRef(messagesLength === 0);
     emptyRef.current = messagesLength === 0;
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
@@ -118,6 +126,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
                 if ((e.target as HTMLElement).closest('textarea, input, select, button, [contenteditable="true"]')) return;
             }
             programmaticUntilRef.current = 0;
+            lastInputRef.current = Date.now();
         };
         const handleScroll = () => {
             // An empty conversation has nothing to jump to, however short the log.
@@ -127,7 +136,11 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             if (ownScroll && target !== null && Math.abs(scroller.scrollTop - target) <= 2) {
                 programmaticUntilRef.current = 0;
             }
-            const nearBottom = atBottom || (ownScroll && nearBottomRef.current);
+            // The box changed and its resize step has not run yet: the scroll event that
+            // comes with the new size is the browser's, not the reader scrolling away.
+            const resizing = boxHeightRef.current !== null && scroller.clientHeight !== boxHeightRef.current
+                && Date.now() - lastInputRef.current > INPUT_WINDOW_MS;
+            const nearBottom = atBottom || ((ownScroll || resizing) && nearBottomRef.current);
             nearBottomRef.current = nearBottom;
             setShowJumpToLatest(!nearBottom);
             if (nearBottom) {
@@ -152,8 +165,10 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         const history = historyRef.current;
         if (!history || typeof ResizeObserver === 'undefined') return undefined;
         let lastHeight = history.clientHeight;
+        boxHeightRef.current = lastHeight;
         const observer = new ResizeObserver(() => {
             const height = history.clientHeight;
+            boxHeightRef.current = height;
             if (height === lastHeight) return;
             lastHeight = height;
             if (nearBottomRef.current && history.scrollHeight > 0) scrollToLatest('auto');
@@ -226,7 +241,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             const band = footer.querySelector<HTMLElement>('form') ?? footer;
             // An on-screen keyboard that does not resize the page still shrinks the visual viewport.
             const viewport = window.visualViewport;
-            const visibleBottom = viewport ? viewport.offsetTop + viewport.height : Number.POSITIVE_INFINITY;
+            const visibleBottom = viewport && isUnscaledViewport(viewport) ? viewport.offsetTop + viewport.height : Number.POSITIVE_INFINITY;
             const limit = Math.min(panelBody.getBoundingClientRect().bottom, visibleBottom);
             const cutOff = band.getBoundingClientRect().bottom - limit;
             if (cutOff > 0) panelBody.scrollTop += cutOff;

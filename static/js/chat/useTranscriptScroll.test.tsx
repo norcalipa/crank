@@ -335,6 +335,57 @@ describe('useTranscriptScroll', () => {
         }
     });
 
+    describe('the scroll event that comes with a new size of the transcript (a keyboard, a longer draft)', () => {
+        const callbacks: Array<() => void> = [];
+        const original = (window as unknown as {ResizeObserver?: unknown}).ResizeObserver;
+        beforeEach(() => {
+            callbacks.length = 0;
+            (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
+                constructor(cb: () => void) { callbacks.push(cb); }
+                observe() { /* noop */ }
+                disconnect() { /* noop */ }
+            };
+        });
+        afterEach(() => {
+            (window as unknown as {ResizeObserver?: unknown}).ResizeObserver = original;
+        });
+
+        test('does not end following: the reader is still at the end once the resize step has run', () => {
+            render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            const scrollTo = jest.fn();
+            log.scrollTo = scrollTo;
+            metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+            callbacks.forEach((cb) => cb());
+            scrollTo.mockClear();
+            // The box shrinks by 300px and the browser reports a scroll before the observer does.
+            metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 100});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+            callbacks.forEach((cb) => cb());
+            expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
+        });
+
+        test('is still the reader\'s when they have just given input, or once the size has settled', () => {
+            render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+            callbacks.forEach((cb) => cb());
+            // A wheel and a changed box together: the reader scrolled.
+            fireEvent.wheel(log);
+            metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 100});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+            // Input long ago does not count, but a settled size gives no excuse either.
+            now += 1000;
+            metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 100});
+            callbacks.forEach((cb) => cb());
+            metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 100});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        });
+    });
+
     test('falls back to writing scrollTop where scrollTo is missing', () => {
         render(<Harness assistantCount={1}/>);
         const log = screen.getByTestId('log');
@@ -478,6 +529,58 @@ describe('useTranscriptScroll', () => {
                 if (original) Object.defineProperty(window, 'visualViewport', original);
                 else delete (window as unknown as {visualViewport?: unknown}).visualViewport;
             }
+        });
+
+        test('a pinch zoom shrinks the visual viewport without hiding the composer: a scaled one is not measured', () => {
+            const original = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+            const viewport = {height: 300, offsetTop: 20, scale: 2, addEventListener: jest.fn(), removeEventListener: jest.fn()};
+            Object.defineProperty(window, 'visualViewport', {configurable: true, value: viewport});
+            try {
+                render(<Harness assistantCount={1}/>);
+                const panel = screen.getByTestId('panel');
+                bottoms(460, 380);
+                screen.getByTestId('composer').focus();
+                act(() => { fireEvent(window, new Event('resize')); });
+                // Only the panel's own bottom limits the composer: 80, not 140.
+                expect(panel.scrollTop).toBe(80);
+                viewport.scale = 1;
+                panel.scrollTop = 0;
+                act(() => { fireEvent(window, new Event('resize')); });
+                expect(panel.scrollTop).toBe(140);
+            } finally {
+                if (original) Object.defineProperty(window, 'visualViewport', original);
+                else delete (window as unknown as {visualViewport?: unknown}).visualViewport;
+            }
+        });
+
+        test('listens to the visual viewport itself, and lets go of it on unmount', () => {
+            const original = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+            const viewport = {height: 300, offsetTop: 0, addEventListener: jest.fn(), removeEventListener: jest.fn()};
+            Object.defineProperty(window, 'visualViewport', {configurable: true, value: viewport});
+            try {
+                const {unmount} = render(<Harness assistantCount={1}/>);
+                const panel = screen.getByTestId('panel');
+                bottoms(460, 380);
+                screen.getByTestId('composer').focus();
+                const [, handler] = viewport.addEventListener.mock.calls.find(([type]) => type === 'resize')!;
+                act(() => { handler(); });
+                expect(panel.scrollTop).toBe(160);
+                unmount();
+                expect(viewport.removeEventListener).toHaveBeenCalledWith('resize', handler);
+            } finally {
+                if (original) Object.defineProperty(window, 'visualViewport', original);
+                else delete (window as unknown as {visualViewport?: unknown}).visualViewport;
+            }
+        });
+
+        test('leaves the panel where it is when the composer band ends above the visible bottom', () => {
+            render(<Harness assistantCount={1}/>);
+            const panel = screen.getByTestId('panel');
+            panel.scrollTop = 50;
+            bottoms(300, 380);
+            screen.getByTestId('composer').focus();
+            act(() => { fireEvent(window, new Event('resize')); });
+            expect(panel.scrollTop).toBe(50);
         });
 
         describe('when the footer grows (a failed send, a status notice, a longer draft)', () => {

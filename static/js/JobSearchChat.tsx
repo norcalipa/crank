@@ -20,7 +20,7 @@ import type {WorkspaceSnapshot} from './workspace/types';
 import {Transcript} from './chat/Transcript';
 import {Composer} from './chat/Composer';
 import {JumpToLatest} from './chat/JumpToLatest';
-import {useTranscriptScroll} from './chat/useTranscriptScroll';
+import {isUnscaledViewport, useTranscriptScroll} from './chat/useTranscriptScroll';
 import {useAccountGate} from './chat/useAccountGate';
 import {ConversationMenu} from './chat/ConversationMenu';
 import {
@@ -364,7 +364,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             : card.offsetHeight;
         setNoticesMax(Math.max(MIN_NOTICES_PX, Math.round(noticesBase * 0.4)));
         const viewport = window.visualViewport;
-        setKeyboardInset(viewport && panelBody
+        setKeyboardInset(viewport && isUnscaledViewport(viewport) && panelBody
             ? Math.max(0, Math.round(panelBody.getBoundingClientRect().bottom - viewport.height))
             : 0);
     }, []);

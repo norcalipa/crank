@@ -13,6 +13,13 @@ import {
 } from './workspace/store';
 import {accountDigest} from './workspace/persistence';
 import JobSearchChat, {AssistantState, AssistantStatus, ChatMessage} from './JobSearchChat';
+import {useTranscriptScroll} from './chat/useTranscriptScroll';
+
+// The real hook, watched: the wiring tests read what the chat passes it.
+jest.mock('./chat/useTranscriptScroll', () => {
+    const actual = jest.requireActual('./chat/useTranscriptScroll');
+    return {...actual, useTranscriptScroll: jest.fn(actual.useTranscriptScroll)};
+});
 
 // The conversation controls live in the More menu (issue #483).
 const openMore = () => {
@@ -284,6 +291,37 @@ describe('JobSearchChat', () => {
             viewport.height = 844;
             await remeasure();
             expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
+        });
+
+        test('a pinch zoom is not a keyboard: a scaled visual viewport leaves the inset at 0px', async () => {
+            const viewport = stubVisualViewport(333) as {height: number; scale?: number};
+            viewport.scale = 2;
+            const {panelBody, chat} = await renderInPanel(700);
+            jest.spyOn(panelBody, 'getBoundingClientRect').mockReturnValue({bottom: 667} as DOMRect);
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
+            // Zoomed back to 1x, the same height is a keyboard again.
+            viewport.scale = 1;
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('334px');
+        });
+
+        test('measures again when the visual viewport resizes, on that listener alone', async () => {
+            const handlers: Array<() => void> = [];
+            const viewport = stubVisualViewport(700);
+            viewport.addEventListener.mockImplementation((type: string, handler: () => void) => {
+                if (type === 'resize') handlers.push(handler);
+            });
+            const {panelBody, chat} = await renderInPanel(700);
+            jest.spyOn(panelBody, 'getBoundingClientRect').mockReturnValue({bottom: 700} as DOMRect);
+            await act(async () => { await flushRaf(); });
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
+            viewport.height = 400;
+            await act(async () => {
+                handlers.forEach((handler) => handler());
+                await flushRaf();
+            });
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('300px');
         });
 
         test('the keyboard inset is 0px without a visualViewport, and outside the assistant panel', async () => {
@@ -4909,5 +4947,73 @@ describe('validated page context and assistant actions (issue #484)', () => {
         act_();
         await waitFor(() => expect(screen.queryByText('Hi')).not.toBeInTheDocument());
         expect([...snapshotMaps].every((m) => m.size === 0)).toBe(true);
+    });
+});
+
+describe('what the chat tells the transcript scroll (issue #483)', () => {
+    const passed = () => {
+        const calls = (useTranscriptScroll as jest.Mock).mock.calls;
+        return calls[calls.length - 1][0] as {contentKey: string; footerKey: unknown};
+    };
+
+    beforeEach(() => {
+        global.fetch = statusAwareFetch();
+        window.localStorage.clear();
+    });
+
+    afterEach(() => {
+        resetWorkspaceForTests();
+        jest.restoreAllMocks();
+    });
+
+    test('content that arrives under the last message changes the key, one part at a time', async () => {
+        // The availability state: an empty reply loads the notice.
+        const mock = global.fetch as jest.Mock;
+        const route = mock.getMockImplementation()!;
+        mock.mockImplementation((url: string, init?: RequestInit) => (String(url).includes('/api/job-matches/status/')
+            ? Promise.resolve(jsonResponse({state: 'no_matches', title: 'No matches', message: 'None yet.'}))
+            : route(url, init)));
+        await renderChat([assistantMessage(1, 'Nothing came back.')]);
+        await screen.findByTestId('availability-notice');
+        expect(passed().contentKey).toBe('no_matches|||');
+    });
+
+    test('a failed turn, its retry and a reply with actions each show in the key', async () => {
+        const key = '123e4567-e89b-42d3-a456-426614174000';
+        await renderChat([assistantMessage(1, 'older'), userTurn('saved question', key, 'failed', 2)]);
+        expect(passed().contentKey).toBe('||failed|');
+        // A retry in flight carries the turn's key.
+        const settle = holdNextFetch(global.fetch as jest.Mock);
+        fireEvent.click(await screen.findByTestId('retry-response-button'));
+        await screen.findByTestId('retrying-turn');
+        expect(passed().contentKey).toBe(`||failed|${key}`);
+    });
+
+    test('the id of the newest reply with actions leads the key', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+        const mock = global.fetch as jest.Mock;
+        const settle = holdNextFetch(mock);
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'open acme'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await postedKeyAfterSend(mock);
+        settle(jsonResponse({
+            message: assistantMessage(94, 'Found it', false, {organizations: [{id: 8, name: 'Acme', url: '/?company=8'}]}),
+            preferences_changed: false, context: {revision: getWorkspaceSnapshot().contextRevision},
+            actions: [{type: 'open_company', organization_id: 8}],
+        }));
+        await screen.findByRole('button', {name: 'Open Acme'});
+        expect(passed().contentKey).toBe('|94||');
+    });
+
+    test('the footer key is the init error, so a footer that mounts again is found again', async () => {
+        const mock = global.fetch as jest.Mock;
+        const route = mock.getMockImplementation()!;
+        mock.mockImplementation((url: string, init?: RequestInit) => (String(url).includes('/api/agent/conversations/')
+            ? Promise.resolve(jsonResponse({}, 500))
+            : route(url, init)));
+        render(<JobSearchChat/>);
+        await waitFor(() => expect(typeof passed().footerKey).toBe('string'));
+        expect(passed().footerKey).toMatch(/conversation/);
     });
 });
