@@ -153,7 +153,17 @@ describe('JobMatchPanel', () => {
             (global.fetch as jest.Mock).mockRejectedValue(new Error('Network down'));
             render(<JobMatchPanel/>);
             const error = await screen.findByTestId('job-match-error');
-            expect(error).toHaveTextContent('Network down');
+            // Only the panel's own sentences are shown, never the browser's (issue #485).
+            expect(error).toHaveTextContent('We couldn’t load your job matches. Please try again.');
+            expect(error).not.toHaveTextContent('Network down');
+        });
+
+        test('a dropped connection on first load prints the panel’s sentence, not the browser’s', async () => {
+            (global.fetch as jest.Mock).mockRejectedValue(new TypeError('Failed to fetch'));
+            render(<JobMatchPanel/>);
+            const error = await screen.findByTestId('job-match-error');
+            expect(error).toHaveTextContent('We couldn’t load your job matches. Please try again.');
+            expect(error).not.toHaveTextContent('Failed to fetch');
         });
 
         test('translates a non-JSON status body into friendly copy', async () => {
@@ -324,7 +334,8 @@ describe('JobMatchPanel', () => {
                 }],
             });
             expect(await screen.findByTestId('stale-notice')).toBeInTheDocument();
-            expect(screen.getByTestId('stale-notice')).toHaveTextContent('Newer data or priorities exist. These results were computed');
+            // The time is printed once, by the "Results generated at" line.
+            expect(screen.getByTestId('stale-notice')).toHaveTextContent(/^Newer data or priorities exist\.\s*Check again$/);
             expect(screen.getByTestId('stale-refresh')).toHaveTextContent('Check again');
             expect(screen.getByTestId('results-timestamp')).toBeInTheDocument();
         });
@@ -1878,21 +1889,24 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
     });
 
     describe('stale results', () => {
-        test('stale and pending: says an update is on its way and offers no action', async () => {
+        test('stale and pending: says the results are waiting to be updated and offers no action', async () => {
             healthy(3, {stale: true, pending: true});
             await showResults();
             const notice = screen.getByTestId('stale-notice');
-            expect(notice).toHaveTextContent('Your matches are being updated.');
+            // `pending` says a recompute is switched on, not that one is running.
+            expect(notice).toHaveTextContent('Newer data or priorities exist. These results are waiting to be updated.');
+            expect(notice).not.toHaveTextContent('being updated');
             expect(notice).toHaveAttribute('role', 'status');
             expect(within(notice).queryByRole('button')).not.toBeInTheDocument();
             expect(notice).not.toHaveTextContent(/recompute/i);
         });
 
-        test('stale and not pending: says when the results were computed and offers Check again', async () => {
+        test('stale and not pending: offers Check again and leaves the time to the timestamp line', async () => {
             healthy(3, {stale: true, pending: false});
             await showResults();
             const notice = screen.getByTestId('stale-notice');
-            expect(notice).toHaveTextContent('Newer data or priorities exist. These results were computed');
+            expect(notice).toHaveTextContent(/^Newer data or priorities exist\.\s*Check again$/);
+            expect(notice).not.toHaveTextContent('computed');
             expect(notice).not.toHaveTextContent(/recompute with your latest preferences/i);
             const before = fetchMock.mock.calls.length;
             fireEvent.click(within(notice).getByRole('button', {name: 'Check again'}));
@@ -1921,7 +1935,7 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
             ranked = () => jsonResponse(rankedPayload());
             matches = () => jsonResponse(matchPayload(2, [{id: 1, revision: {stale: true, pending: true, generated_at: STALE}}]));
             render(<JobMatchPanel/>);
-            expect(await screen.findByTestId('stale-notice')).toHaveTextContent('Your matches are being updated.');
+            expect(await screen.findByTestId('stale-notice')).toHaveTextContent('Newer data or priorities exist. These results are waiting to be updated.');
         });
     });
 
@@ -1962,6 +1976,459 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
             expect(notice).toHaveTextContent('No job source is returning listings right now. These are the last results we have');
             expect(notice).not.toHaveTextContent('2 of 2');
             expect(notice.compareDocumentPosition(screen.getByTestId('ranked-job-matches')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        });
+    });
+
+    describe('a read in flight is visible and single-flight (F1)', () => {
+        const hold = () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            return {gate, release};
+        };
+        const views: Array<[string, () => void, string]> = [
+            ['the results view', () => healthy(3), 'ranked-job-42'],
+            ['the stored-count view', () => {
+                ranked = () => jsonResponse(rankedPayload());
+                matches = () => jsonResponse(matchPayload(2));
+            }, 'job-match-refresh'],
+            ['the empty state', () => {
+                status = () => jsonResponse(statusPayload('no_matches', {actions: ['retry']}));
+                ranked = () => jsonResponse(rankedPayload());
+                matches = () => jsonResponse(matchPayload(0));
+            }, 'empty-state-no_matches'],
+        ];
+
+        test.each(views)('the header refresh in %s shows the spinner, keeps its label and focus, and ignores further presses', async (_name, setup, anchor) => {
+            setup();
+            render(<JobMatchPanel/>);
+            await screen.findByTestId(anchor);
+            await settled();
+            const button = screen.getByTestId('job-match-refresh');
+            expect(button.querySelector('[data-icon="refresh-cw"]')).not.toBeNull();
+            expect(button).not.toHaveAttribute('aria-disabled');
+            const {gate, release} = hold();
+            const slow = ranked;
+            ranked = () => gate.then(() => slow());
+            button.focus();
+            const before = fetchMock.mock.calls.length;
+            fireEvent.click(button);
+            await waitFor(() => expect(button.querySelector('[data-icon="spinner"]')).not.toBeNull());
+            expect(button.querySelector('[data-icon="refresh-cw"]')).toBeNull();
+            expect(button).toHaveAttribute('aria-disabled', 'true');
+            expect(button).not.toBeDisabled();
+            expect(button).toHaveAttribute('aria-label', 'Refresh match status');
+            expect(button).toHaveFocus();
+            const reads = fetchMock.mock.calls.length - before;
+            expect(reads).toBe(3);
+            fireEvent.click(button);
+            fireEvent.click(button);
+            fireEvent.keyDown(button, {key: 'Enter'});
+            fireEvent.click(button);
+            expect(fetchMock.mock.calls.length).toBe(before + 3);
+            // Nothing in flight was aborted.
+            for (const call of fetchMock.mock.calls.slice(before)) {
+                expect(call[1].signal.aborted).toBe(false);
+            }
+            release();
+            await settled();
+            expect(button.querySelector('[data-icon="refresh-cw"]')).not.toBeNull();
+            expect(button).not.toHaveAttribute('aria-disabled');
+            expect(fetchMock.mock.calls.length).toBe(before + 3);
+        });
+
+        test('Check again and Try again do the same, and the retry action in the empty state too', async () => {
+            healthy(3, {stale: true});
+            await showResults();
+            const check = screen.getByTestId('stale-refresh');
+            const {gate, release} = hold();
+            ranked = () => gate.then(() => jsonResponse(rankedPayload([job(3, {stale: true})])));
+            check.focus();
+            const before = fetchMock.mock.calls.length;
+            fireEvent.click(check);
+            await waitFor(() => expect(check).toHaveAttribute('aria-disabled', 'true'));
+            expect(check.querySelector('[data-icon="spinner"]')).not.toBeNull();
+            expect(check).toHaveTextContent('Check again');
+            expect(check).toHaveFocus();
+            fireEvent.click(check);
+            expect(fetchMock.mock.calls.length).toBe(before + 3);
+            release();
+            await settled();
+            expect(check.querySelector('[data-icon="refresh-cw"]')).not.toBeNull();
+            cleanup();
+
+            healthy(3);
+            await showResults();
+            ranked = () => jsonResponse({}, 503);
+            pressRefresh();
+            const retry = await screen.findByTestId('refresh-failed-retry');
+            const second = hold();
+            healthy(3);
+            const fast = ranked;
+            ranked = () => second.gate.then(() => fast());
+            retry.focus();
+            const mark = fetchMock.mock.calls.length;
+            fireEvent.click(retry);
+            await waitFor(() => expect(retry).toHaveAttribute('aria-disabled', 'true'));
+            expect(retry.querySelector('[data-icon="spinner"]')).not.toBeNull();
+            expect(retry).toHaveTextContent('Try again');
+            expect(retry).toHaveFocus();
+            fireEvent.click(retry);
+            expect(fetchMock.mock.calls.length).toBe(mark + 3);
+            second.release();
+            await waitFor(() => expect(screen.queryByTestId('refresh-failed-notice')).not.toBeInTheDocument());
+            cleanup();
+
+            status = () => jsonResponse(statusPayload('no_matches', {actions: ['retry']}));
+            ranked = () => jsonResponse(rankedPayload());
+            matches = () => jsonResponse(matchPayload(0));
+            render(<JobMatchPanel/>);
+            const action = await screen.findByTestId('action-retry');
+            await settled();
+            const third = hold();
+            status = () => third.gate.then(() => jsonResponse(statusPayload('no_matches', {actions: ['retry']})));
+            const base = fetchMock.mock.calls.length;
+            fireEvent.click(action);
+            await waitFor(() => expect(action).toHaveAttribute('aria-disabled', 'true'));
+            expect(action.querySelector('[data-icon="spinner"]')).not.toBeNull();
+            fireEvent.click(action);
+            expect(fetchMock.mock.calls.length).toBe(base + 3);
+            third.release();
+            await settled();
+            expect(action.querySelector('[data-icon="refresh-cw"]')).not.toBeNull();
+        });
+
+        test('a priorities change still restarts a read in flight: the newest read wins', async () => {
+            await showResults();
+            const {gate, release} = hold();
+            ranked = () => gate.then(() => jsonResponse(rankedPayload([job(3)])));
+            const before = fetchMock.mock.calls.length;
+            pressRefresh();
+            await waitFor(() => expect(screen.getByTestId('job-match-refresh')).toHaveAttribute('aria-disabled', 'true'));
+            act(() => { setPrioritiesRevision(getWorkspaceSnapshot().prioritiesRevision === 41 ? 42 : 41); });
+            await waitFor(() => expect(fetchMock.mock.calls.length).toBe(before + 6));
+            expect(fetchMock.mock.calls[before][1].signal.aborted).toBe(true);
+            release();
+            await settled();
+        });
+
+        test('a press during the re-check the evidence notice asks for sends nothing', async () => {
+            const changed = {requirements: [{path: 'industry', status: 'unknown', evidence_status: {state: 'superseded', last_verified_at: null, source_domain: null}}]};
+            ranked = () => jsonResponse(rankedPayload([{...job(3), ...changed}]));
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('evidence-changed-notice');
+            const {gate, release} = hold();
+            const slow = ranked;
+            ranked = () => gate.then(() => slow());
+            const before = fetchMock.mock.calls.length;
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+            await waitFor(() => expect(screen.getByTestId('job-match-refresh')).toHaveAttribute('aria-disabled', 'true'));
+            const calls = fetchMock.mock.calls.length;
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+            fireEvent.click(screen.getByTestId('evidence-changed-refresh'));
+            expect(fetchMock.mock.calls.length).toBe(calls);
+            expect(calls).toBeGreaterThan(before);
+            release();
+            await waitFor(() => expect(screen.getByTestId('job-match-refresh')).not.toHaveAttribute('aria-disabled', 'true'));
+        });
+
+        test('one visually hidden status line says a check started and how it ended, and a repeated failure is not silent', async () => {
+            await showResults();
+            const line = screen.getByTestId('read-announcement');
+            expect(line).toHaveAttribute('aria-live', 'polite');
+            expect(line).toHaveClass('visually-hidden');
+            expect(line).toBeEmptyDOMElement();
+            const {gate, release} = hold();
+            ranked = () => gate.then(() => jsonResponse(rankedPayload([job(3)])));
+            pressRefresh();
+            await waitFor(() => expect(line).toHaveTextContent('Checking your job matches…'));
+            release();
+            await waitFor(() => expect(line).toHaveTextContent('Finished checking your job matches.'));
+            expect(line).not.toHaveTextContent(/up to date/i);
+
+            // The first failure is announced by the failed notice itself.
+            ranked = () => jsonResponse({}, 503);
+            pressRefresh();
+            await screen.findByTestId('refresh-failed-notice');
+            expect(line).toBeEmptyDOMElement();
+            // A Try again that fails again must not be silent.
+            fireEvent.click(screen.getByTestId('refresh-failed-retry'));
+            await waitFor(() => expect(line).toHaveTextContent('Couldn’t refresh your job matches again.'));
+            expect(screen.getAllByRole('status').filter((el) => el.classList.contains('alert'))).toHaveLength(1);
+            // A first-load read says nothing.
+            cleanup();
+            healthy();
+            render(<JobMatchPanel/>);
+            expect(screen.getByTestId('read-announcement')).toBeEmptyDOMElement();
+            await screen.findByTestId('ranked-job-42');
+            expect(screen.getByTestId('read-announcement')).toBeEmptyDOMElement();
+        });
+
+        test('a stale read that is discarded still ends the check', async () => {
+            await showResults();
+            ranked = () => jsonResponse(rankedPayload([job(1)]));
+            matches = () => jsonResponse(matchPayload(1, [job(1)]));
+            pressRefresh();
+            await waitFor(() => expect(screen.getByTestId('read-announcement')).toHaveTextContent('Finished checking'));
+            expect(screen.getByTestId('job-match-refresh')).not.toHaveAttribute('aria-disabled');
+        });
+    });
+
+    describe('the failed notice prints the time of what is on screen (F2)', () => {
+        const GENERATED = '2026-10-11T20:53:00Z';
+        const OLDER = '2026-10-08T14:53:00Z';
+        const when = (iso: string) => new Date(iso).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'});
+
+        test.each([
+            ['with a result generation', 5],
+            ['live (no result generation)', null],
+        ])('over the results %s both lines show the listed rows’ instant, not the stored one', async (_label, generation) => {
+            const rows = {generated_at: GENERATED, ...(generation === null ? {} : {result_generation: generation})};
+            status = () => jsonResponse(statusPayload('ok'));
+            matches = () => jsonResponse(matchPayload(1, [{...sampleJobMatch, revision: {generated_at: OLDER, result_generation: generation}}]));
+            ranked = () => jsonResponse(rankedPayload([{...sampleJobMatch, revision: rows}]));
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('ranked-job-42');
+            ranked = () => jsonResponse({}, 503);
+            pressRefresh();
+            const notice = await screen.findByTestId('refresh-failed-notice');
+            expect(notice).toHaveTextContent(`Couldn’t refresh. Showing results from ${when(GENERATED)}.`);
+            expect(notice).not.toHaveTextContent(when(OLDER));
+            expect(screen.getByTestId('results-timestamp')).toHaveTextContent(when(GENERATED));
+        });
+
+        test('in the count-only view the stored revision is the one both lines show', async () => {
+            ranked = () => jsonResponse(rankedPayload());
+            matches = () => jsonResponse(matchPayload(2, [{id: 1, revision: {generated_at: OLDER}}]));
+            render(<JobMatchPanel/>);
+            await screen.findByText(/job matches ready to review/);
+            ranked = () => jsonResponse({}, 503);
+            pressRefresh();
+            const notice = await screen.findByTestId('refresh-failed-notice');
+            expect(notice).toHaveTextContent(`Showing results from ${when(OLDER)}.`);
+            expect(screen.getByTestId('results-timestamp')).toHaveTextContent(when(OLDER));
+        });
+
+        test('over an empty state it says when it last checked and never says "Showing results"', async () => {
+            status = () => jsonResponse(statusPayload('no_matches', {actions: ['retry']}));
+            ranked = () => jsonResponse(rankedPayload());
+            matches = () => jsonResponse(matchPayload(0));
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('empty-state-no_matches');
+            status = () => jsonResponse({}, 503);
+            pressRefresh();
+            const notice = await screen.findByTestId('refresh-failed-notice');
+            expect(notice).toHaveTextContent(/^Couldn’t refresh\. Last checked .+\s*Try again$/);
+            expect(notice).not.toHaveTextContent('Showing results');
+            expect(within(notice).getByRole('button', {name: 'Try again'})).toBeInTheDocument();
+            expect(within(notice).getByText('Couldn’t refresh.').tagName).toBe('STRONG');
+        });
+    });
+
+    describe('one alert box at a time (F3)', () => {
+        const inventory = {active_listings: 12, last_success_at: '2026-10-11T10:00:00Z', age_hours: 2};
+        const partial = (failing: number) => ({coverage: {enabled_sources: 3, failing_sources: failing}, inventory});
+        type Case = {name: string; status: Record<string, unknown>; state: string; row: Record<string, unknown>; failed: boolean; box: string; folded: string | null; text: RegExp};
+        const cases: Case[] = [
+            {name: 'failed + crawl', state: 'ok', status: {refreshing: true, inventory}, row: {}, failed: true,
+                box: 'refresh-failed-notice', folded: null, text: /Couldn’t refresh/},
+            {name: 'failed + partial coverage', state: 'partial_coverage', status: partial(1), row: {}, failed: true,
+                box: 'refresh-failed-notice', folded: '1 of 3 job sources aren’t returning listings.', text: /Couldn’t refresh/},
+            {name: 'failed + all sources failing', state: 'partial_coverage', status: partial(3), row: {}, failed: true,
+                box: 'refresh-failed-notice', folded: 'No job source is returning listings right now.', text: /Couldn’t refresh/},
+            {name: 'failed + stale', state: 'ok', status: {inventory}, row: {stale: true}, failed: true,
+                box: 'refresh-failed-notice', folded: null, text: /Couldn’t refresh/},
+            {name: 'stale (not pending) + partial coverage', state: 'partial_coverage', status: partial(1), row: {stale: true}, failed: false,
+                box: 'coverage-notice', folded: 'Newer data or priorities exist.', text: /Coverage is limited: 1 of 3/},
+            {name: 'stale (pending) + partial coverage', state: 'partial_coverage', status: partial(1), row: {stale: true, pending: true}, failed: false,
+                box: 'coverage-notice', folded: 'Newer data or priorities exist.', text: /Coverage is limited: 1 of 3/},
+            {name: 'crawl + partial coverage + stale', state: 'partial_coverage', status: {...partial(1), refreshing: true}, row: {stale: true}, failed: false,
+                box: 'coverage-notice', folded: 'Newer data or priorities exist.', text: /Coverage is limited/},
+            {name: 'all four', state: 'partial_coverage', status: {...partial(1), refreshing: true}, row: {stale: true}, failed: true,
+                box: 'refresh-failed-notice', folded: '1 of 3 job sources aren’t returning listings.', text: /Couldn’t refresh/},
+            {name: 'stale + crawl', state: 'ok', status: {refreshing: true, inventory}, row: {stale: true}, failed: false,
+                box: 'stale-notice', folded: null, text: /^Newer data or priorities exist\./},
+            {name: 'crawl alone', state: 'ok', status: {refreshing: true, inventory}, row: {}, failed: false,
+                box: 'refresh-notice', folded: null, text: /^Job listings are being gathered right now\. These are your current results\.$/},
+        ];
+        test.each(cases)('$name: one alert, the highest-priority condition', async ({state, status: extra, row, failed, box, folded, text}) => {
+            status = () => jsonResponse(statusPayload(state, extra));
+            ranked = () => jsonResponse(rankedPayload([job(3, row)]));
+            matches = () => jsonResponse(matchPayload(1, [job(3, row)]));
+            await showResults();
+            if (failed) {
+                ranked = () => jsonResponse({}, 503);
+                pressRefresh();
+                await screen.findByTestId('refresh-failed-notice');
+            }
+            const boxes = Array.from(document.querySelectorAll('.alert[role="status"]'));
+            expect(boxes).toHaveLength(1);
+            expect(boxes[0]).toBe(screen.getByTestId(box));
+            expect(boxes[0]).toHaveTextContent(text);
+            const line = boxes[0].querySelector('[data-testid="notice-folded"]');
+            if (folded) {
+                expect(line).toHaveTextContent(folded);
+                expect(line).toHaveClass('text-muted');
+                expect(line!.querySelector('svg,button')).toBeNull();
+            } else {
+                expect(line).toBeNull();
+            }
+            // Nothing else renders as its own box.
+            for (const other of ['refresh-failed-notice', 'coverage-notice', 'stale-notice', 'refresh-notice']) {
+                if (other !== box) {
+                    expect(screen.queryByTestId(other)).not.toBeInTheDocument();
+                }
+            }
+        });
+
+        test('the box carries its own control: Try again, Check again, or none', async () => {
+            status = () => jsonResponse(statusPayload('partial_coverage', partial(1)));
+            healthy(3, {stale: true});
+            status = () => jsonResponse(statusPayload('partial_coverage', partial(1)));
+            await showResults();
+            expect(within(screen.getByTestId('coverage-notice')).queryByRole('button')).not.toBeInTheDocument();
+            ranked = () => jsonResponse({}, 503);
+            pressRefresh();
+            const failed = await screen.findByTestId('refresh-failed-notice');
+            expect(within(failed).getAllByRole('button')).toHaveLength(1);
+        });
+
+        test('the coverage notice uses the database icon, the failure alone the warning triangle', async () => {
+            status = () => jsonResponse(statusPayload('partial_coverage', partial(1)));
+            await showResults();
+            expect(screen.getByTestId('coverage-notice').querySelector('[data-icon="database"]')).not.toBeNull();
+            expect(screen.getByTestId('coverage-notice').querySelector('[data-icon="alert-triangle"]')).toBeNull();
+            ranked = () => jsonResponse({}, 503);
+            pressRefresh();
+            const failed = await screen.findByTestId('refresh-failed-notice');
+            expect(failed.querySelector('[data-icon="alert-triangle"]')).not.toBeNull();
+            expect(failed.querySelector('strong')).toHaveTextContent('Couldn’t refresh.');
+        });
+    });
+
+    describe('the inventory line sits with the timestamp (F6)', () => {
+        const inventory = {active_listings: 12, last_success_at: '2026-10-11T10:00:00Z', age_hours: 2};
+
+        test('it follows "Results generated at" directly, in the medium date style', async () => {
+            status = () => jsonResponse(statusPayload('ok', {inventory}));
+            await showResults();
+            const stamp = screen.getByTestId('results-timestamp');
+            const age = screen.getByTestId('inventory-age');
+            expect(stamp.nextElementSibling).toBe(age);
+            expect(stamp).toHaveClass('mb-1');
+            expect(age).toHaveClass('mb-3');
+            const date = new Date(inventory.last_success_at).toLocaleDateString(undefined, {dateStyle: 'medium'});
+            expect(age).toHaveTextContent(`12 active listings checked · inventory last refreshed ${date}`);
+        });
+
+        test('the stored-count view puts the pair together too, and a stamp without inventory keeps its gap', async () => {
+            status = () => jsonResponse(statusPayload('ok', {inventory}));
+            ranked = () => jsonResponse(rankedPayload());
+            matches = () => jsonResponse(matchPayload(2, [{id: 1, revision: {generated_at: STALE}}]));
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('inventory-age');
+            expect(screen.getByTestId('results-timestamp').nextElementSibling).toBe(screen.getByTestId('inventory-age'));
+            cleanup();
+            healthy();
+            await showResults();
+            expect(screen.getByTestId('results-timestamp')).toHaveClass('mb-3');
+        });
+
+        test('the coverage notice and the empty state print the same date style', async () => {
+            const date = new Date(inventory.last_success_at).toLocaleDateString(undefined, {dateStyle: 'medium'});
+            status = () => jsonResponse(statusPayload('partial_coverage', {coverage: {enabled_sources: 3, failing_sources: 1}, inventory}));
+            await showResults();
+            expect(screen.getByTestId('coverage-notice')).toHaveTextContent(`inventory last refreshed ${date}`);
+            cleanup();
+            status = () => jsonResponse(statusPayload('no_matches', {inventory}));
+            ranked = () => jsonResponse(rankedPayload());
+            matches = () => jsonResponse(matchPayload(0));
+            render(<JobMatchPanel/>);
+            expect(await screen.findByTestId('inventory-facts')).toHaveTextContent(`inventory last refreshed ${date}`);
+        });
+    });
+
+    test('the crawl notice names the crawl and promises nothing (F4)', async () => {
+        status = () => jsonResponse(statusPayload('ok', {refreshing: true}));
+        await showResults();
+        const notice = screen.getByTestId('refresh-notice');
+        expect(notice).toHaveTextContent('Job listings are being gathered right now. These are your current results.');
+        expect(notice).not.toHaveTextContent(/refresh|shortly|may appear/i);
+    });
+
+    describe('an ended session says so (F7)', () => {
+        const ENDED = 'Your session has ended. Sign in again to see your job matches.';
+        const VISITOR = 'Sign in to see personalized job matches based on your saved preferences.';
+
+        test('a read answered by the login page says the session ended and names the button', async () => {
+            await showResults();
+            ranked = redirected;
+            pressRefresh();
+            expect(await screen.findByTestId('job-match-signed-out')).toHaveTextContent(ENDED);
+            expect(screen.getByTestId('job-match-sign-in-cta')).toHaveTextContent('Sign in again');
+        });
+
+        test('a visitor who never signed in sees the existing copy, also after a failed first load of the login page', async () => {
+            render(<JobMatchPanel isAuthenticated={false}/>);
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
+            expect(screen.getByTestId('job-match-sign-in-cta')).toHaveTextContent('Sign in to save your search');
+            cleanup();
+            ranked = redirected;
+            render(<JobMatchPanel/>);
+            expect(await screen.findByTestId('job-match-signed-out')).toHaveTextContent(ENDED);
+        });
+
+        test('focus goes to the heading when the read started from a panel control', async () => {
+            await showResults();
+            screen.getByTestId('job-match-refresh').focus();
+            ranked = redirected;
+            pressRefresh();
+            await screen.findByTestId('job-match-signed-out');
+            await waitFor(() => expect(screen.getByRole('heading', {name: 'Your Job Matches'})).toHaveFocus());
+        });
+
+        test('focus is left alone when it was elsewhere on the page, and on the first load', async () => {
+            const composer = document.createElement('textarea');
+            document.body.appendChild(composer);
+            await showResults();
+            composer.focus();
+            ranked = redirected;
+            act(() => { setPrioritiesRevision(getWorkspaceSnapshot().prioritiesRevision === 7 ? 8 : 7); });
+            await screen.findByTestId('job-match-signed-out');
+            expect(composer).toHaveFocus();
+            cleanup();
+            composer.blur();
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('job-match-signed-out');
+            expect(document.body).toHaveFocus();
+            composer.remove();
+        });
+
+        test('the ended wording is cleared when the panel is signed in again', async () => {
+            const view = render(<JobMatchPanel/>);
+            await screen.findByTestId('ranked-job-42');
+            ranked = redirected;
+            pressRefresh();
+            await screen.findByTestId('job-match-signed-out');
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(ENDED);
+            healthy();
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            act(() => { document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true}})); });
+            await screen.findByTestId('ranked-job-42');
+            // Signed out again by the page: a plain sign-out, not an ended session.
+            view.rerender(<JobMatchPanel isAuthenticated={false}/>);
+            expect(await screen.findByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
+            expect(screen.getByTestId('job-match-sign-in-cta')).toHaveTextContent('Sign in to save your search');
+        });
+
+        test('the ended wording is cleared when private state is purged and the hydration says signed out', async () => {
+            await showResults();
+            ranked = redirected;
+            pressRefresh();
+            await screen.findByTestId('job-match-signed-out');
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
+            act(() => { document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: false}})); });
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
         });
     });
 });

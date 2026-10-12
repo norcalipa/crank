@@ -1619,6 +1619,21 @@ body.app-nav-drawer-open {
 
 }
 
+/* issue #485 result refresh */
+/* An anchor drawn as a button centres its label like a <button> does (the
+   signed-out and ended-session sign-in button), and keeps the 44px floor. */
+#job-match-panel a.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* The one muted line folded into the alert box: it lines up with the
+   message, under the icon column (16px icon + .5rem gap). */
+#job-match-panel .job-match-notice-folded {
+    margin-left: 1.5rem;
+}
+
 /* Job-search result cards (issue #396) */
 .job-card, .org-card {
     box-sizing: border-box;
@@ -4903,7 +4918,9 @@ span.priority-chip-button { cursor: default; }
 
 /* The heading takes focus after a notice's Refresh; it must land below the
    sticky phone top bar (48px), not under it. */
-#job-match-panel .job-match-panel-title { scroll-margin-top: 4.5rem; }
+@media (max-width: 767.98px) {
+    #job-match-panel .job-match-panel-title { scroll-margin-top: 4.5rem; }
+}
 
 #job-match-panel .job-match-panel-title:focus-visible {
     outline: 3px solid #38bdf8;
