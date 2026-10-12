@@ -140,6 +140,31 @@ test.describe('company view (issue #486b)', () => {
         await expect(view(page)).toHaveCount(0);
         await expect(page.getByTestId('your-pending-corrections')).toHaveCount(0);
         await expect(page.getByText('Remote first')).toHaveCount(0);
+        // Closed in place: no company in the address, no marker on the entry, and nothing to go Forward to.
+        await expect.poll(() => companyParam(page)).toBeNull();
+        expect(await page.evaluate(() => window.history.state?.crankCompanyView)).toBeUndefined();
+        await page.goForward();
+        await expect(view(page)).toHaveCount(0);
+        expect(await companyParam(page)).toBeNull();
+    });
+
+    test('signing out with a company open sends the sign-out request and ends the session', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/');
+        await opener(page).click();
+        await expect(view(page)).toBeVisible();
+        await expect.poll(() => companyParam(page)).not.toBeNull();
+        const signOut = page.waitForRequest((request) => request.method() === 'POST'
+            && new URL(request.url()).pathname === '/accounts/logout/');
+
+        // The real form of the navigation, nothing stubbed.
+        await page.locator('form[data-nav-logout-form] button[type="submit"]').locator('visible=true').first().click();
+
+        await signOut;
+        await page.waitForLoadState('load');
+        await expect.poll(() => page.evaluate(() => fetch('/api/account/whoami/', {credentials: 'same-origin'})
+            .then((response) => response.json()).then((body) => body.authenticated))).toBe(false);
     });
 
     // Hands out the pending list from memory and stores nothing: the POST is stubbed
