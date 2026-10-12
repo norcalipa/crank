@@ -54,7 +54,7 @@ are stated per boundary below and owners are named.
 | Listing/match records -> presentation | Cross-user match access, guessed IDs, inactive/dismissed listing exposure, stored markup | `user=request.user` filters, active-listing filters, dismissed filtering, bounded JSON projection, text-only rendering | `crank/tests/views/test_job_matches.py`, `test_match_persist.py`, phase-4 owner tests | Staff/admin access is intentionally separate; owner: matching/API maintainers |
 | User records -> export/reset/delete/retention | Exporting another tenant, stale data after deletion, excessive history, preference audit leakage | Owner-scoped preference/conversation operations, cascade delete, contents-free audits, configured message export cap, reset archives chat, inactive/dismissed matches excluded | `crank/tests/services/test_preferences.py`, `crank/tests/views/test_job_search.py`, `test_job_matches.py`, phase-4 retention tests | Preference/match retention is policy-driven rather than a background purge in this phase; owner: privacy/product maintainers |
 | Runtime -> logs/events | Prompt/message/source secrets or sensitive content in logs/New Relic | Correlation/status/counters only, sanitized bounded error summaries, no prompt/message logging, auth never in transport errors | `crank/tests/test_agent_runs.py`, `test_llm.py`, transport redaction tests, phase-4 negative log/event assertions | Downstream infrastructure must preserve field filtering; owner: platform/observability maintainers |
-| HTTP client -> company correction submissions | Throwaway accounts multiplying the hourly limits, probing with rejected attempts, a burst overshooting a cap, a forged client-address header, one shared bucket locking every user out | Django authentication/CSRF, bounded JSON body, per-account caps reserved before the work, optional per-address caps from a production-only trusted client address (off by default), keyed digest instead of the address in cache keys | `crank/tests/views/test_company_corrections.py`, `crank/tests/test_client_address.py` | Per-address caps are off until the operator gate passes, and rest on network state the app cannot see (see "Abuse limits and client address"); owner: web/API maintainers and the operator |
+| HTTP client -> company correction submissions | Throwaway accounts multiplying the hourly limits, probing with rejected attempts, a burst overshooting a cap, a forged client-address header, one shared bucket locking every user out | Django authentication/CSRF, bounded JSON body, per-account caps reserved before the work, optional per-address caps from a production-only trusted client address (off by default), keyed digest instead of the address in cache keys | `crank/tests/views/test_company_corrections.py`, `crank/tests/test_client_address.py` | Per-address caps are meant to stay off until the operator gate passes (only the procedure ties the switch to the gate), and rest on network state the app cannot see (see "Abuse limits and client address"); owner: web/API maintainers and the operator |
 
 ## Assistant-surface boundaries (epic UX, #487)
 
@@ -508,7 +508,9 @@ pytest on a push and it skips a push that changes only files under `k8s/` or
 approving review and no status check; and the deploy workflow ("Update
 Deployment (prod)") runs on a push to `main` that changes
 `k8s/crank-configmap.yml` without waiting for any test. The honest two-file
-enabling change (ConfigMap and record) does start the run, and the runbook has
+enabling change (ConfigMap and record) starts the run when both files are in
+the same push, because GitHub compares only that push's files with the
+ignore list; a ConfigMap line pushed alone starts none. The runbook has
 the operator confirm that `Tests With Coverage` ran on the last commit and
 passed before merging. Closing these two gaps is an owner decision tracked in
 issue #566, section 5.
@@ -570,7 +572,8 @@ compared with `main`, requests in flight, concurrency against real Redis), `cran
 5. **The trust rests on network state the app cannot see.** If a path to the
    pod other than the tunnel appears later, anyone on it can forge the header:
    they avoid the per-address layer and can lock a chosen address out of
-   corrections for up to an hour. The runbook lists when to repeat the gate;
+   corrections by filling its 120 rejected attempts, and can repeat it every
+   hour for as long as they continue. The runbook lists when to repeat the gate;
    nothing detects it automatically.
 6. **Processes on the node and pods in the cluster can always reach the app
    directly**, and so can LAN and tailnet devices if that part of the gate is

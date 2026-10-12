@@ -14,8 +14,8 @@ it, and turn it off again. The address is used for one thing: per-address
 limits on company corrections, so that one person cannot multiply the
 per-account limits by creating accounts (issue #538).
 
-**The switch is off by default and this runbook is the only way to turn it
-on.** While it is off, production keeps the per-account limits only, exactly
+**The switch is off by default and this runbook is the only supported way to
+turn it on.** While it is off, production keeps the per-account limits only, exactly
 as before.
 
 Never write an address, a hostname or a tunnel id into this repository, a pull
@@ -238,9 +238,12 @@ cluster.
      skips a push whose changed files are all under its `paths-ignore` list
      (`.github/**`, `k8s/**` and others; read the list in that file). The
      record file under `docs/` is not on the list, so the two-file enabling
-     change below does start it; a ConfigMap-only change does not.
+     change below starts it when both files are in the same push; GitHub
+     compares the files of that one push with the list, so a ConfigMap line
+     pushed alone starts no run.
    - `main` requires one approving review and no status check, so a failed or
-     missing run does not stop a merge.
+     missing run does not stop a merge. Administrators are not bound by that
+     protection, and force pushes to `main` are allowed.
    - The deploy workflow ("Update Deployment (prod)") runs on a push to `main`
      that changes `k8s/crank-configmap.yml` and does not wait for any test.
 
@@ -334,9 +337,10 @@ cluster.
    Run both before opening the enabling pull request.
 4. Before merging the enabling pull request, open its checks and confirm that
    `Tests With Coverage` ran on the last commit and passed. If it is absent,
-   the gate did not run (for example because the pull request changes only
-   files under `k8s/` or `.github/`), and the pull request must not be merged.
-   Nothing else stops the merge.
+   the gate did not run (for example because the last push changed only files
+   under `k8s/` or `.github/`), and the pull request must not be merged. Put
+   the record and the ConfigMap change in one commit and push it once, so that
+   the push starts the run. Nothing else stops the merge.
 5. Merge only after the "Deploy to Kubernetes (prod)" run of the release that
    contains the limiter has finished. The manifest-only workflow deploys image
    tag `latest`, and that run is what moves `latest`.
@@ -437,8 +441,9 @@ Repeat G1 and G2 after any of:
 
 Nothing detects a new path automatically. If one appears while the switch is
 on, anyone on it can forge the header: they avoid the per-address layer (the
-per-account limits still hold) and can use up a chosen address's allowance for
-up to an hour. No data is exposed.
+per-account limits still hold) and can use up a chosen address's allowance (120
+rejected attempts, 60 per account, counted for one hour from the first) and
+repeat it every hour for as long as they continue. No data is exposed.
 
 ## Related
 

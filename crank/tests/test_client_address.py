@@ -428,7 +428,7 @@ def record_problems(record):
 
 
 def switch_problems(configmap, document, today):
-    """Why the checked-in switch and verification records may not merge."""
+    """The problems reported for the checked-in switch and verification records."""
     data = configmap.get("data") if isinstance(configmap, dict) else None
     if not isinstance(data, dict):
         return ["the ConfigMap has no data mapping"]
@@ -777,7 +777,7 @@ def deployment_problems(manifests, texts):
 
 
 def gate_problems(manifests, texts, document, today):
-    """Why the checked-in deployment and verification records may not merge."""
+    """The problems reported for the checked-in deployment and verification records."""
     configmap, problems = deployment_problems(manifests, texts)
     return problems + switch_problems(configmap, document, today)
 
@@ -945,7 +945,7 @@ class SwitchGateTests(SimpleTestCase):
 
 
 class DeploymentGateTests(SimpleTestCase):
-    """The switch is refused wherever else a merge could put it.
+    """The gate reports the switch wherever else a merge could put it.
 
     Each case edits an in-memory copy of the checked-in manifests and
     workflows, so the tests follow the real deployment rather than a list of
