@@ -7,6 +7,7 @@ import * as React from 'react';
 import {
     ConversationMenu,
     ConversationMenuProps,
+    CONFIRM_ARM_DELAY_MS,
     DELETE_CONVERSATION_COPY,
     NEW_CONVERSATION_COPY,
 } from './ConversationMenu';
@@ -28,7 +29,22 @@ const setup = (overrides: Partial<ConversationMenuProps> = {}) => {
 
 const more = () => screen.getByRole('button', {name: 'More'});
 
+// The confirm button ignores presses until CONFIRM_ARM_DELAY_MS after its
+// confirmation opened; the clock the guard reads is driven by hand.
+let clock = 0;
+const advance = (ms: number) => { clock += ms; };
+const armConfirm = () => advance(CONFIRM_ARM_DELAY_MS);
+
 describe('ConversationMenu', () => {
+    beforeEach(() => {
+        clock = 1000;
+        jest.spyOn(performance, 'now').mockImplementation(() => clock);
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
     test('opens with focus on the first item and closes on Escape returning focus to More', () => {
         setup();
         fireEvent.click(more());
@@ -94,6 +110,7 @@ describe('ConversationMenu', () => {
         fireEvent.click(screen.getByTestId('conversation-delete'));
         expect(screen.getByTestId('confirm-panel')).toHaveTextContent(DELETE_CONVERSATION_COPY);
         expect(props.onDeleteConversation).not.toHaveBeenCalled();
+        armConfirm();
         fireEvent.click(screen.getByRole('button', {name: 'Delete conversation'}));
         await waitFor(() => expect(props.onDeleteConversation).toHaveBeenCalledTimes(1));
         await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
@@ -106,6 +123,7 @@ describe('ConversationMenu', () => {
         setup({onNewConversation});
         fireEvent.click(more());
         fireEvent.click(screen.getByTestId('conversation-new'));
+        armConfirm();
         fireEvent.click(screen.getByTestId('confirm-action'));
         expect(await screen.findByRole('alert')).toHaveTextContent('Could not reset the conversation.');
         const retry = screen.getByRole('button', {name: 'Try again'});
@@ -119,6 +137,7 @@ describe('ConversationMenu', () => {
         setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
         fireEvent.click(more());
         fireEvent.click(screen.getByTestId('conversation-delete'));
+        armConfirm();
         fireEvent.click(screen.getByTestId('confirm-action'));
         expect(await screen.findByRole('button', {name: 'Try deleting again'})).toBeInTheDocument();
     });
@@ -129,6 +148,7 @@ describe('ConversationMenu', () => {
         fireEvent.click(screen.getByTestId('conversation-delete'));
         const confirm = screen.getByTestId('confirm-action');
         expect(confirm).toHaveAccessibleDescription(DELETE_CONVERSATION_COPY);
+        armConfirm();
         fireEvent.click(confirm);
         await screen.findByRole('alert');
         expect(screen.getByTestId('confirm-action')).toHaveAccessibleDescription(
@@ -157,6 +177,7 @@ describe('ConversationMenu', () => {
         fireEvent.click(more());
         fireEvent.click(screen.getByTestId('conversation-new'));
         const confirm = screen.getByTestId('confirm-action');
+        armConfirm();
         fireEvent.click(confirm);
         fireEvent.click(confirm);
         expect(onNewConversation).toHaveBeenCalledTimes(1);
@@ -224,6 +245,7 @@ describe('ConversationMenu', () => {
             setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId('conversation-delete'));
+            armConfirm();
             fireEvent.click(screen.getByTestId('confirm-action'));
             await screen.findByRole('alert');
             const stack = document.querySelector('.chat-panel-stack') as HTMLElement;
@@ -237,6 +259,7 @@ describe('ConversationMenu', () => {
             setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId('conversation-delete'));
+            armConfirm();
             fireEvent.click(screen.getByTestId('confirm-action'));
             await screen.findByRole('alert');
             expect((document.querySelector('.chat-panel-stack') as HTMLElement).scrollTop).toBe(0);
@@ -249,6 +272,85 @@ describe('ConversationMenu', () => {
             fireEvent.click(screen.getByTestId('conversation-export'));
             await screen.findByTestId('export-error');
             await waitFor(() => expect((document.querySelector('.chat-panel-stack') as HTMLElement).scrollTop).toBe(40));
+        });
+    });
+
+    describe('a press right after a confirmation opens is ignored', () => {
+        const openConfirm = (testId: 'conversation-new' | 'conversation-delete') => {
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId(testId));
+        };
+        const press = () => fireEvent.click(screen.getByTestId('confirm-action'));
+
+        test.each([
+            ['conversation-delete', 'onDeleteConversation', 'onNewConversation'],
+            ['conversation-new', 'onNewConversation', 'onDeleteConversation'],
+        ] as const)('%s: ignored with no time between, at 499 ms, honoured at 500 ms', async (testId, called, other) => {
+            const {props} = setup();
+            openConfirm(testId);
+            press();
+            expect(props[called]).not.toHaveBeenCalled();
+            expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+            expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+            expect(screen.getByTestId('confirm-action')).toBeEnabled();
+            advance(CONFIRM_ARM_DELAY_MS - 1);
+            press();
+            expect(props[called]).not.toHaveBeenCalled();
+            expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+            advance(1);
+            press();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+            expect(props[other]).not.toHaveBeenCalled();
+            await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+        });
+
+        test.each(['conversation-delete', 'conversation-new'] as const)(
+            '%s: the delay starts again after Cancel and a new open',
+            async (testId) => {
+                const {props} = setup();
+                const called = testId === 'conversation-delete' ? props.onDeleteConversation : props.onNewConversation;
+                openConfirm(testId);
+                armConfirm();
+                fireEvent.click(screen.getByTestId('confirm-cancel'));
+                openConfirm(testId);
+                press();
+                expect(called).not.toHaveBeenCalled();
+                expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+                armConfirm();
+                press();
+                await waitFor(() => expect(called).toHaveBeenCalledTimes(1));
+            },
+        );
+
+        test('opening the other confirmation starts the delay again', async () => {
+            const {props} = setup();
+            openConfirm('conversation-new');
+            armConfirm();
+            openConfirm('conversation-delete');
+            press();
+            expect(props.onDeleteConversation).not.toHaveBeenCalled();
+            expect(props.onNewConversation).not.toHaveBeenCalled();
+            armConfirm();
+            press();
+            await waitFor(() => expect(props.onDeleteConversation).toHaveBeenCalledTimes(1));
+        });
+
+        test('a keyboard activation right after opening is ignored too', () => {
+            const {props} = setup();
+            openConfirm('conversation-delete');
+            const confirm = screen.getByTestId('confirm-action');
+            confirm.focus();
+            // A keyboard activation of a button arrives as the same click event.
+            fireEvent.keyDown(confirm, {key: 'Enter'});
+            fireEvent.click(confirm);
+            expect(props.onDeleteConversation).not.toHaveBeenCalled();
+            expect(screen.getByRole('heading', {name: 'Delete conversation?'})).toBeInTheDocument();
+        });
+
+        test('the confirmation still moves focus to its heading when it opens', () => {
+            setup();
+            openConfirm('conversation-delete');
+            expect(screen.getByRole('heading', {name: 'Delete conversation?'})).toHaveFocus();
         });
     });
 
