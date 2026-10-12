@@ -1248,7 +1248,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     React.useEffect(() => {
         const shown = [...(rankedMatches?.job_matches || []), ...(rankedMatches?.organization_matches || [])];
         if (phase === 'ready' && !anyEvidenceChanged(shown)) {
-            setRecheck(RECHECK_IDLE);
+            // A re-check that is still out keeps its state until it answers.
+            setRecheck((current) => (current.kind === 'running' ? current : RECHECK_IDLE));
         }
     }, [phase, rankedMatches]);
 
@@ -1624,7 +1625,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={pressRefresh} aria-label="Refresh match status"
-                            aria-disabled={refreshRunning || undefined}
+                            aria-disabled={refreshRunning || recheck.kind === 'running' || undefined}
                             data-testid="job-match-refresh">
                         <Icon name={refreshRunning ? 'spinner' : 'refresh-cw'} />
                     </button>
@@ -1632,7 +1633,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 <div className="card-body" aria-busy={refreshRunning || undefined}>
                     <NoticeStack emptyState={emptyState!} failed={failedFor(storedRevision, 'count')}
                                  stale={!!storedRevision?.stale} pending={!!storedRevision?.pending}
-                                 running={refreshRunning} onReload={reloadFromNotice} />
+                                 running={refreshRunning || recheck.kind === 'running'} onReload={reloadFromNotice} />
                     <ResultTimestamp revision={storedRevision} paired={hasInventoryAge(emptyState!)} />
                     <InventoryAge emptyState={emptyState!} />
                     <p className="mb-0" role="status" aria-live="polite">
@@ -1656,14 +1657,14 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                 <button type="button" className="btn btn-sm btn-outline-light"
                         onClick={pressRefresh} aria-label="Refresh match status"
-                        aria-disabled={refreshRunning || undefined}
+                        aria-disabled={refreshRunning || recheck.kind === 'running' || undefined}
                         data-testid="job-match-refresh">
                     <Icon name={refreshRunning ? 'spinner' : 'refresh-cw'} />
                 </button>
             </div>
             <div className="card-body" aria-busy={refreshRunning || undefined}>
                 <NoticeStack emptyState={state} failed={failedFor(null, 'nothing')} stale={false} pending={false}
-                             running={refreshRunning} onReload={reloadFromNotice} />
+                             running={refreshRunning || recheck.kind === 'running'} onReload={reloadFromNotice} />
                 <InventoryAge emptyState={state} />
                 {/* Single-item message: plain block, no list-bullet marker or
                     leading icon indent (round-2 critique). */}
@@ -1731,7 +1732,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                 <button key={action} type="button"
                                         className={className}
                                         onClick={(event) => handleAction(action, event.currentTarget)}
-                                        aria-disabled={(action === 'retry' && refreshRunning) || undefined}
+                                        aria-disabled={(action === 'retry' && (refreshRunning || recheck.kind === 'running')) || undefined}
                                         data-testid={`action-${action}`}
                                         aria-label={label}>
                                     <Icon name={action === 'retry' && refreshRunning ? 'spinner' : ACTION_ICONS[action] || 'arrow-right'} className="me-1" />
