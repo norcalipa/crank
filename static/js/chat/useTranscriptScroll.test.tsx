@@ -4,7 +4,7 @@ import '@testing-library/jest-dom';
 import {render, screen, fireEvent, act} from '@testing-library/react';
 import * as React from 'react';
 
-import {useTranscriptScroll} from './useTranscriptScroll';
+import {isUnscaledViewport, useTranscriptScroll} from './useTranscriptScroll';
 
 function Harness({assistantCount, extra = 0, loading = false, contentKey, band = false, log = true, block, footerKey}: {assistantCount: number; extra?: number; loading?: boolean; contentKey?: string; log?: boolean; band?: boolean; block?: 'collapsed' | 'open'; footerKey?: unknown}) {
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
@@ -384,6 +384,69 @@ describe('useTranscriptScroll', () => {
             fireEvent.scroll(log);
             expect(screen.getByTestId('state')).toHaveTextContent('true:0');
         });
+
+        test('a reader of older messages is left where they are when the box changes (no input for a while)', () => {
+            render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            const scrollTo = jest.fn();
+            log.scrollTo = scrollTo;
+            metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 200});
+            callbacks.forEach((cb) => cb());
+            // The reader scrolls up: 500px from the end, the pill shows.
+            fireEvent.wheel(log);
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+            now += 5000;
+            scrollTo.mockClear();
+            // A keyboard or a longer draft shrinks the box; the browser reports a scroll before the observer does.
+            metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 100});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+            callbacks.forEach((cb) => cb());
+            expect(scrollTo).not.toHaveBeenCalled();
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        });
+
+        test('once the observer has seen the new size, an input-less scroll away ends following again', () => {
+            render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            log.scrollTo = jest.fn();
+            metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+            callbacks.forEach((cb) => cb());
+            // The box shrinks and the observer runs: the reader is at the end of the smaller box.
+            metrics(log, {scrollHeight: 1000, scrollTop: 900, clientHeight: 100});
+            callbacks.forEach((cb) => cb());
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+            // Much later, find-in-page or a screen reader moves the transcript: no wheel, key or pointer.
+            now += 5000;
+            metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 100});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        });
+
+        test('the input window has two edges: 100ms after a wheel the scroll is the reader\'s, 1000ms after it is the browser\'s', () => {
+            render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            log.scrollTo = jest.fn();
+            metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+            callbacks.forEach((cb) => cb());
+            // A wheel that stays at the end, then, a second later, the box shrinks: the reader keeps following.
+            fireEvent.wheel(log);
+            now += 1000;
+            metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 100});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+            callbacks.forEach((cb) => cb());
+            // A wheel, and 100ms later a scroll with a changed box: the reader scrolled.
+            metrics(log, {scrollHeight: 1000, scrollTop: 900, clientHeight: 100});
+            fireEvent.scroll(log);
+            fireEvent.wheel(log);
+            now += 100;
+            metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 60});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        });
     });
 
     test('falls back to writing scrollTop where scrollTo is missing', () => {
@@ -651,5 +714,15 @@ describe('useTranscriptScroll', () => {
             act(() => { fireEvent(window, new Event('resize')); });
             expect(panel.scrollTop).toBe(0);
         });
+    });
+
+    test('isUnscaledViewport allows a rounding error in the page scale and nothing more', () => {
+        const at = (scale?: number) => ({scale} as VisualViewport);
+        expect(isUnscaledViewport(at(1))).toBe(true);
+        expect(isUnscaledViewport(at(1.005))).toBe(true);
+        expect(isUnscaledViewport(at(0.995))).toBe(true);
+        expect(isUnscaledViewport(at(1.1))).toBe(false);
+        expect(isUnscaledViewport(at(0.9))).toBe(false);
+        expect(isUnscaledViewport(at())).toBe(true);
     });
 });
