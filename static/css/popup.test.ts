@@ -488,3 +488,21 @@ describe('collapsed priorities row and review step (issue #480 adversarial revie
         expect(popupCss).toMatch(/\.priorities-review-search\[aria-disabled='true'\] \{ opacity: 0\.65; \}/);
     });
 });
+
+describe('job-match panel result refresh styles (issue #485)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+
+    it('keeps the new rules in their own section ahead of the result-card rules, never at the end of the file', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        expect(start).toBeGreaterThan(0);
+        expect(next).toBeGreaterThan(start);
+        expect(popupCss.indexOf('/* issue #485 result refresh */', start + 1)).toBe(-1);
+        expect(popupCss.slice(start, next)).toMatch(/#job-match-panel a\.btn \{\s*display: inline-flex;\s*align-items: center;\s*justify-content: center;\s*\}/);
+    });
+
+    it('scopes the heading scroll margin to the widths that show the sticky top bar', () => {
+        expect(popupCss).toMatch(/@media \(max-width: 767\.98px\) \{\s*#job-match-panel \.job-match-panel-title \{ scroll-margin-top: 4\.5rem; \}\s*\}/);
+        expect(popupCss).not.toMatch(/^#job-match-panel \.job-match-panel-title \{ scroll-margin-top/m);
+    });
+});
