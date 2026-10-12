@@ -674,6 +674,202 @@ test.describe('one transcript scroller (issue #483)', () => {
         });
     });
 
+    // A visualViewport the test controls: `inset` is a keyboard's height, `scale` a pinch zoom (which also shrinks the
+    // visual viewport, to the layout viewport divided by the scale).
+    const installViewportStub = (page: Page) => page.addInitScript(() => {
+        const state = {inset: 0, scale: 1};
+        (window as unknown as {__viewport: typeof state}).__viewport = state;
+        const target = new EventTarget();
+        const fake = {
+            get height() { return window.innerHeight / state.scale - state.inset; },
+            get width() { return window.innerWidth / state.scale; },
+            get scale() { return state.scale; },
+            offsetTop: 0, offsetLeft: 0, pageTop: 0, pageLeft: 0,
+            addEventListener: target.addEventListener.bind(target),
+            removeEventListener: target.removeEventListener.bind(target),
+            dispatchEvent: target.dispatchEvent.bind(target),
+        };
+        Object.defineProperty(window, 'visualViewport', {configurable: true, get: () => fake});
+    });
+    const setViewport = (page: Page, next: {inset?: number; scale?: number}) => page.evaluate((values) => {
+        Object.assign((window as unknown as {__viewport: object}).__viewport, values);
+        window.visualViewport!.dispatchEvent(new Event('resize'));
+    }, next);
+
+    test.describe('a visual viewport that is not a keyboard, or a keyboard after a reply', () => {
+        for (const size of [{width: 375, height: 667}, {width: 320, height: 568}]) {
+            test(`a pinch zoom to 2x leaves the transcript its height, ${size.width}x${size.height}`, async ({page}) => {
+                await page.setViewportSize(size);
+                await installViewportStub(page);
+                await loadPanel(page, 'priorities=57');
+                const before = await settledPanel(page);
+                expect(before.logHeight).toBeGreaterThan(150);
+                for (const scale of [1.5, 2]) {
+                    await setViewport(page, {scale});
+                    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+                    const zoomed = await settledPanel(page);
+                    expect(zoomed.logHeight, `at ${scale}x the transcript is as tall as at 1x`).toBe(before.logHeight);
+                    expect(zoomed.bodyScrollRange).toBe(before.bodyScrollRange);
+                    expect(zoomed.logFromEnd).toBeLessThanOrEqual(2);
+                }
+                await expect(page.getByTestId('job-search-chat')).toHaveCSS('--chat-keyboard-inset', '0px');
+                // The same shortfall without a zoom is a keyboard.
+                await setViewport(page, {scale: 1, inset: 200});
+                await expect.poll(async () => (await readPanel(page)).logHeight).toBeLessThan(before.logHeight);
+            });
+        }
+
+        const sendAndWaitForReply = async (page: Page, text = 'Tell me more') => {
+            await page.getByTestId('assistant-composer').fill(text);
+            await page.getByRole('button', {name: 'Send message'}).click();
+            await expect(page.getByText('Thanks — I found a few matches for you.')).toBeVisible();
+            await settledPanel(page);
+        };
+
+        for (const [size, inset] of [[{width: 375, height: 667}, 290], [{width: 390, height: 844}, 300], [{width: 320, height: 568}, 250]] as const) {
+            test(`a keyboard that opens after a reply leaves a following reader at the end, ${size.width}x${size.height}`, async ({page}) => {
+                await page.setViewportSize(size);
+                await installViewportStub(page);
+                await loadPanel(page, 'priorities=57');
+                await settledPanel(page);
+                await sendAndWaitForReply(page);
+                const before = await settledPanel(page);
+                expect(before.logFromEnd).toBeLessThanOrEqual(2);
+                await setViewport(page, {inset});
+                await expect.poll(async () => (await readPanel(page)).logHeight).toBeLessThan(before.logHeight);
+                const up = await settledPanel(page);
+                expect(up.logFromEnd, 'the reader is still at the end').toBeLessThanOrEqual(2);
+                expect(up.pill, 'no false "Jump to latest"').toBe(false);
+                await setViewport(page, {inset: 0});
+                await expect.poll(async () => (await readPanel(page)).logHeight).toBe(before.logHeight);
+                const down = await settledPanel(page);
+                expect(down.logFromEnd).toBeLessThanOrEqual(2);
+                expect(down.pill).toBe(false);
+            });
+        }
+
+        for (const size of [{width: 1280, height: 900}, {width: 375, height: 667}]) {
+            test(`a five-line draft after a reply leaves a following reader at the end, ${size.width}x${size.height}`, async ({page}) => {
+                await page.setViewportSize(size);
+                await loadPanel(page, 'priorities=57');
+                await settledPanel(page);
+                await sendAndWaitForReply(page);
+                const before = await settledPanel(page);
+                await page.getByTestId('assistant-composer').fill('one\ntwo\nthree\nfour\nfive');
+                await expect.poll(async () => (await readPanel(page)).logHeight).toBeLessThan(before.logHeight);
+                const drafted = await settledPanel(page);
+                expect(drafted.logFromEnd, 'the reader is still at the end').toBeLessThanOrEqual(2);
+                expect(drafted.pill, 'no false "Jump to latest"').toBe(false);
+            });
+        }
+
+        for (const [from, to] of [[{width: 375, height: 667}, {width: 375, height: 380}], [{width: 1280, height: 900}, {width: 1280, height: 600}]]) {
+            test(`a layout resize after a reply leaves a following reader at the end, ${from.width}x${from.height} to ${to.height}`, async ({page}) => {
+                await page.setViewportSize(from);
+                await loadPanel(page, 'priorities=57');
+                await settledPanel(page);
+                await sendAndWaitForReply(page);
+                const before = await settledPanel(page);
+                await page.setViewportSize(to);
+                await expect.poll(async () => (await readPanel(page)).logHeight).toBeLessThan(before.logHeight);
+                const after = await settledPanel(page);
+                expect(after.logFromEnd, 'the reader is still at the end').toBeLessThanOrEqual(2);
+                expect(after.pill, 'no false "Jump to latest"').toBe(false);
+            });
+        }
+    });
+
+    test.describe('the More menu leaves its button pressable, so a second press closes it', () => {
+        for (const [size, query] of [
+            [{width: 375, height: 380}, ''], [{width: 667, height: 375}, ''], [{width: 320, height: 420}, ''],
+            [{width: 1280, height: 480}, ''], [{width: 1024, height: 480}, '&mode=drawer'], [{width: 800, height: 480}, '&mode=drawer'],
+        ] as const) {
+            test(`${size.width}x${size.height}${query}`, async ({page}) => {
+                await page.setViewportSize(size);
+                await loadPanel(page, `priorities=57${query}`);
+                await settledPanel(page);
+                const more = page.getByTestId('conversation-more');
+                const box = (await more.boundingBox())!;
+                const centre = {x: box.x + box.width / 2, y: box.y + box.height / 2};
+                await page.mouse.click(centre.x, centre.y);
+                const menu = page.getByTestId('conversation-menu');
+                await expect(menu).toBeVisible();
+                // The menu leaves the button's centre uncovered and every item whole, with the panel at rest.
+                const open = await page.evaluate(({x, y}) => {
+                    const items = Array.from(document.querySelectorAll('[data-testid="conversation-menu"] [role="menuitem"], [data-testid="conversation-menu"] button'));
+                    const hit = document.elementFromPoint(x, y);
+                    const body = document.querySelector('.assistant-panel-body') as HTMLElement;
+                    return {
+                        buttonUncovered: !!hit && !!hit.closest('[data-testid="conversation-more"]'),
+                        itemTops: items.map((el) => Math.round(el.getBoundingClientRect().top)),
+                        itemBottoms: items.map((el) => Math.round(el.getBoundingClientRect().bottom)),
+                        viewport: window.innerHeight,
+                        bodyScrolls: body.scrollHeight > body.clientHeight + 1,
+                    };
+                }, centre);
+                expect(open.buttonUncovered, 'the menu is not over the More button').toBe(true);
+                expect(open.itemTops.length).toBeGreaterThanOrEqual(4);
+                expect(Math.min(...open.itemTops)).toBeGreaterThanOrEqual(0);
+                expect(Math.max(...open.itemBottoms)).toBeLessThanOrEqual(open.viewport);
+                expect(open.bodyScrolls, 'the panel body does not gain a scroll range').toBe(false);
+                await page.mouse.click(centre.x, centre.y);
+                await expect(menu).toHaveCount(0);
+                await expect(page.getByTestId('confirm-action')).toHaveCount(0);
+            });
+        }
+    });
+
+    test.describe('the unread pill can be pressed at its centre where the transcript is short', () => {
+        const scrollUpToPill = async (page: Page) => {
+            await page.getByRole('log').evaluate((el) => { el.dispatchEvent(new Event('wheel')); el.scrollTop = Math.max(0, el.scrollTop - 200); });
+            await expect(page.getByTestId('jump-to-latest')).toBeVisible();
+        };
+        const pressCentre = async (page: Page) => {
+            const pill = page.getByTestId('jump-to-latest');
+            const hit = await pill.evaluate((el) => {
+                const r = el.getBoundingClientRect();
+                const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return !!top && (top === el || el.contains(top));
+            });
+            expect(hit, 'the pill is topmost at its centre').toBe(true);
+            const box = (await pill.boundingBox())!;
+            await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+            await expect(pill).toHaveCount(0);
+            expect((await readPanel(page)).logFromEnd, 'the press jumped to the end').toBeLessThanOrEqual(2);
+        };
+        const withNotice = async (page: Page) => {
+            await page.route('**/api/agent/assistant-status/', (route) => route.fulfill({
+                status: 200, contentType: 'application/json',
+                body: JSON.stringify({state: 'temporarily_unavailable', actions: ['retry'], checked_at: '2026-08-20T00:00:00Z'}),
+            }));
+        };
+
+        for (const notice of [false, true]) {
+            test(`667x340${notice ? ' under a status notice' : ''}`, async ({page}) => {
+                await page.setViewportSize({width: 667, height: 340});
+                if (notice) await withNotice(page);
+                await loadPanel(page, 'priorities=57');
+                if (notice) await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
+                await settledPanel(page);
+                await scrollUpToPill(page);
+                await pressCentre(page);
+            });
+
+            test(`320x568 under a stubbed 250px keyboard${notice ? ' and a status notice' : ''}`, async ({page}) => {
+                await page.setViewportSize({width: 320, height: 568});
+                await installViewportStub(page);
+                if (notice) await withNotice(page);
+                await loadPanel(page, 'priorities=57');
+                if (notice) await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
+                await settledPanel(page);
+                await setViewport(page, {inset: 250});
+                await expect.poll(async () => (await readPanel(page)).logHeight).toBeLessThan(60);
+                await scrollUpToPill(page);
+                await pressCentre(page);
+            });
+        }
+    });
+
     for (const size of [{width: 320, height: 420}, {width: 320, height: 640}]) {
         for (const [trigger, label] of [['conversation-new', 'new'], ['conversation-delete', 'delete']]) {
             test(`the ${label} confirm shows its action and Cancel together on open, ${size.width}x${size.height}`, async ({page}) => {

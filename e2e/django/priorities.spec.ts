@@ -501,7 +501,13 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
         });
     }
 
-    for (const viewport of [{width: 320, height: 568, more: true}, {width: 375, height: 553, more: true}, {width: 320, height: 640, more: false}]) {
+    // `more`: true when the second row is below the fold by more than More's threshold, so More must show; false when both
+    // rows fit; 'sliver' when the row is cut by less than the threshold (375x553: 14px) and there is no More, a known gap
+    // (the list scrolls to the row; the threshold lives in ReviewChanges.tsx).
+    const secondRow: Array<{width: number; height: number; more: boolean | 'sliver'}> = [
+        {width: 320, height: 568, more: true}, {width: 375, height: 553, more: 'sliver'}, {width: 320, height: 640, more: false},
+    ];
+    for (const viewport of secondRow) {
         test(`${viewport.width}x${viewport.height}: the review leads to its second row of actions, and the applied card shows what was saved`, async ({page}) => {
             await page.setViewportSize({width: viewport.width, height: viewport.height});
             await page.goto('/');
@@ -521,8 +527,11 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             // (it is taller with no notice above the transcript). More shows exactly when a second row is below.
             const below = await section.locator('.priorities-scroll').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
             const hasMore = below > MORE_BELOW_PX;
-            if (!viewport.more) expect(hasMore, 'both rows fit at this size').toBe(false);
+            if (viewport.more === false) expect(hasMore, 'both rows fit at this size').toBe(false);
+            if (viewport.more === true) expect(hasMore, 'the second row is below the fold, so More shows').toBe(true);
+            if (viewport.more === 'sliver') expect(below, 'the second row is cut, by less than More\'s threshold').toBeGreaterThan(0);
             if (hasMore) {
+                await expect(more).toHaveCount(1);
                 // The block shows one row of actions: Apply, Cancel and More, each whole and reachable; the change is not hidden.
                 for (const button of [actions.getByRole('button', {name: 'Apply to account'}), actions.getByRole('button', {name: 'Cancel'}), more]) {
                     expect(await wholeAndOnTop(button), await button.textContent() || '').toBe(true);

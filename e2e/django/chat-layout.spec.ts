@@ -516,7 +516,10 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
                 expect(items).toHaveLength(4);
                 expect(items.filter((item) => !item.whole || !item.hit), 'every More item is whole and reachable').toEqual([]);
                 expect((await composerOnScreen(page)).bodyScrollTop, 'the panel body stays at its top while More is open').toBe(0);
-                // Escape on a sheet closes the whole assistant (not this issue's), so the menu is left by a new load.
+                // The menu opens beside its button: a second press on the button closes it and starts nothing.
+                await page.mouse.click(more.x + more.width / 2, more.y + more.height / 2);
+                await expect(page.getByTestId('conversation-menu')).toHaveCount(0);
+                await expect(page.getByTestId('confirm-action')).toHaveCount(0);
                 await openChat(page, wideFont);
 
                 // A send that fails: the error arrives above the composer while the reader is still in it.
@@ -542,6 +545,25 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
                     .toMatchObject({cutOff: 0, hit: true, focusInComposer: false});
             });
         }
+    }
+
+    for (const size of [{width: 1280, height: 480}, {width: 1024, height: 480}]) {
+        test(`${size.width}x${size.height}: a second press on More closes the menu and starts nothing`, async ({page}) => {
+            test.setTimeout(120_000);
+            await page.setViewportSize({width: 1280, height: 900});
+            await page.goto('/');
+            await setPriorities(page, TEN);
+            await openChat(page);
+            await ensureConversation(page, 2);
+            await page.setViewportSize(size);
+            await openChat(page);
+            const more = (await page.getByTestId('conversation-more').boundingBox())!;
+            await page.mouse.click(more.x + more.width / 2, more.y + more.height / 2);
+            await expect(page.getByTestId('conversation-menu')).toBeVisible();
+            await page.mouse.click(more.x + more.width / 2, more.y + more.height / 2);
+            await expect(page.getByTestId('conversation-menu')).toHaveCount(0);
+            await expect(page.getByTestId('confirm-action')).toHaveCount(0);
+        });
     }
 
     test('more than 48px above the end nothing moves and the pill counts the replies; at the end the late availability notice is followed', async ({page}) => {

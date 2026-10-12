@@ -1035,6 +1035,17 @@ describe('PrioritiesSection', () => {
             expect(document.querySelector('.priorities-title')).toBeNull();
         });
 
+        test('keeps the class names the chat reads: the block is .priorities-sidebar, and holds .priorities-scroll only while open', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const toggle = await screen.findByTestId('priorities-summary-toggle');
+            const block = toggle.closest('.priorities-sidebar')!;
+            expect(block).toBe(screen.getByTestId('priorities-sidebar'));
+            expect(block.querySelector('.priorities-scroll')).toBeNull();
+            fireEvent.click(toggle);
+            expect(block.querySelector('.priorities-scroll')).not.toBeNull();
+        });
+
         test('the toggle expands to every chip, the legend and Reset, then collapses; focus stays on it', async () => {
             serve();
             render(<PrioritiesSection variant="sidebar" authenticated/>);
