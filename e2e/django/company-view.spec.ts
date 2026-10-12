@@ -415,4 +415,214 @@ test.describe('company view (issue #486b)', () => {
             }
         });
     }
+
+    const listRow = (page: Page) => page.locator('tr[aria-label^="View details for"], article[aria-label^="View details for"]').locator('visible=true').last();
+    const detailUrl = /\/api\/organizations\/\d+\/$/;
+    // The seeded rating source is active but not a ranked row, so only its
+    // detail request can say what it is: the one company a failing request can break.
+    const unlistedId = (page: Page) => page.evaluate(async () => {
+        for (let candidate = 1; candidate <= 40; candidate += 1) {
+            const res = await fetch(`/api/organizations/${candidate}/`);
+            if (res.ok && (await res.json()).name === 'E2E Rating Source') return candidate;
+        }
+        return null;
+    });
+
+    for (const path of ['/', '/algo/2/']) {
+        for (const size of [
+            {width: 1280, height: 900, top: 56},
+            {width: 1024, height: 800, top: 56},
+            {width: 375, height: 667, top: 80},
+            {width: 320, height: 640, top: 80},
+        ]) {
+            test(`the view starts at the top of the scroll area on ${path} at ${size.width}x${size.height}; the introduction returns after Back`, async ({page}) => {
+                await page.setViewportSize({width: size.width, height: size.height});
+                await login(page);
+                await page.goto(path);
+                const row = listRow(page);
+                const label = (await row.getAttribute('aria-label'))!;
+                await row.evaluate((node) => node.scrollIntoView({block: 'center', behavior: 'instant'}));
+                const intro = page.locator('.homepage-container > h1 + p');
+                const how = page.locator('.homepage-container > .how-ranking-works');
+                await expect(intro).toBeVisible();
+                const before = await row.evaluate((node) => node.getBoundingClientRect().top);
+
+                await row.click();
+                await expect(view(page)).toBeVisible();
+                await expect(intro).toBeHidden();
+                await expect(how).toBeHidden();
+                await expect(page.getByRole('heading', {level: 1})).toHaveCount(1);
+                const top = await view(page).evaluate((node) => node.getBoundingClientRect().top);
+                expect(top).toBeLessThanOrEqual(size.top);
+                if (size.width < 768) {
+                    const back = (await view(page).getByRole('button', {name: 'Back to results'}).boundingBox())!;
+                    expect(back.y + back.height).toBeLessThanOrEqual(size.height);
+                    const share = await view(page).evaluate((node, vh) => {
+                        const heading = node.querySelector('h2')!.getBoundingClientRect();
+                        return (vh - heading.top) / vh;
+                    }, size.height);
+                    expect(share).toBeGreaterThanOrEqual(0.55);
+                }
+
+                await page.goBack();
+                await expect(view(page)).toHaveCount(0);
+                await expect(intro).toBeVisible();
+                await expect(how).toBeVisible();
+                const again = page.locator(`[aria-label="${label}"]`).locator('visible=true').first();
+                await expect.poll(() => again.evaluate((node) => document.activeElement === node)).toBe(true);
+                await expect.poll(async () => Math.abs((await again.evaluate((node) => node.getBoundingClientRect().top)) - before)).toBeLessThanOrEqual(2);
+            });
+        }
+    }
+
+    // One label/value row at a time: side by side, the label ends before the
+    // value starts; stacked, it ends above it; it never overflows its box and
+    // nothing in the row leaves the view.
+    const measureRows = (page: Page) => page.evaluate(() => {
+        const root = document.querySelector('[data-testid="company-view"]')!;
+        const box = root.getBoundingClientRect();
+        const problems: string[] = [];
+        let rows = 0;
+        root.querySelectorAll('.row').forEach((row) => {
+            const label = row.querySelector(':scope > .text-end');
+            const value = label?.nextElementSibling;
+            if (!label || !value) return;
+            rows += 1;
+            const l = label.getBoundingClientRect();
+            const v = value.getBoundingClientRect();
+            const stacked = v.top >= l.bottom - 0.5 && Math.abs(v.left - l.left) < 2;
+            const text = (label.textContent ?? '').trim();
+            if (stacked ? l.bottom > v.top + 0.5 : l.right > v.left + 0.5) problems.push(`${text} overlaps its value`);
+            if (label.scrollWidth > label.clientWidth + 0.5) problems.push(`${text} is clipped`);
+            row.querySelectorAll('*').forEach((node) => {
+                const r = node.getBoundingClientRect();
+                if (r.width > 0 && (r.right > box.right + 0.5 || r.left < box.left - 0.5)) problems.push(`${text}: a box leaves the view`);
+            });
+        });
+        return {rows, problems, overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth};
+    });
+
+    for (const width of [768, 800, 820, 834, 853, 900, 1000, 1024, 1100, 1280, 1366, 1440, 375, 320]) {
+        test(`no label is printed over its value at ${width}px, assistant open and closed`, async ({page}) => {
+            await page.setViewportSize({width, height: 800});
+            await login(page);
+            for (const assistant of width >= 768 ? ['closed', 'open'] : ['closed']) {
+                await page.goto('/');
+                if (assistant === 'open') await page.locator('[data-testid="assistant-launcher"]').click();
+                await page.locator('tr[aria-label="View details for E2E Beta Labs"], article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
+                await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+                await view(page).locator('details').evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLDetailsElement).open = true; }));
+                const result = await measureRows(page);
+                expect(result.rows, `rows measured (${assistant})`).toBeGreaterThan(8);
+                expect(result.problems, `${width}px, assistant ${assistant}`).toEqual([]);
+                expect(result.overflow).toBeLessThanOrEqual(0);
+            }
+        });
+    }
+
+    test('switching to a company that is gone or fails to load clears the assistant\'s company; Back focuses the opened row', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        // The list shows only this company, so the next id is not in it and the detail request decides.
+        await page.goto('/?search=E2E+Alpha');
+        await opener(page).click();
+        // The assistant opened from its launcher follows the view; "Ask" would
+        // make the company the assistant's own, which a switch does not take away.
+        await page.locator('[data-testid="assistant-launcher"]').click();
+        await expect(page.getByTestId('assistant-context-line')).toHaveText(`About ${COMPANY}`);
+
+        await page.evaluate(() => window.dispatchEvent(new CustomEvent('crank:company-open', {detail: {organizationId: 999999}})));
+        await expect(page.getByTestId('company-not-found')).toBeVisible();
+        await expect.poll(() => companyParam(page)).toBe('999999');
+        await expect(page.getByText(`About ${COMPANY}`)).toHaveCount(0);
+
+        await page.goBack();
+        await expect(view(page)).toHaveCount(0);
+        await expect(opener(page)).toBeFocused();
+
+        // A record that fails to load clears it the same way.
+        await opener(page).click();
+        await expect(page.getByTestId('assistant-context-line')).toHaveText(`About ${COMPANY}`);
+        const unlisted = await unlistedId(page);
+        test.skip(unlisted === null, 'the seeded rating source is not listed by the organizations API');
+        await page.route(detailUrl, (route) => route.fulfill({status: 500, contentType: 'application/json', body: '{}'}));
+        await page.evaluate((id) => window.dispatchEvent(new CustomEvent('crank:company-open', {detail: {organizationId: id}})), unlisted);
+        await expect(page.getByTestId('company-view-retry')).toBeVisible();
+        await expect(page.getByText(`About ${COMPANY}`)).toHaveCount(0);
+        await expect(view(page).getByRole('heading', {name: 'Company not loaded'})).toBeVisible();
+    });
+
+    test('Retry keeps the focus in the view: the heading, then Back to results on the next Tab', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/');
+        const id = await unlistedId(page);
+        test.skip(id === null, 'the seeded rating source is not listed by the organizations API');
+        let failing = true;
+        await page.route(detailUrl, (route) => (failing
+            ? route.fulfill({status: 500, contentType: 'application/json', body: '{}'})
+            : route.continue()));
+        await page.goto(`/?company=${id}`);
+        const retry = page.getByTestId('company-view-retry');
+        await expect(retry).toBeVisible();
+        failing = false;
+        await retry.focus();
+        await page.keyboard.press('Enter');
+        await expect(retry).toHaveCount(0);
+        await expect(view(page).getByRole('heading', {name: 'E2E Rating Source'})).toBeVisible();
+        await expect(page.locator('#organization-details-title')).toBeFocused();
+        await page.keyboard.press('Tab');
+        await expect(view(page).getByRole('button', {name: 'Back to results'})).toBeFocused();
+    });
+
+    for (const size of [{width: 375, height: 667}, {width: 320, height: 640}]) {
+        test(`on a phone at ${size.width}x${size.height} the Assistant bar stays at the bottom edge while the view loads, is not found or fails`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page);
+            const settle = async (name: string) => {
+                await expect(view(page)).toBeVisible();
+                const m = await page.evaluate(() => {
+                    const dock = document.querySelector('.assistant-dock')!.getBoundingClientRect();
+                    return {dockBottom: dock.bottom, vh: window.innerHeight, scrollHeight: document.documentElement.scrollHeight};
+                });
+                expect(Math.abs(m.dockBottom - m.vh), `${name}: bar bottom ${m.dockBottom} vs ${m.vh}`).toBeLessThanOrEqual(1);
+                expect(m.scrollHeight, `${name}: document height`).toBeLessThanOrEqual(m.vh + 1);
+            };
+
+            let release: () => void = () => undefined;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            await page.route(detailUrl, async (route) => {
+                await gate;
+                await route.fulfill({status: 500, contentType: 'application/json', body: '{}'}).catch(() => undefined);
+            });
+            await page.goto('/?company=1');
+            await expect(page.getByTestId('company-view-loading')).toBeVisible();
+            await settle('loading');
+            release();
+            await expect(page.getByTestId('company-view-retry')).toBeVisible();
+            await settle('load error');
+            await page.unroute(detailUrl);
+
+            await page.goto('/?company=999999');
+            await expect(page.getByTestId('company-not-found')).toBeVisible();
+            await settle('not found');
+        });
+    }
+
+    test('on a phone the sheet\'s first button names the company view it returns to', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page);
+        await page.goto('/?search=E2E');
+        await opener(page).click();
+        await expect(view(page)).toBeVisible();
+        await page.locator('[data-testid="assistant-launcher"]').click();
+        const back = page.getByTestId('assistant-back-to-results');
+        await expect(back).toHaveText(`Back to ${COMPANY}`);
+        const box = (await back.boundingBox())!;
+        expect(box.height).toBeGreaterThanOrEqual(44);
+        await back.click();
+        await expect(page.getByTestId('assistant-panel')).toHaveCount(0);
+        await expect(view(page)).toBeVisible();
+        await expect(view(page).getByRole('heading', {name: COMPANY})).toBeVisible();
+    });
 });
