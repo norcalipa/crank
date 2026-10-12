@@ -11,6 +11,11 @@ export const ABOUT_HISTORY_COPY =
     + 'and starts a fresh one, Export conversation downloads a copy, and Delete conversation removes it '
     + 'permanently. None of these change your saved priorities or job matches.';
 
+// A confirmation opens under the pointer that chose its item, so a second press
+// of a double press would land on the confirm button; presses earlier than this
+// after it opened are ignored.
+export const CONFIRM_ARM_DELAY_MS = 500;
+
 type ConfirmKind = 'new' | 'delete';
 
 export interface ConversationMenuProps {
@@ -85,6 +90,7 @@ export function ConversationMenu({
     const exportPanelRef = React.useRef<HTMLDivElement>(null);
     const failureRef = React.useRef<HTMLParagraphElement>(null);
     const focusFirstItemRef = React.useRef(true);
+    const confirmOpenedAtRef = React.useRef(0);
 
     const items: MenuItem[] = [
         {id: 'new', label: 'New conversation…', testId: 'conversation-new', disabled: !hasConversation || pending},
@@ -220,6 +226,7 @@ export function ConversationMenu({
         }
         setAboutOpen(false);
         setFailure(null);
+        confirmOpenedAtRef.current = performance.now();
         setConfirming(item.id);
     };
 
@@ -236,6 +243,7 @@ export function ConversationMenu({
 
     const runConfirm = async () => {
         if (!confirming || working) return;
+        if (performance.now() - confirmOpenedAtRef.current < CONFIRM_ARM_DELAY_MS) return;
         setWorking(true);
         setFailure(null);
         const error = await (confirming === 'new' ? onNewConversation() : onDeleteConversation());
