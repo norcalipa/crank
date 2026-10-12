@@ -69,6 +69,7 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
             await expect(form).toBeHidden();
             // 486b: the view was never closed, so nothing reopens; it simply shows the saved correction.
             await expect(details).toBeVisible();
+            await expect(opener).toBeFocused();
             const pending = details.getByTestId('your-pending-corrections');
             await expect(pending).toContainText('Pending review');
             await expect(pending).toContainText('Hybrid, 3 days');

@@ -321,6 +321,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             return;
         }
         const context = getWorkspaceSnapshot().context;
+        // Switching companies from inside a view: while the next record loads
+        // the previous company's context stays. Clearing it would also strip
+        // `company` from the URL the switch just wrote.
+        if (this.state.view?.status === 'loading' && this.reportedOrganizationId !== null) {
+            return;
+        }
         if (this.reportedOrganizationId !== null
             && context?.organizationId === this.reportedOrganizationId) {
             clearWorkspaceContext();

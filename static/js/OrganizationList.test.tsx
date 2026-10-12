@@ -1316,6 +1316,22 @@ describe('OrganizationList', () => {
             expect(window.location.search).toBe('');
         });
 
+        test('switching to a company whose record has to load keeps company= in the URL while it loads and after', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('popup-details-grid');
+
+            act(() => {
+                expect(openWorkspaceCompany(77)).toBe('opened');
+            });
+            expect(screen.getByTestId('company-view-loading')).toBeInTheDocument();
+            expect(new URLSearchParams(window.location.search).get('company')).toBe('77');
+
+            await screen.findByTestId('popup-details-grid');
+            expect(new URLSearchParams(window.location.search).get('company')).toBe('77');
+            expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 77});
+        });
+
         test('from a deep link there is no entry to go back through: Back to results rewrites the URL in place', async () => {
             window.history.replaceState({}, '', '/?company=1&search=Organization');
             const backSpy = jest.spyOn(window.history, 'back');
@@ -1329,7 +1345,7 @@ describe('OrganizationList', () => {
             expect(backSpy).not.toHaveBeenCalled();
             await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
             expect(window.location.search).toBe('?search=Organization');
-            expect(screen.getAllByRole('button', {name: 'View details for Organization 1'})[0]).toHaveFocus();
+            await waitFor(() => expect(screen.getAllByRole('button', {name: 'View details for Organization 1'})[0]).toHaveFocus());
         });
 
         test('with the opened row off the page, focus lands on the results region instead', async () => {
@@ -1482,10 +1498,22 @@ describe('OrganizationList', () => {
             expect(new URLSearchParams(window.location.search).has('company')).toBe(false);
         });
 
-        test('crank:private-state-purged closes the view, even when the store held nothing', async () => {
+        const withPendingSuggestion = () => {
+            const base = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url) => (String(url).startsWith('/api/company-corrections/?organization=')
+                ? Promise.resolve(ok({corrections: [{
+                    id: 7, field_key: 'rto_policy', field_label: 'RTO policy', proposed_value: 'Previous account value',
+                    status: 'pending', status_label: 'Pending review',
+                }]}))
+                : base(url)));
+        };
+
+        test('crank:private-state-purged closes the view and leaves no pending suggestion, though isAuthenticated stays true', async () => {
+            withPendingSuggestion();
             render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
             await screen.findByTestId('company-view');
+            expect(await screen.findByTestId('your-pending-corrections')).toHaveTextContent('Previous account value');
 
             act(() => {
                 document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
@@ -1494,24 +1522,29 @@ describe('OrganizationList', () => {
             await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
             await flush();
             expect(screen.queryByTestId('your-pending-corrections')).not.toBeInTheDocument();
+            expect(screen.queryByText('Previous account value')).not.toBeInTheDocument();
         });
 
-        test('wiping the account in the store closes the view; an unobserved hydration does not', async () => {
-            render(<OrganizationList organizations={organizations} />);
+        test('wiping the account in the store closes the view and drops the previous account\'s suggestions; an unobserved hydration does not', async () => {
+            withPendingSuggestion();
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
             await screen.findByTestId('company-view');
+            expect(await screen.findByTestId('your-pending-corrections')).toBeInTheDocument();
 
             act(() => {
                 document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {unobserved: true}}));
             });
             await flush();
             expect(screen.getByTestId('company-view')).toBeInTheDocument();
+            expect(screen.getByTestId('your-pending-corrections')).toBeInTheDocument();
 
             act(() => {
                 setWorkspaceContext({surface: 'rankings'});
                 clearWorkspaceContext();
             });
             await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            expect(screen.queryByText('Previous account value')).not.toBeInTheDocument();
         });
 
         test('closing with no view open does nothing and retrying with none open does nothing', async () => {
