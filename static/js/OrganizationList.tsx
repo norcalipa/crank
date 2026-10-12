@@ -158,6 +158,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // Back was requested through history.back(); the popstate it causes does
     // the closing, so further close requests in the meantime are ignored.
     private closeRequested = false;
+    // Private state was dropped (a purge, or the store wiped for another
+    // account): the view closed in place for it, once.
+    private closedAfterPurge = false;
+    // The store's account went from known to unknown, which only a wipe does:
+    // a context cleared by the reader leaves the account as it is.
+    private privateStateDropped = false;
+    private lastAccountStatus = getWorkspaceSnapshot().account.status;
 
     // Funding-round and RTO labels come from two choice endpoints. The status
     // drives the loading/error cue next to the result count; on failure the
@@ -201,6 +208,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.stopPositionTracking = installPositionTracking(this.visibleOrganizationAnchor);
         restoreResultPosition(this.findOrganizationAnchor);
         this.restoredScrollY = window.scrollY;
+        this.lastAccountStatus = getWorkspaceSnapshot().account.status;
         this.unsubscribeWorkspace = subscribeWorkspace(this.handleWorkspaceChange);
         this.unregisterFilterTarget = registerFilterTarget(this.applyAssistantFilters);
         this.unregisterCompanyTarget = registerCompanyTarget(this.openCompanyById);
@@ -365,20 +373,40 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     handleWorkspaceChange = () => {
         this.restoreAfterHydration();
+        const {account} = getWorkspaceSnapshot();
+        if (account.status !== 'unknown') {
+            this.privateStateDropped = false;
+        } else if (this.lastAccountStatus !== 'unknown') {
+            this.privateStateDropped = true;
+        }
+        this.lastAccountStatus = account.status;
         const shown = this.state.view?.organization;
         if (shown
             && (this.reportedOrganizationId === shown.id || this.askedOrganizationId === shown.id)
             && getWorkspaceSnapshot().context?.organizationId !== shown.id) {
-            this.closeView();
+            if (this.privateStateDropped) {
+                this.closeAfterPurge();
+            } else {
+                this.closeView();
+            }
         }
     };
 
     // The workspace purge (sign-out, account switch) drops every private
     // entity; the company view goes with it, whatever the store held.
     handlePrivateStatePurged = () => {
-        if (this.state.view) {
-            this.closeView();
+        this.closeAfterPurge();
+    };
+
+    // Never through history: a traversal queued in the same task as the
+    // sign-out form's submission could cancel it. Once per purge, whichever of
+    // the two listeners hears it first.
+    private closeAfterPurge = () => {
+        if (!this.state.view || this.closedAfterPurge) {
+            return;
         }
+        this.closedAfterPurge = true;
+        this.leaveViewInPlace();
     };
 
     // A user sent to sign-in from a company's view returns with that company
@@ -608,6 +636,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
         const generation = ++this.modalGeneration;
         this.closeRequested = false;
+        this.closedAfterPurge = false;
+        this.privateStateDropped = false;
         this.askedOrganizationId = null;
         if (current === null) {
             this.openedRowId = id;

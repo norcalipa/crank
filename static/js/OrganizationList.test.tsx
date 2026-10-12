@@ -8,6 +8,7 @@ import * as React from 'react';
 import OrganizationList from './OrganizationList';
 import SuggestCompanyHost from './suggestCompany/SuggestCompanyHost';
 import * as suggestCompanyController from './suggestCompany/controller';
+import {installWorkspacePersistence} from './workspace/persistence';
 import {applyWorkspaceFilters, clearWorkspaceContext, getWorkspaceSnapshot, openWorkspaceCompany, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext, setWorkspaceEntity} from './workspace/store';
 
 interface Organization {
@@ -1806,6 +1807,145 @@ describe('OrganizationList', () => {
             });
             await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
             expect(screen.queryByText('Previous account value')).not.toBeInTheDocument();
+        });
+
+        describe('a purge or an account change closes the view in place, never through history (issue #486)', () => {
+            let backSpy: jest.SpyInstance;
+            let goSpy: jest.SpyInstance;
+            let uninstall: (() => void) | null = null;
+
+            beforeEach(() => {
+                window.sessionStorage.clear();
+                setWorkspaceAccount({status: 'authenticated', key: 'ann'});
+                backSpy = jest.spyOn(window.history, 'back');
+                goSpy = jest.spyOn(window.history, 'go');
+            });
+
+            afterEach(() => {
+                uninstall?.();
+                uninstall = null;
+                window.sessionStorage.clear();
+            });
+
+            const rowOf = (name: string) => screen.getAllByRole('button', {name: `View details for ${name}`})[0];
+            const openFromRow = async (name = 'Organization 1') => {
+                fireEvent.click(screen.getAllByText(name)[0]);
+                await screen.findByTestId('popup-details-grid');
+                expect(window.history.state).toMatchObject({crankCompanyView: true});
+            };
+            const purge = () => document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+            const expectClosedInPlace = async (lengthOpen: number) => {
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+                expect(backSpy).not.toHaveBeenCalled();
+                expect(goSpy).not.toHaveBeenCalled();
+                expect(window.location.search).toBe('');
+                expect(window.history.state).not.toHaveProperty('crankCompanyView');
+                expect(window.history.state).not.toHaveProperty('crankPosition');
+                expect(window.history.length).toBe(lengthOpen);
+            };
+
+            test('the purge event closes a view opened from a row in place: no traversal, no entry, nothing left for Forward', async () => {
+                const forwardSpy = jest.spyOn(window.history, 'forward');
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                await openFromRow();
+                const lengthOpen = window.history.length;
+
+                act(() => purge());
+
+                await expectClosedInPlace(lengthOpen);
+                await waitFor(() => expect(rowOf('Organization 1')).toHaveFocus());
+                act(() => window.history.forward());
+                await flush();
+                expect(forwardSpy).toHaveBeenCalledTimes(1);
+                expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
+                expect(window.location.search).toBe('');
+            });
+
+            test.each([
+                ['before the list mounts', true],
+                ['after the list mounts', false],
+            ])('the purge also wipes the store (listener registered %s): one close, in place', async (_label, installFirst) => {
+                if (installFirst) uninstall = installWorkspacePersistence();
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                if (!installFirst) uninstall = installWorkspacePersistence();
+                await openFromRow();
+                const lengthOpen = window.history.length;
+                const replaceSpy = jest.spyOn(window.history, 'replaceState');
+                const focusSpy = jest.spyOn(HTMLElement.prototype, 'focus');
+
+                act(() => purge());
+
+                await expectClosedInPlace(lengthOpen);
+                expect(getWorkspaceSnapshot().account.status).toBe('unknown');
+                await waitFor(() => expect(rowOf('Organization 1')).toHaveFocus());
+                expect(replaceSpy.mock.calls.filter(([, , url]) => !String(url).includes('company='))).toHaveLength(1);
+                expect(focusSpy.mock.instances.filter(el => (el as unknown as HTMLElement).hasAttribute('data-organization-id'))).toHaveLength(1);
+            });
+
+            test('the store being wiped for another account closes the view in place (observed auth-hydrated)', async () => {
+                uninstall = installWorkspacePersistence();
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                await openFromRow();
+                const lengthOpen = window.history.length;
+
+                act(() => {
+                    document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+                });
+
+                await expectClosedInPlace(lengthOpen);
+                await waitFor(() => expect(rowOf('Organization 1')).toHaveFocus());
+                expect(getWorkspaceSnapshot().account).toEqual({status: 'authenticated', key: 'bob'});
+            });
+
+            test('after a switch inside the view a purge focuses the row it was opened from, once', async () => {
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                await openFromRow();
+                act(() => {
+                    expect(openWorkspaceCompany(2)).toBe('opened');
+                });
+                await waitFor(() => expect(screen.getByTestId('company-view')).toHaveAttribute('data-organization-id', '2'));
+                const lengthOpen = window.history.length;
+                const focusSpy = jest.spyOn(HTMLElement.prototype, 'focus');
+
+                act(() => {
+                    purge();
+                    purge();
+                });
+
+                await expectClosedInPlace(lengthOpen);
+                await waitFor(() => expect(rowOf('Organization 1')).toHaveFocus());
+                await flush();
+                const focused = focusSpy.mock.instances.map(el => (el as unknown as HTMLElement).getAttribute('data-organization-id'));
+                expect(focused).toEqual(['1']);
+            });
+
+            test('Clear context on a view opened from a row, the account known, still goes back through history once', async () => {
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                await openFromRow();
+                expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 1});
+
+                act(() => clearWorkspaceContext());
+
+                expect(backSpy).toHaveBeenCalledTimes(1);
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+                expect(goSpy).not.toHaveBeenCalled();
+                expect(window.location.search).toBe('');
+            });
+
+            test('Clear context after an earlier wipe, once the account is known again, goes back through history', async () => {
+                uninstall = installWorkspacePersistence();
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                await openFromRow();
+                act(() => purge());
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+                act(() => setWorkspaceAccount({status: 'authenticated', key: 'bob'}));
+                await openFromRow('Organization 2');
+
+                act(() => clearWorkspaceContext());
+
+                expect(backSpy).toHaveBeenCalledTimes(1);
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            });
         });
 
         test('closing with no view open does nothing and retrying with none open does nothing', async () => {
