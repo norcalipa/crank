@@ -148,6 +148,36 @@ test.describe('company view (issue #486b)', () => {
         expect(await companyParam(page)).toBeNull();
     });
 
+    test('a purge with the account check failed (the account never known) closes the view without any history traversal', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.addInitScript(() => {
+            const calls: string[] = [];
+            (window as unknown as {__historyCalls: string[]}).__historyCalls = calls;
+            for (const method of ['back', 'go', 'forward'] as const) {
+                const original = window.history[method].bind(window.history);
+                window.history[method] = ((...args: number[]) => {
+                    calls.push(method);
+                    return original(...args);
+                }) as typeof window.history[typeof method];
+            }
+            window.addEventListener('popstate', () => calls.push('popstate'));
+        });
+        await page.route('**/api/account/whoami/**', (route) => route.abort());
+        await page.goto('/');
+        await opener(page).click();
+        await expect(view(page)).toBeVisible();
+        await expect.poll(() => page.evaluate(() => window.history.state?.crankCompanyView)).toBe(true);
+
+        await page.evaluate(() => document.dispatchEvent(new CustomEvent('crank:private-state-purged')));
+
+        await expect(view(page)).toHaveCount(0);
+        await expect.poll(() => companyParam(page)).toBeNull();
+        await expect.poll(() => page.evaluate(() => window.history.state?.crankCompanyView)).toBeUndefined();
+        expect(await page.evaluate(() => window.history.state?.crankPosition)).toBeUndefined();
+        expect(await page.evaluate(() => (window as unknown as {__historyCalls: string[]}).__historyCalls)).toEqual([]);
+    });
+
     test('signing out with a company open sends the sign-out request and ends the session', async ({page}) => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page);
