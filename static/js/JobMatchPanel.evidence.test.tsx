@@ -795,4 +795,90 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         // An empty code reads Unknown; an unrecognized one is shown as-is.
         expect(screen.getByTestId('ranked-org-8')).toHaveTextContent('Unknown · Z');
     });
+
+    describe('a re-check and a plain read never run at once (issue #485)', () => {
+        const hold = () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            return {release, gate};
+        };
+
+        /** The evidence notice and the failed notice, both showing. */
+        async function bothNoticesShowing() {
+            document.cookie = 'csrftoken=tok485';
+            let rankedAnswer: () => Promise<Response> = () => Promise.resolve(json({job_matches: [changedJob()], organization_matches: []}));
+            let recheckAnswer: () => Promise<Response> = () => Promise.resolve(json({status: 'published'}));
+            const calls: {url: string; method: string}[] = [];
+            global.fetch = jest.fn((url: string, init: RequestInit = {}) => {
+                calls.push({url, method: init.method || 'GET'});
+                if (url.includes('/api/job-matches/refresh/')) return recheckAnswer();
+                if (url.includes('/api/job-matches/status/')) {
+                    return Promise.resolve(json({state: 'ok', title: 'Matches', message: '', actions: []}));
+                }
+                if (url.includes('/api/job-matches/ranked/')) return rankedAnswer();
+                return Promise.resolve(json({count: 1, next: null, previous: null, results: []}));
+            }) as unknown as typeof fetch;
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('evidence-changed-notice');
+            rankedAnswer = () => Promise.resolve(new Response('', {status: 503}));
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+            await screen.findByTestId('refresh-failed-notice');
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            rankedAnswer = () => Promise.resolve(json({job_matches: [changedJob()], organization_matches: []}));
+            return {
+                calls,
+                onRecheck: (fn: () => Promise<Response>) => { recheckAnswer = fn; },
+                onRanked: (fn: () => Promise<Response>) => { rankedAnswer = fn; },
+            };
+        }
+
+        test('Try again during a re-check is disabled with the spinner and sends nothing', async () => {
+            const setup = await bothNoticesShowing();
+            const held = hold();
+            setup.onRecheck(() => held.gate.then(() => json({status: 'published'})));
+            const tryAgain = within(screen.getByTestId('refresh-failed-notice')).getByRole('button', {name: 'Try again'});
+            const before = setup.calls.length;
+            const postsBefore = posts(setup.calls).length;
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            await waitFor(() => expect(tryAgain).toHaveAttribute('aria-disabled', 'true'));
+            expect(tryAgain.querySelector('[data-icon="spinner"]')).not.toBeNull();
+            expect(setup.calls.length).toBe(before + 1);
+            fireEvent.click(tryAgain);
+            fireEvent.click(tryAgain);
+            expect(setup.calls.length).toBe(before + 1);
+            held.release();
+            // The re-check ran alone, then re-read once: 1 + 3 requests.
+            await waitFor(() => expect(setup.calls.length).toBe(before + 4));
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            expect(posts(setup.calls)).toHaveLength(postsBefore + 1);
+        });
+
+        test('Refresh matches during a plain read sends nothing', async () => {
+            const setup = await bothNoticesShowing();
+            const held = hold();
+            setup.onRanked(() => held.gate.then(() => json({job_matches: [changedJob()], organization_matches: []})));
+            const before = setup.calls.length;
+            fireEvent.click(within(screen.getByTestId('refresh-failed-notice')).getByRole('button', {name: 'Try again'}));
+            await waitFor(() => expect(setup.calls.length).toBe(before + 3));
+            const postsBefore = posts(setup.calls).length;
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            expect(setup.calls.length).toBe(before + 3);
+            expect(posts(setup.calls)).toHaveLength(postsBefore);
+            held.release();
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+        });
+
+        test('the controls work again once a re-check has ended, also when its request failed', async () => {
+            const setup = await bothNoticesShowing();
+            setup.onRecheck(() => Promise.reject(new Error('Network down')));
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'failed'));
+            const tryAgain = within(screen.getByTestId('refresh-failed-notice')).getByRole('button', {name: 'Try again'});
+            expect(tryAgain).not.toHaveAttribute('aria-disabled');
+            const before = setup.calls.length;
+            fireEvent.click(tryAgain);
+            await waitFor(() => expect(setup.calls.length).toBe(before + 3));
+        });
+    });
 });

@@ -995,8 +995,8 @@ describe('JobMatchPanel requirement figures and states (issue #467)', () => {
     test('renders unsupported-criteria notice with human labels, never raw field names', async () => {
         await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
         const notice = screen.getByTestId('unsupported-notice');
-        expect(notice).toHaveTextContent(/could not be evaluated/i);
-        expect(notice).toHaveTextContent('Minimum total compensation');
+        expect(notice).toHaveTextContent('Not used in these matches: Minimum total compensation.');
+        expect(notice).not.toHaveTextContent(/could not be evaluated/i);
         // Internal field names never leak into the UI.
         expect(notice.textContent).not.toContain('minimum_total_compensation');
     });
@@ -1340,6 +1340,7 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         });
         expect(screen.queryByText('late boom')).not.toBeInTheDocument();
         expect(screen.getByText('Recovered')).toBeInTheDocument();
+        expect(screen.queryByTestId('refresh-failed-notice')).not.toBeInTheDocument();
     });
 
     test('a lower result_generation never replaces a higher one', async () => {
@@ -1672,9 +1673,12 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
         matches = () => jsonResponse(matchPayload(1, [job(generation, extra)]));
         ranked = () => jsonResponse(rankedPayload([job(generation, extra)]));
     };
-    const redirected = (): Response => {
-        const res = new Response('<html>login</html>', {status: 200, headers: {'Content-Type': 'text/html'}});
+    // A followed redirect: by default one that ends on the sign-in page.
+    const LOGIN_URL = 'http://localhost/accounts/login/?next=%2Fchat%2F';
+    const redirected = (url: string = LOGIN_URL, body = '<html>login</html>', contentType = 'text/html'): Response => {
+        const res = new Response(body, {status: 200, headers: {'Content-Type': contentType}});
         Object.defineProperty(res, 'redirected', {value: true});
+        Object.defineProperty(res, 'url', {value: url});
         return res;
     };
     const parts: Record<Part, (fn: () => Response | Promise<Response>) => void> = {
@@ -2204,7 +2208,8 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
             ranked = () => jsonResponse({}, 503);
             pressRefresh();
             const notice = await screen.findByTestId('refresh-failed-notice');
-            expect(notice).toHaveTextContent(`Showing results from ${when(OLDER)}.`);
+            expect(notice).toHaveTextContent(`Couldn’t refresh. This count is from ${when(OLDER)}.`);
+            expect(notice).not.toHaveTextContent('Showing results');
             expect(screen.getByTestId('results-timestamp')).toHaveTextContent(when(OLDER));
         });
 
@@ -2429,6 +2434,262 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
             expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
             act(() => { document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: false}})); });
             expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
+        });
+
+        const purge = () => act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        const hydrate = (detail: Record<string, unknown>) => act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail}));
+        });
+
+        test('a control remembered before the session ended does not pull focus out of a field on a later load', async () => {
+            healthy(3, {stale: true});
+            await showResults();
+            const check = screen.getByTestId('stale-refresh');
+            check.focus();
+            parts.ranked(redirected);
+            fireEvent.click(check);
+            await screen.findByTestId('job-match-signed-out');
+            const field = document.createElement('input');
+            document.body.appendChild(field);
+            field.focus();
+            // Signed in again in another tab: purge, hydration, first load.
+            healthy();
+            purge();
+            hydrate({authenticated: true});
+            await screen.findByTestId('ranked-job-42');
+            await settled();
+            expect(field).toHaveFocus();
+            field.remove();
+        });
+
+        test('after an ended session an unobserved hydration retries the read and shows only what it brings', async () => {
+            await showResults();
+            parts.ranked(redirected);
+            pressRefresh();
+            expect(await screen.findByTestId('job-match-signed-out')).toHaveTextContent(ENDED);
+            expect(screen.queryByText('Senior Engineer')).not.toBeInTheDocument();
+            // The next account's results: nothing of the first one may remain.
+            healthy(7);
+            ranked = () => jsonResponse(rankedPayload([{...job(7), title: 'Staff Designer', listing_id: 77}]));
+            const before = fetchMock.mock.calls.length;
+            purge();
+            expect(screen.queryByText('Senior Engineer')).not.toBeInTheDocument();
+            hydrate({unobserved: true});
+            await screen.findByTestId('ranked-job-77');
+            expect(fetchMock.mock.calls.length).toBe(before + 3);
+            expect(screen.queryByText('Senior Engineer')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
+        });
+
+        test('after an ended session an unobserved hydration whose read finds the session still gone shows the ended card again', async () => {
+            await showResults();
+            parts.ranked(redirected);
+            pressRefresh();
+            await screen.findByTestId('job-match-signed-out');
+            purge();
+            hydrate({unobserved: true});
+            await waitFor(() => expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(ENDED));
+            expect(screen.queryByText('Senior Engineer')).not.toBeInTheDocument();
+        });
+
+        test('a page rendered signed out sends nothing on an unobserved hydration', async () => {
+            render(<JobMatchPanel isAuthenticated={false}/>);
+            purge();
+            hydrate({unobserved: true});
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent('Sign in to see personalized job matches');
+        });
+    });
+
+    describe('a redirect is an ended session only when it lands on the sign-in page', () => {
+        const json = (body: unknown) => redirected('http://localhost/api/job-matches/elsewhere/', JSON.stringify(body), 'application/json');
+
+        test('a redirect to the sign-in page ends the session whatever its query string', async () => {
+            await showResults();
+            parts.status(() => redirected('http://localhost/accounts/login/?next=%2Fsomewhere%2Felse%2F&x=1'));
+            pressRefresh();
+            expect(await screen.findByTestId('job-match-signed-out')).toHaveTextContent('Your session has ended');
+            expect(screen.queryByTestId('refresh-failed-notice')).not.toBeInTheDocument();
+        });
+
+        test('the sign-in page is the one the card links to, resolved against the page', async () => {
+            render(<JobMatchPanel signInUrl="/sign-in/?next=/chat/"/>);
+            await screen.findByTestId('ranked-job-42');
+            parts.matches(() => redirected('http://localhost/sign-in/'));
+            pressRefresh();
+            expect(await screen.findByTestId('job-match-sign-in-cta')).toHaveAttribute('href', '/sign-in/?next=/chat/');
+            cleanup();
+
+            healthy();
+            render(<JobMatchPanel signInUrl="/sign-in/"/>);
+            await screen.findByTestId('ranked-job-42');
+            parts.matches(() => redirected('http://localhost/accounts/login/'));
+            pressRefresh();
+            expect(await screen.findByTestId('refresh-failed-notice')).toBeInTheDocument();
+            expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
+        });
+
+        test.each<[Part, () => Response]>([
+            ['status', () => json(statusPayload('ok'))],
+            ['matches', () => json(matchPayload(1, [job(3)]))],
+            ['ranked', () => json(rankedPayload([job(3)]))],
+        ])('a same-origin redirect that ends in valid JSON on the %s read keeps every result and shows no card', async (part, answer) => {
+            await showResults();
+            const card = screen.getByTestId('ranked-job-42');
+            parts[part](answer);
+            pressRefresh();
+            await settled();
+            expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('refresh-failed-notice')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('job-match-error')).not.toBeInTheDocument();
+            expect(screen.getByTestId('ranked-job-42')).toBe(card);
+        });
+
+        test('a same-origin redirect on a first load applies valid JSON', async () => {
+            parts.ranked(() => json(rankedPayload([job(3)])));
+            render(<JobMatchPanel/>);
+            expect(await screen.findByTestId('ranked-job-42')).toBeInTheDocument();
+            expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
+        });
+
+        test.each<Part>(['status', 'matches', 'ranked'])('a redirect that ends in another HTML page on the %s read is a failed refresh with the list kept', async (part) => {
+            await showResults();
+            const card = screen.getByTestId('ranked-job-42');
+            parts[part](() => redirected('http://localhost/maintenance/', '<html>back soon</html>'));
+            pressRefresh();
+            expect(await screen.findByTestId('refresh-failed-notice')).toHaveTextContent('Couldn’t refresh.');
+            expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
+            expect(screen.getByTestId('ranked-job-42')).toBe(card);
+        });
+    });
+
+    describe('a read that a priorities change replaces', () => {
+        test('that then fails leaves the newer read running, the busy state set and no failed notice', async () => {
+            await showResults();
+            let rejectOlder!: (error: Error) => void;
+            ranked = () => new Promise<Response>((_resolve, reject) => { rejectOlder = reject; });
+            const before = fetchMock.mock.calls.length;
+            pressRefresh();
+            await waitFor(() => expect(fetchMock.mock.calls.length).toBe(before + 3));
+            let releaseNewer!: () => void;
+            const gate = new Promise<void>((resolve) => { releaseNewer = resolve; });
+            ranked = () => gate.then(() => jsonResponse(rankedPayload([job(3)])));
+            act(() => { setPrioritiesRevision(getWorkspaceSnapshot().prioritiesRevision === 51 ? 52 : 51); });
+            await waitFor(() => expect(fetchMock.mock.calls.length).toBe(before + 6));
+            await act(async () => {
+                rejectOlder(new Error('late boom'));
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            });
+            expect(screen.queryByTestId('refresh-failed-notice')).not.toBeInTheDocument();
+            expect(document.querySelector('[aria-busy="true"]')).not.toBeNull();
+            expect(screen.getByTestId('job-match-refresh')).toHaveAttribute('aria-disabled', 'true');
+            releaseNewer();
+            await settled();
+            expect(screen.queryByTestId('refresh-failed-notice')).not.toBeInTheDocument();
+            expect(screen.getByTestId('job-match-refresh')).not.toHaveAttribute('aria-disabled');
+        });
+    });
+
+    describe('the retry action in an empty state', () => {
+        const emptyWithRetry = () => {
+            status = () => jsonResponse(statusPayload('no_matches', {actions: ['retry']}));
+            ranked = () => jsonResponse(rankedPayload());
+            matches = () => jsonResponse(matchPayload(0));
+        };
+
+        test('moves focus to the heading when its read brings results and the button goes', async () => {
+            emptyWithRetry();
+            render(<JobMatchPanel/>);
+            const action = await screen.findByTestId('action-retry');
+            await settled();
+            action.focus();
+            healthy();
+            fireEvent.click(action);
+            await screen.findByTestId('ranked-job-42');
+            await waitFor(() => expect(screen.getByRole('heading', {name: 'Your Job Matches'})).toHaveFocus());
+            expect(screen.queryByTestId('action-retry')).not.toBeInTheDocument();
+        });
+
+        test('keeps focus on the button while the empty state stays', async () => {
+            emptyWithRetry();
+            render(<JobMatchPanel/>);
+            const action = await screen.findByTestId('action-retry');
+            await settled();
+            action.focus();
+            fireEvent.click(action);
+            await waitFor(() => expect(action).toHaveAttribute('aria-disabled', 'true'));
+            await settled();
+            expect(screen.getByTestId('action-retry')).toBe(action);
+            expect(action).toHaveFocus();
+        });
+    });
+
+    describe('the criteria matching cannot use (item A of the visual review)', () => {
+        const inventory = {active_listings: 12, last_success_at: '2026-10-11T10:00:00Z', age_hours: 2};
+        const withUnsupported = (unsupported: string[]) => {
+            status = () => jsonResponse(statusPayload('ok', {inventory}));
+            ranked = () => jsonResponse(rankedPayload([{...job(3), unsupported}]));
+            matches = () => jsonResponse(matchPayload(1, [{...job(3), unsupported}]));
+        };
+
+        test('one label is one muted line with no role and no live region', async () => {
+            withUnsupported(['roles.titles']);
+            await showResults();
+            const line = screen.getByTestId('unsupported-notice');
+            expect(line).toHaveTextContent('Not used in these matches: Job titles.');
+            expect(line).toHaveClass('text-muted', 'small');
+            expect(line).not.toHaveAttribute('role');
+            expect(line).not.toHaveAttribute('aria-live');
+            expect(line.querySelector('[role], [aria-live], svg, [data-icon]')).toBeNull();
+            expect(line).not.toHaveClass('alert');
+        });
+
+        test('several labels are joined with commas in the order sent, and no field name reaches the page', async () => {
+            withUnsupported(['roles.titles', 'compensation.minimum_total_compensation', 'notes']);
+            await showResults();
+            const line = screen.getByTestId('unsupported-notice');
+            expect(line).toHaveTextContent('Not used in these matches: Job titles, Minimum total compensation, Notes.');
+            expect(line.textContent).not.toMatch(/roles\.|minimum_total_compensation/);
+        });
+
+        test('it sits under the timestamp and the inventory line, which keep a 4 px gap, and the group ends with the usual margin', async () => {
+            withUnsupported(['roles.titles']);
+            await showResults();
+            const stamp = screen.getByTestId('results-timestamp');
+            const age = screen.getByTestId('inventory-age');
+            const line = screen.getByTestId('unsupported-notice');
+            expect(stamp.nextElementSibling).toBe(age);
+            expect(age.nextElementSibling).toBe(line);
+            expect(stamp).toHaveClass('mb-1');
+            expect(age).toHaveClass('mb-1');
+            expect(line).toHaveClass('mb-3');
+        });
+
+        test('without an inventory line it follows the timestamp, and without a timestamp it stands alone', async () => {
+            status = () => jsonResponse(statusPayload('partial_coverage', {coverage: {enabled_sources: 3, failing_sources: 1}, inventory}));
+            ranked = () => jsonResponse(rankedPayload([{...job(3), unsupported: ['roles.titles']}]));
+            await showResults();
+            expect(screen.queryByTestId('inventory-age')).not.toBeInTheDocument();
+            const stamp = screen.getByTestId('results-timestamp');
+            expect(stamp.nextElementSibling).toBe(screen.getByTestId('unsupported-notice'));
+            expect(stamp).toHaveClass('mb-1');
+            cleanup();
+
+            status = () => jsonResponse(statusPayload('ok'));
+            ranked = () => jsonResponse(rankedPayload([{...sampleJobMatch, unsupported: ['roles.titles']}]));
+            await showResults();
+            expect(screen.queryByTestId('results-timestamp')).not.toBeInTheDocument();
+            expect(screen.getByTestId('unsupported-notice')).toHaveClass('mb-3');
+        });
+
+        test('it does not count as an alert box', async () => {
+            withUnsupported(['roles.titles']);
+            healthy(3, {stale: true});
+            ranked = () => jsonResponse(rankedPayload([{...job(3, {stale: true}), unsupported: ['roles.titles']}]));
+            await showResults();
+            expect(screen.getAllByRole('status').filter((el) => el.classList.contains('alert'))).toHaveLength(1);
+            expect(screen.getByTestId('unsupported-notice')).toBeInTheDocument();
         });
     });
 });
