@@ -969,6 +969,22 @@ describe('OrganizationList', () => {
                 consoleError.mockRestore();
             });
 
+        test.each(['1e3', '01'])(
+            'Back or Forward to ?company=%p opens no view and sends no request: the id rule is the strict one', async (value) => {
+                render(<OrganizationList organizations={organizations} />);
+                await waitFor(() => {
+                    expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+                });
+                window.history.replaceState({}, '', `/?company=${value}`);
+
+                act(() => {
+                    window.dispatchEvent(new PopStateEvent('popstate'));
+                });
+
+                expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
+                expect((global.fetch as jest.Mock).mock.calls.filter(([url]) => String(url).includes('/api/organizations/'))).toEqual([]);
+            });
+
         test('?company=<id> combined with ?page=2&search=acme preserves the existing filter state', async () => {
             window.history.replaceState({}, '', '/?company=1&page=2&search=Organization%202');
 
@@ -1809,6 +1825,71 @@ describe('OrganizationList', () => {
             expect(screen.queryByText('Previous account value')).not.toBeInTheDocument();
         });
 
+        test('a view and a row for the same id: the row is the anchor, never the view\'s section', async () => {
+            const ref = React.createRef<OrganizationList>();
+            render(<OrganizationList ref={ref} organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('company-view');
+            // The view's section carries the id too and comes first in the document.
+            const section = screen.getByTestId('company-view');
+            document.body.prepend(section.cloneNode(false));
+            const foreign = document.body.firstElementChild as HTMLElement;
+            expect(foreign).not.toBe(section);
+            expect(foreign.getAttribute('data-organization-id')).toBe('1');
+            rectSpy.mockImplementation(function (this: HTMLElement) {
+                const top = this.tagName === 'SECTION' ? 900 : 120;
+                return {top, bottom: top + 40, height: 40, left: 0, right: 0, width: 0, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+            });
+            try {
+                expect(ref.current?.visibleOrganizationAnchor()).toEqual({id: '1', offset: 120});
+                const found = ref.current?.findOrganizationAnchor('1');
+                expect(found).not.toBeNull();
+                expect(found?.tagName).not.toBe('SECTION');
+                expect(found?.matches('.organization-row, .organization-card')).toBe(true);
+            } finally {
+                foreign.remove();
+            }
+        });
+
+        test('two requests for the same company in flight: the older one failing late leaves the loaded company alone', async () => {
+            const base = global.fetch as jest.Mock;
+            const record77: {resolve: (value: unknown) => void; reject: (error: Error) => void}[] = [];
+            global.fetch = jest.fn().mockImplementation((url) => {
+                if (url === '/api/organizations/77/') {
+                    return new Promise((resolve, reject) => record77.push({resolve, reject}));
+                }
+                return base(url);
+            });
+            const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            render(<OrganizationList organizations={organizations} />);
+            // Open the company, go back to the results before it answers, open it again.
+            act(() => {
+                expect(openWorkspaceCompany(77)).toBe('opened');
+            });
+            expect(record77).toHaveLength(1);
+            act(() => window.history.back());
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            act(() => {
+                expect(openWorkspaceCompany(77)).toBe('opened');
+            });
+            expect(record77).toHaveLength(2);
+
+            await act(async () => {
+                record77[1].resolve(ok(record(77, 'Unlisted Labs')));
+            });
+            expect(await screen.findByRole('heading', {name: 'Unlisted Labs'})).toBeInTheDocument();
+            await act(async () => {
+                record77[0].reject(new Error('late failure of the first request'));
+            });
+            await flush();
+
+            expect(screen.queryByTestId('company-view-error')).not.toBeInTheDocument();
+            expect(screen.queryByText('Company not loaded')).not.toBeInTheDocument();
+            expect(screen.getByRole('heading', {name: 'Unlisted Labs'})).toBeInTheDocument();
+            expect(errorSpy).not.toHaveBeenCalled();
+            errorSpy.mockRestore();
+        });
+
         describe('a purge or an account change closes the view in place, never through history (issue #486)', () => {
             let backSpy: jest.SpyInstance;
             let goSpy: jest.SpyInstance;
@@ -1917,6 +1998,20 @@ describe('OrganizationList', () => {
                 await flush();
                 const focused = focusSpy.mock.instances.map(el => (el as unknown as HTMLElement).getAttribute('data-organization-id'));
                 expect(focused).toEqual(['1']);
+            });
+
+            test('unmounting the list removes its purge listener: a later purge touches neither the address nor the state', async () => {
+                const {unmount} = render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                await openFromRow();
+                const replaceSpy = jest.spyOn(window.history, 'replaceState');
+                const stateBefore = window.history.state;
+                unmount();
+
+                act(() => purge());
+
+                expect(replaceSpy).not.toHaveBeenCalled();
+                expect(window.history.state).toBe(stateBefore);
+                expect(new URLSearchParams(window.location.search).get('company')).toBe('1');
             });
 
             test('Clear context on a view opened from a row, the account known, still goes back through history once', async () => {
