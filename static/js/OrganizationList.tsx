@@ -198,7 +198,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
         window.addEventListener('popstate', this.handlePopState);
         window.addEventListener(COMPANY_OPEN_EVENT, this.handleCompanyOpenEvent);
-        document.addEventListener('crank:private-state-purged', this.handlePrivateStatePurged);
+        window.addEventListener('crank:private-state-purged', this.handlePrivateStatePurged, true);
         this.normalizeCurrentPage();
         this.openCompanyFromUrl();
         // Issue #479: keep the shared workspace context in step with this
@@ -239,7 +239,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     componentWillUnmount() {
         window.removeEventListener('popstate', this.handlePopState);
         window.removeEventListener(COMPANY_OPEN_EVENT, this.handleCompanyOpenEvent);
-        document.removeEventListener('crank:private-state-purged', this.handlePrivateStatePurged);
+        window.removeEventListener('crank:private-state-purged', this.handlePrivateStatePurged, true);
         this.stopPositionTracking?.();
         this.unsubscribeWorkspace?.();
         this.unregisterFilterTarget?.();
@@ -382,6 +382,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.lastAccountStatus = account.status;
         const shown = this.state.view?.organization;
         if (shown
+            && !this.closedAfterPurge
             && (this.reportedOrganizationId === shown.id || this.askedOrganizationId === shown.id)
             && getWorkspaceSnapshot().context?.organizationId !== shown.id) {
             if (this.privateStateDropped) {
@@ -393,7 +394,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     // The workspace purge (sign-out, account switch) drops every private
-    // entity; the company view goes with it, whatever the store held.
+    // entity; the company view goes with it, whatever the store held. The
+    // listener is on `window`, capturing: the event is dispatched on the
+    // document, and window's capture listeners run before any listener on the
+    // document, so the list hears it before the store does, whatever the
+    // registration order. The store's notification that follows then finds the
+    // close already made (`closedAfterPurge`) and never reads the wipe as a
+    // reader's "Clear context", even when the account was never known.
     handlePrivateStatePurged = () => {
         this.closeAfterPurge();
     };
@@ -632,7 +639,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // 3. "Back to results" and "Clear context" go back through that entry when
     //    it exists, and rewrite the address in place when it does not.
     // 4. A purge or an account change always closes in place, never through
-    //    history: a traversal queued with the sign-out form's submission could
+    //    history, in every account state (signed in, anonymous, never
+    //    known): a traversal queued with the sign-out form's submission could
     //    cancel the sign-out.
     openView = (id: number, source: 'user' | 'url'): boolean => {
         if (!isCompanyId(id)) {

@@ -2041,6 +2041,68 @@ describe('OrganizationList', () => {
                 expect(backSpy).toHaveBeenCalledTimes(1);
                 await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
             });
+
+            test.each([
+                ['before the list mounts', true],
+                ['after the list mounts', false],
+            ])('the account never known (a failed whoami): a purge closes in place, once (store listener registered %s)', async (_label, installFirst) => {
+                setWorkspaceAccount({status: 'unknown', key: ''});
+                if (installFirst) uninstall = installWorkspacePersistence();
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                if (!installFirst) uninstall = installWorkspacePersistence();
+                await openFromRow();
+                expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 1});
+                const lengthOpen = window.history.length;
+                const replaceSpy = jest.spyOn(window.history, 'replaceState');
+                const focusSpy = jest.spyOn(HTMLElement.prototype, 'focus');
+                const forwardSpy = jest.spyOn(window.history, 'forward');
+
+                act(() => purge());
+
+                await expectClosedInPlace(lengthOpen);
+                expect(forwardSpy).not.toHaveBeenCalled();
+                expect(getWorkspaceSnapshot().account.status).toBe('unknown');
+                await waitFor(() => expect(rowOf('Organization 1')).toHaveFocus());
+                await flush();
+                expect(replaceSpy.mock.calls.filter(([, , url]) => !String(url).includes('company='))).toHaveLength(1);
+                const focused = focusSpy.mock.instances.map(el => (el as unknown as HTMLElement).getAttribute('data-organization-id'));
+                expect(focused).toEqual(['1']);
+            });
+
+            test('Clear context with the account never known still goes back through history once', async () => {
+                setWorkspaceAccount({status: 'unknown', key: ''});
+                uninstall = installWorkspacePersistence();
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                await openFromRow();
+                expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 1});
+
+                act(() => clearWorkspaceContext());
+
+                expect(backSpy).toHaveBeenCalledTimes(1);
+                expect(goSpy).not.toHaveBeenCalled();
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+                expect(window.location.search).toBe('');
+            });
+
+            test('a company opened after a purge has closed a view is closed in place by the next purge', async () => {
+                uninstall = installWorkspacePersistence();
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                await openFromRow();
+                act(() => purge());
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+                act(() => setWorkspaceAccount({status: 'authenticated', key: 'bob'}));
+                await openFromRow('Organization 2');
+                const lengthOpen = window.history.length;
+                const focusSpy = jest.spyOn(HTMLElement.prototype, 'focus');
+
+                act(() => purge());
+
+                await expectClosedInPlace(lengthOpen);
+                await waitFor(() => expect(rowOf('Organization 2')).toHaveFocus());
+                await flush();
+                const focused = focusSpy.mock.instances.map(el => (el as unknown as HTMLElement).getAttribute('data-organization-id'));
+                expect(focused).toEqual(['2']);
+            });
         });
 
         test('closing with no view open does nothing and retrying with none open does nothing', async () => {
