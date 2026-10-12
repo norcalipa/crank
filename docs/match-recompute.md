@@ -142,8 +142,8 @@ preference overrides, orchestrator injections) always stay live.
    unsuspend `crank-match-recompute`. The drain bootstraps generations for
    every preference row, preference-dirty tier first. The fast path
    activates on web pods. Do not enable `MATCH_RECOMPUTE_ENABLED` before
-   485b (issue #485) has shipped: until then a reader whose results are
-   waiting to be updated has no control that fetches them.
+   485b (issue #485) has shipped: until then nothing on the page fetches
+   the updated results by itself or says that they have arrived.
 4. Verify `manage.py recompute_matches --dry-run` reports 0 preference-dirty
    users and spot-check a few generations. Then enable
    `MATCH_RESULTS_READ_ENABLED`.

@@ -539,6 +539,7 @@ class SeedE2ECommandTests(TestCase):
         source.refresh_from_db()
         self.assertGreater(source.last_crawl_at, timezone.now() - timedelta(minutes=5))
 
+    @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
     def test_a_seeded_reader_with_matches_is_ok_with_an_inventory_not_partial_coverage(self):
         call_command("seed_e2e", stdout=StringIO())
         user = get_user_model().objects.get(username=E2E_USERNAME)
