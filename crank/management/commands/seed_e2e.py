@@ -76,6 +76,11 @@ FIXTURE_SOURCE_NAME = "E2E Seed Source"
 #: Second ranking preset so the rankings preset select has something to
 #: switch to (issue #478); weights only the existing Culture type.
 PRESET_ALGORITHM_NAME = "E2E Culture Preset"
+#: The fixture source's last successful crawl is set to the seed run, so a
+#: seeded reader with matches is not in the all-sources-failing state (issue
+#: #485). A re-run keeps a crawl time younger than this (the rows stay
+#: byte-identical) and repairs one that is missing or older.
+FIXTURE_CRAWL_FRESH_FOR = timedelta(hours=6)
 
 #: Bounded org/score set: (name, avg score). The last entry intentionally
 #: carries a maximal-length name for long-content layout assertions.
@@ -375,6 +380,7 @@ class Command(BaseCommand):
                 "base_url": usajobs["base_url"],
                 "approval_state": JobSourceCatalog.ApprovalState.APPROVED,
                 "enabled": True,
+                "last_crawl_at": now,
                 "catalog_metadata": {
                     "description": "E2E fixture source (approved+enabled, dev only).",
                     # Reserved retention keys (issue #469); fixture listings
@@ -394,6 +400,12 @@ class Command(BaseCommand):
                 "base_url": usajobs["base_url"],
                 "approval_state": JobSourceCatalog.ApprovalState.APPROVED,
                 "enabled": True,
+                "last_crawl_at": (
+                    fixture_source.last_crawl_at
+                    if fixture_source.last_crawl_at is not None
+                    and now - fixture_source.last_crawl_at < FIXTURE_CRAWL_FRESH_FOR
+                    else now
+                ),
                 "catalog_metadata": {
                     "description": "E2E fixture source (approved+enabled, dev only).",
                     "expiry_days": 30,
