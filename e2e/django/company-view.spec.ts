@@ -162,8 +162,9 @@ test.describe('company view (issue #486b)', () => {
         await page.locator('form[data-nav-logout-form] button[type="submit"]').locator('visible=true').first().click();
 
         await signOut;
-        // The browser's own cookie jar, so no page script runs while the page navigates.
-        await expect.poll(async () => (await (await page.request.get('/api/account/whoami/')).json()).authenticated).toBe(false);
+        // The page may still be navigating: a check that lost its context asks again.
+        await expect.poll(() => page.evaluate(() => fetch('/api/account/whoami/', {credentials: 'same-origin'})
+            .then((response) => response.json()).then((body) => body.authenticated)).catch(() => null)).toBe(false);
     });
 
     // Hands out the pending list from memory and stores nothing: the POST is stubbed
