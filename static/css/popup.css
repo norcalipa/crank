@@ -4887,9 +4887,9 @@ span.priority-chip-button { cursor: default; }
 /* The evidence text and its "Suggest a correction" link sit side by side only
    while the view has room for both: the viewport rule above (min-width 992px)
    was written for a dialog that was never narrower than 744px, and the view
-   can be 456px wide inside a 1000px viewport. Below 44rem of view width the
+   can be 456px wide inside a 1000px viewport. Below 46rem of view width the
    link goes under the text, as it already does below 992px. */
-@container company-view (max-width: 44rem) {
+@container company-view (max-width: 46rem) {
     .company-view .evidence-row-value {
         display: flex;
     }

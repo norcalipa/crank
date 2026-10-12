@@ -575,7 +575,7 @@ test.describe('company view (issue #486b)', () => {
         await expect(view(page).getByRole('button', {name: 'Back to results'})).toBeFocused();
     });
 
-    for (const size of [{width: 375, height: 667}, {width: 320, height: 640}]) {
+    for (const size of [{width: 375, height: 667}, {width: 320, height: 640}, {width: 390, height: 844}]) {
         test(`on a phone at ${size.width}x${size.height} the Assistant bar stays at the bottom edge while the view loads, is not found or fails`, async ({page}) => {
             await page.setViewportSize(size);
             await login(page);
@@ -586,7 +586,7 @@ test.describe('company view (issue #486b)', () => {
                     return {dockBottom: dock.bottom, vh: window.innerHeight, scrollHeight: document.documentElement.scrollHeight};
                 });
                 expect(Math.abs(m.dockBottom - m.vh), `${name}: bar bottom ${m.dockBottom} vs ${m.vh}`).toBeLessThanOrEqual(1);
-                expect(m.scrollHeight, `${name}: document height`).toBeLessThanOrEqual(m.vh + 1);
+                expect(m.scrollHeight, `${name}: document height`).toBeLessThanOrEqual(m.vh);
             };
 
             let release: () => void = () => undefined;
@@ -625,4 +625,274 @@ test.describe('company view (issue #486b)', () => {
         await expect(view(page)).toBeVisible();
         await expect(view(page).getByRole('heading', {name: COMPANY})).toBeVisible();
     });
+
+    // Round 2, G1: on a phone a company opened from inside the sheet closes the
+    // sheet and is shown; the saved scroll position of the page the sheet was
+    // opened over is only restored when that page is still there.
+    const send = async (page: Page, text: string) => {
+        await page.getByTestId('assistant-composer').fill(text);
+        await page.getByRole('button', {name: 'Send message'}).click();
+    };
+    const pressOpen = async (page: Page) => {
+        const open = page.getByRole('button', {name: /^Open E2E Alpha/});
+        await expect(open).toBeVisible();
+        await open.click();
+    };
+    // The assistant holds the company (Ask keeps it after Back), so the demo
+    // provider can answer "Open this company" with an open_company button.
+    const askThenLeave = async (page: Page) => {
+        await opener(page).click();
+        await expect(view(page)).toBeVisible();
+        await page.getByTestId('company-chat-cta').click();
+        await expect(page.getByTestId('assistant-panel')).toBeVisible();
+        return page.getByTestId('assistant-back-to-results');
+    };
+    const sheetState = (page: Page) => page.evaluate(() => {
+        const v = document.querySelector('[data-testid="company-view"]');
+        const mid = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+        return {
+            sheet: document.body.classList.contains('assistant-sheet'),
+            centreInView: !!mid?.closest('[data-testid="company-view"]'),
+            top: v ? v.getBoundingClientRect().top : null,
+            id: v?.getAttribute('data-organization-id') ?? null,
+            y: window.scrollY,
+        };
+    });
+
+    for (const size of [{width: 375, height: 667}, {width: 320, height: 640}]) {
+        test(`on a phone at ${size.width}x${size.height} "Open" pressed in the sheet closes it and shows the company at the top with the heading focused`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page);
+            await page.goto('/');
+            const back = await askThenLeave(page);
+            await back.click();
+            await view(page).getByRole('button', {name: 'Back to results'}).click();
+            await expect(view(page)).toHaveCount(0);
+            await page.evaluate(() => window.scrollTo(0, 900));
+            await page.locator('[data-testid="assistant-launcher"]').click();
+            await expect(page.getByTestId('assistant-panel')).toBeVisible();
+            await send(page, 'Open this company');
+            await pressOpen(page);
+
+            await expect(page.getByTestId('assistant-panel')).toHaveCount(0);
+            await expect(page.locator('#organization-details-title')).toBeFocused();
+            const state = await sheetState(page);
+            expect(state.sheet).toBe(false);
+            expect(state.centreInView).toBe(true);
+            expect(state.top).toBeLessThanOrEqual(80);
+            expect(state.y).toBe(0);
+            await page.keyboard.press('Tab');
+            await expect(view(page).getByRole('button', {name: 'Back to results'})).toBeFocused();
+        });
+    }
+
+    test('on a phone the same company opened from the sheet keeps its place; the sheet still closes', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page);
+        await page.goto('/');
+        await askThenLeave(page);
+        await page.getByTestId('assistant-back-to-results').click();
+        await page.evaluate(() => window.scrollTo(0, 150));
+        const before = await sheetState(page);
+        await page.locator('[data-testid="assistant-launcher"]').click();
+        await send(page, 'Open this company');
+        await pressOpen(page);
+
+        await expect(page.getByTestId('assistant-panel')).toHaveCount(0);
+        const after = await sheetState(page);
+        expect(after.id).toBe(before.id);
+        expect(Math.abs(after.y - 150)).toBeLessThanOrEqual(2);
+    });
+
+    test('on a phone, Back under an open sheet and then closing it leaves the results at the opened row, not at the top', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page);
+        await page.goto('/');
+        // The first row, scrolled to the top of the screen: a position to lose, and far from the end of
+        // the page, where the sheet's own change of the page's height (the bar under it) would clamp it.
+        const row = page.locator('article[aria-label^="View details for"]').locator('visible=true').first();
+        await row.evaluate((node) => node.scrollIntoView({block: 'start', behavior: 'instant'}));
+        await page.evaluate(() => window.scrollBy(0, -60));
+        const before = await row.evaluate((node) => node.getBoundingClientRect().top);
+        const label = (await row.getAttribute('aria-label'))!;
+        await row.click({position: {x: 20, y: 10}});
+        await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+        // The view is at the top of the page, so that is the position the sheet saves.
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThanOrEqual(2);
+        await page.locator('[data-testid="assistant-launcher"]').click();
+        await expect(page.getByTestId('assistant-panel')).toBeVisible();
+        await page.goBack();
+        await expect(view(page)).toHaveCount(0);
+        // The page puts the results back under the sheet; closing the sheet must not move them
+        // (a jump to the top that the page then repairs is still a jump).
+        const again = page.locator(`[aria-label="${label}"]`).locator('visible=true').first();
+        await expect.poll(async () => Math.abs((await again.evaluate((node) => node.getBoundingClientRect().top)) - before)).toBeLessThanOrEqual(2);
+        // Every scroll the page is asked for from here on, whether or not it lands in the same frame
+        // as the page's own repair.
+        await page.evaluate(() => {
+            const w = window as unknown as {__scrolls: number[]};
+            w.__scrolls = [];
+            const original = window.scrollTo.bind(window);
+            window.scrollTo = ((...args: unknown[]) => {
+                const first = args[0] as {top?: number} | number;
+                w.__scrolls.push(typeof first === 'object' ? first.top ?? 0 : (args[1] as number));
+                return (original as (...a: unknown[]) => void)(...args);
+            }) as typeof window.scrollTo;
+        });
+        const placed = await page.evaluate(() => window.scrollY);
+        await page.getByTestId('assistant-back-to-results').click();
+        await expect(page.getByTestId('assistant-panel')).toHaveCount(0);
+        // The scroll and the focus are settled in the same commit that removes the sheet.
+        await expect(page.getByTestId('assistant-launcher')).toBeFocused();
+        const asked = await page.evaluate(() => (window as unknown as {__scrolls: number[]}).__scrolls);
+        expect(asked.filter((y) => Math.abs(y - placed) > 2), 'scrolls away from the results\' place').toEqual([]);
+
+        await expect.poll(async () => Math.abs((await again.evaluate((node) => node.getBoundingClientRect().top)) - before)).toBeLessThanOrEqual(2);
+        expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    });
+
+    for (const size of [{width: 1280, height: 900, name: 'docked'}, {width: 1024, height: 800, name: 'drawer'}]) {
+        test(`at ${size.width}x${size.height} (${size.name}) "Open" pressed in the assistant leaves it open and shows the view at the top`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page);
+            await page.goto('/');
+            const back = await askThenLeave(page);
+            expect(await back.count()).toBe(0);
+            await view(page).getByRole('button', {name: 'Back to results'}).click();
+            await send(page, 'Open this company');
+            await pressOpen(page);
+
+            await expect(view(page)).toBeVisible();
+            await expect(page.getByTestId('assistant-panel')).toBeVisible();
+            await expect(page.locator('#organization-details-title')).toBeFocused();
+            expect(await view(page).evaluate((node) => node.getBoundingClientRect().top)).toBeLessThanOrEqual(56);
+        });
+    }
+
+    // Round 2, G2: every text run in the view, with every disclosure open, has
+    // no more lines than words; the evidence text keeps room beside its link.
+    const measureText = (page: Page) => page.evaluate(() => {
+        const root = document.querySelector('[data-testid="company-view"]')!;
+        root.querySelectorAll('details').forEach((node) => { node.open = true; });
+        const box = root.getBoundingClientRect();
+        const broken: string[] = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const text = (node.textContent ?? '').trim();
+            const parent = node.parentElement;
+            if (!text || !parent || !parent.offsetParent || parent.closest('.visually-hidden, [hidden]')) continue;
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0.5).map((r) => Math.round(r.top))).size;
+            const words = text.split(/\s+/).length;
+            if (lines <= words) continue;
+            // A word wider than its column has to break; anything else is a crushed column.
+            const column = parent.closest('.row > *, td, th, li, p, .evidence-row-value > *') ?? parent;
+            const probe = document.createElement('span');
+            probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(parent).font}`;
+            probe.textContent = text.split(/\s+/).sort((a, b) => b.length - a.length)[0];
+            document.body.appendChild(probe);
+            const wider = probe.getBoundingClientRect().width > column.getBoundingClientRect().width + 0.5;
+            probe.remove();
+            if (!wider) broken.push(`${text.slice(0, 30)}: ${lines} lines for ${words} words`);
+        }
+        const rows = [...root.querySelectorAll('.evidence-row-value')];
+        const links = rows.map((row) => row.querySelector(':scope > .correction-action')).filter((a): a is Element => !!a);
+        const beside = rows.flatMap((row) => {
+            const text = row.firstElementChild;
+            const link = row.querySelector(':scope > .correction-action');
+            if (!text || !link) return [];
+            const t = text.getBoundingClientRect();
+            const l = link.getBoundingClientRect();
+            return l.left >= t.right - 0.5 && l.top < t.bottom ? [t.width] : [];
+        });
+        return {
+            broken,
+            evidenceRows: rows.length,
+            besideWidths: beside,
+            links: links.map((a) => {
+                const r = a.getBoundingClientRect();
+                return {height: r.height, inside: r.left >= box.left - 0.5 && r.right <= box.right + 0.5};
+            }),
+            overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+    });
+
+    for (const width of [768, 800, 820, 834, 853, 900, 991, 992, 1000, 1008, 1024, 1100, 1120, 1248, 1279, 1280, 1366, 1440, 375, 320]) {
+        test(`no text in the view is crushed at ${width}px, assistant open and closed`, async ({page}) => {
+            await page.setViewportSize({width, height: 800});
+            await login(page);
+            for (const assistant of width >= 768 ? ['closed', 'open'] : ['closed']) {
+                await page.goto('/');
+                if (assistant === 'open') await page.locator('[data-testid="assistant-launcher"]').click();
+                await page.locator('tr[aria-label="View details for E2E Beta Labs"], article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
+                await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+                const m = await measureText(page);
+                expect(m.evidenceRows, `evidence rows (${assistant})`).toBeGreaterThan(0);
+                expect(m.broken, `${width}px, assistant ${assistant}`).toEqual([]);
+                for (const beside of m.besideWidths) expect(beside, `evidence text beside its link, ${width}px ${assistant}`).toBeGreaterThanOrEqual(200);
+                for (const link of m.links) {
+                    expect(link.height).toBeGreaterThanOrEqual(44);
+                    expect(link.inside).toBe(true);
+                }
+                expect(m.overflow).toBeLessThanOrEqual(0);
+            }
+        });
+    }
+
+    // Round 2, G3: when the view is narrow the pending suggestion stacks and
+    // every part sits at the section heading's left edge.
+    for (const size of [
+        {width: 375, height: 667, assistant: false},
+        {width: 320, height: 640, assistant: false},
+        {width: 768, height: 1024, assistant: true},
+    ]) {
+        test(`pending suggestion rows are left-aligned when they stack at ${size.width}x${size.height}${size.assistant ? ' with the drawer open' : ''}`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page);
+            await stubCorrections(page, [{id: 1, field_key: 'rto_policy', field_label: 'RTO Policy', proposed_value: 'Remote first',
+                status: 'pending', status_label: 'Pending review'}]);
+            await page.goto('/');
+            if (size.assistant) await page.locator('[data-testid="assistant-launcher"]').click();
+            await page.locator('tr[aria-label="View details for E2E Beta Labs"], article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
+            const pending = view(page).getByTestId('your-pending-corrections');
+            await expect(pending).toContainText('Remote first');
+            const rows = await pending.evaluate((section) => {
+                const left = (el: Element) => el.getBoundingClientRect().left;
+                const heading = left(section.querySelector('h3, h4, h5, strong, [role="heading"]') ?? section.firstElementChild!);
+                return [...section.querySelectorAll('[data-testid^="your-pending-correction-"]')].map((row) => ({
+                    alignItems: getComputedStyle(row).alignItems,
+                    stacked: [...row.children].every((c, i, all) => i === 0 || c.getBoundingClientRect().top >= all[i - 1].getBoundingClientRect().bottom - 0.5),
+                    offsets: [...row.children].map((c) => Math.abs(left(c) - heading)),
+                }));
+            });
+            expect(rows.length).toBeGreaterThan(0);
+            for (const row of rows) {
+                expect(row.stacked).toBe(true);
+                expect(row.alignItems).toBe('flex-start');
+                for (const offset of row.offsets) expect(offset).toBeLessThanOrEqual(1);
+            }
+        });
+    }
+
+    // Round 2, G5: the heading is phone-sized whenever the view is 28rem wide or less.
+    for (const size of [
+        {width: 768, height: 1024, assistant: true},
+        {width: 375, height: 667, assistant: false},
+        {width: 1280, height: 900, assistant: false},
+    ]) {
+        test(`the heading follows the view's width at ${size.width}x${size.height}${size.assistant ? ' with the drawer open' : ''}`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page);
+            await page.goto('/');
+            if (size.assistant) await page.locator('[data-testid="assistant-launcher"]').click();
+            await opener(page).click();
+            await expect(view(page)).toBeVisible();
+            const m = await page.evaluate(() => ({
+                viewWidth: document.querySelector('[data-testid="company-view"]')!.getBoundingClientRect().width,
+                fontSize: parseFloat(getComputedStyle(document.querySelector('#organization-details-title')!).fontSize),
+            }));
+            expect(m.fontSize).toBe(m.viewWidth <= 448 ? 20 : 28);
+        });
+    }
 });

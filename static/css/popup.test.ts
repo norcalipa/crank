@@ -426,9 +426,9 @@ describe('company view visual review round 2 (issue #486)', () => {
         return match ? match[1] : null;
     };
 
-    it('puts the evidence link under its text whenever the view, not the viewport, is 44rem or narrower', () => {
-        const query = section.slice(section.indexOf('@container company-view (max-width: 44rem)'));
-        expect(query).toMatch(/^@container company-view \(max-width: 44rem\)/);
+    it('puts the evidence link under its text whenever the view, not the viewport, is 46rem or narrower', () => {
+        const query = section.slice(section.indexOf('@container company-view (max-width: 46rem)'));
+        expect(query).toMatch(/^@container company-view \(max-width: 46rem\)/);
         expect(block('.company-view .evidence-row-value', query)).toMatch(/display:\s*flex/);
         expect(block('.company-view .evidence-row-value > .correction-action', query)).toMatch(/white-space:\s*normal/);
         // The viewport rule it overrides is left where it is, above the view's section.
