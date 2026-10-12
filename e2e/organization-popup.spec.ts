@@ -478,3 +478,57 @@ test.describe('evidence states at 320px (#473a, #486, fixture tier)', () => {
         expect(overflow.page).toBeLessThanOrEqual(1);
     });
 });
+
+// The view's own width decides its label/value layout, not the viewport (issue
+// #486b, review round 1): at a 768px viewport an open drawer leaves the view
+// about 308px wide, where a label used to print over its value. This is the
+// case CI runs in Firefox and WebKit too.
+test.describe('label/value rows follow the view\'s width (#486b, fixture tier)', () => {
+    test.use({viewport: {width: 768, height: 900}});
+
+    for (const containerWidth of [308, 360, 440, 640]) {
+        test(`no label is printed over its value in a ${containerWidth}px view inside a 768px viewport`, async ({page}) => {
+            await stubProvenance(page, 'long');
+            await page.goto(POPUP_FIXTURE);
+            await openCompanyView(page);
+            await page.evaluate((width) => {
+                const main = document.querySelector('main#main-content') as HTMLElement;
+                main.style.cssText += `;width:${width}px;max-width:${width}px;flex:0 0 ${width}px`;
+            }, containerWidth);
+            await view(page).locator('details').evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLDetailsElement).open = true; }));
+            const result = await page.evaluate(() => {
+                const root = document.querySelector('[data-testid="company-view"]') as HTMLElement;
+                const box = root.getBoundingClientRect();
+                const problems: string[] = [];
+                let rows = 0;
+                root.querySelectorAll('.row').forEach((row) => {
+                    const label = row.querySelector(':scope > .text-end');
+                    const value = label?.nextElementSibling;
+                    if (!label || !value) return;
+                    rows += 1;
+                    const l = label.getBoundingClientRect();
+                    const v = value.getBoundingClientRect();
+                    const stacked = v.top >= l.bottom - 0.5 && Math.abs(v.left - l.left) < 2;
+                    const text = (label.textContent ?? '').trim();
+                    if (stacked ? l.bottom > v.top + 0.5 : l.right > v.left + 0.5) problems.push(`${text} overlaps its value`);
+                    if (label.scrollWidth > label.clientWidth + 0.5) problems.push(`${text} is clipped`);
+                    row.querySelectorAll('*').forEach((node) => {
+                        const r = node.getBoundingClientRect();
+                        if (r.width > 0 && (r.right > box.right + 0.5 || r.left < box.left - 0.5)) problems.push(`${text}: a box leaves the view`);
+                    });
+                });
+                return {rows, problems, viewWidth: Math.round(box.width)};
+            });
+            expect(result.viewWidth).toBeLessThanOrEqual(containerWidth);
+            expect(result.rows).toBeGreaterThan(5);
+            expect(result.problems).toEqual([]);
+            if (containerWidth <= 448) {
+                // 28rem or less: every row is stacked, as on a phone.
+                const sideBySide = await view(page).locator('.row > .text-end').evaluateAll((labels) => labels
+                    .filter((label) => label.nextElementSibling
+                        && label.nextElementSibling.getBoundingClientRect().top < label.getBoundingClientRect().bottom - 0.5).length);
+                expect(sideBySide).toBe(0);
+            }
+        });
+    }
+});
