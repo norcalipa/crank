@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 // Shared helpers for the Django-backed Playwright tier (issue #491).
 import {expect, Page, test} from '@playwright/test';
+import {CONFIRM_ARM_DELAY_MS} from '../../static/js/chat/ConversationMenu';
 
 /** E2E account created by `manage.py seed_e2e` (throwaway, dev-only). */
 export const E2E_USERNAME = 'e2e_user';
@@ -69,4 +70,14 @@ export async function rectOf(page: Page, selector: string): Promise<DOMRect> {
 /** True when two rects overlap in both axes. */
 export function rectsIntersect(a: DOMRect, b: DOMRect): boolean {
     return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+/**
+ * The conversation menu ignores a press on its confirm button until
+ * CONFIRM_ARM_DELAY_MS after the confirmation opened (issue #568). Call this
+ * once the confirmation is open and before a deliberate confirming press; the
+ * wait starts after the confirmation rendered, so it outlasts the delay.
+ */
+export async function waitForConfirmArmed(page: Page): Promise<void> {
+    await page.waitForTimeout(CONFIRM_ARM_DELAY_MS);
 }

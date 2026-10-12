@@ -3,7 +3,7 @@
 // One transcript scroller in the assistant panel (issue #483), on the real seeded page: the transcript is the
 // only element that scrolls, it gets most of the panel body, and the follow rule still holds.
 import {expect, Page, test} from '@playwright/test';
-import {E2E_PASSWORD, login, requireDjangoTier} from './support';
+import {E2E_PASSWORD, login, requireDjangoTier, waitForConfirmArmed} from './support';
 
 const PREFS_USER = 'e2e_prefs_user';
 const WIDE_FONT_CSS = "body, button, input, textarea, select { font-family: 'DejaVu Sans', sans-serif !important; }";
@@ -655,6 +655,7 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
         if (await page.locator('[role="log"] article').count()) {
             await page.getByTestId('conversation-more').click();
             await page.getByTestId('conversation-new').click();
+            await waitForConfirmArmed(page);
             await page.getByTestId('confirm-action').click();
         }
         await expect(page.getByTestId('empty-history')).toBeVisible();
