@@ -57,6 +57,10 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
     const panelRef = React.useRef<HTMLElement>(null);
     // Saved window scroll position while the sheet owns the viewport.
     const savedScrollRef = React.useRef<number | null>(null);
+    const savedViewRef = React.useRef<string | null>(null);
+    const pageChangedRef = React.useRef(false);
+    const companyViewId = (): string | null =>
+        document.querySelector('[data-testid="company-view"]')?.getAttribute('data-organization-id') ?? null;
 
     // Body mode class: exactly one of the three while open, none closed.
     React.useEffect(() => {
@@ -128,11 +132,16 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
     React.useEffect(() => {
         if (sheetActive) {
             savedScrollRef.current = window.scrollY;
+            savedViewRef.current = companyViewId();
             return () => {
-                if (savedScrollRef.current !== null) {
+                // The saved position belongs to the page the sheet was opened
+                // over. If a company view opened, closed or changed under the
+                // sheet, the page has already placed itself.
+                pageChangedRef.current = companyViewId() !== savedViewRef.current;
+                if (savedScrollRef.current !== null && !pageChangedRef.current) {
                     window.scrollTo(0, savedScrollRef.current);
-                    savedScrollRef.current = null;
                 }
+                savedScrollRef.current = null;
             };
         }
         return undefined;
@@ -151,7 +160,15 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
         if (!sheetActive && wasSheetActiveRef.current) {
             // The launcher leaves the DOM while minimized, so the sheet's
             // return focus lands on the restore pill in that state.
-            (launcherRef.current ?? restoreRef.current)?.focus();
+            // A company that opened under the sheet takes the focus on its
+            // heading, as it does on every other way in.
+            const heading = pageChangedRef.current ? document.getElementById('organization-details-title') : null;
+            if (heading) {
+                heading.focus({preventScroll: true});
+            } else {
+                (launcherRef.current ?? restoreRef.current)?.focus();
+            }
+            pageChangedRef.current = false;
         }
         wasSheetActiveRef.current = sheetActive;
     }, [sheetActive]);

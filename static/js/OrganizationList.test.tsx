@@ -2177,6 +2177,57 @@ describe('OrganizationList', () => {
         });
     });
 
+    describe('a company opened from the assistant on a phone (issue #486)', () => {
+        let closeSpy: jest.SpyInstance;
+
+        beforeEach(() => {
+            document.body.classList.remove('assistant-sheet');
+            closeSpy = jest.spyOn(require('./workspace/store'), 'closeAssistant');
+        });
+
+        afterEach(() => {
+            closeSpy.mockRestore();
+            document.body.classList.remove('assistant-sheet');
+        });
+
+        test('closes the sheet once when the company opens', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            document.body.classList.add('assistant-sheet');
+
+            act(() => {
+                expect(openWorkspaceCompany(2)).toBe('opened');
+            });
+
+            await screen.findByTestId('company-view');
+            expect(closeSpy).toHaveBeenCalledTimes(1);
+        });
+
+        test('leaves the assistant open in the drawer and docked placements', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            document.body.classList.add('assistant-drawer');
+
+            act(() => {
+                expect(openWorkspaceCompany(2)).toBe('opened');
+            });
+
+            await screen.findByTestId('company-view');
+            expect(closeSpy).not.toHaveBeenCalled();
+            document.body.classList.remove('assistant-drawer');
+        });
+
+        test('does not close the sheet for an id that cannot be a company', () => {
+            render(<OrganizationList organizations={organizations} />);
+            document.body.classList.add('assistant-sheet');
+
+            act(() => {
+                expect(openWorkspaceCompany(0)).toBe('not-found');
+            });
+
+            expect(closeSpy).not.toHaveBeenCalled();
+            expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
+        });
+    });
+
     describe('rankings toolbar and empty states (issue #478)', () => {
         const presets = [{id: 1, name: 'Balanced'}, {id: 2, name: 'Culture'}];
         const longName = 'L'.repeat(100);

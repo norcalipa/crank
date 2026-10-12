@@ -11,6 +11,7 @@ import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './sug
 import {installPositionTracking, PositionAnchor, restoreResultPosition, saveResultPosition} from './workspace/position';
 import {
     clearWorkspaceContext,
+    closeAssistant,
     getWorkspaceSnapshot,
     openAssistant,
     registerCompanyTarget,
@@ -393,7 +394,16 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     // The assistant's typed target: opens the view for any valid id, ranked in
     // this list or not; false only for an id that cannot be one.
-    openCompanyById = (organizationId: number): boolean => this.openView(organizationId, 'user');
+    openCompanyById = (organizationId: number): boolean => {
+        const opened = this.openView(organizationId, 'user');
+        // On a phone the assistant is a sheet over the page: a company opened
+        // from inside it would stay hidden behind it, so the sheet closes, as
+        // it did when the company was a dialog.
+        if (opened && document.body.classList.contains('assistant-sheet')) {
+            closeAssistant();
+        }
+        return opened;
+    };
 
     getUrlState = () => {
         const params = new URLSearchParams(window.location.search);
