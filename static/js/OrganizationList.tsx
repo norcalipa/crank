@@ -107,6 +107,13 @@ interface CompanyViewState {
 // Marks the history entry that opening a company added, so Back to results
 // knows it can go back instead of rewriting the URL (issue #486).
 const VIEW_ENTRY_KEY = 'crankCompanyView';
+// Where the scroll tracker keeps its result position (workspace/position.ts).
+const POSITION_STATE_KEY = 'crankPosition';
+// Result rows and cards only: the company view and the correction form carry
+// the attribute too, and neither is a place the results can be restored to.
+const RESULT_ANCHOR_SELECTOR = '.organization-row[data-organization-id], .organization-card[data-organization-id]';
+// `:root` smooths scrolling; a restored row must be where it is read at once.
+const INSTANT = 'instant' as ScrollBehavior;
 
 interface OrganizationListState {
     organizations: Organization[];
@@ -239,8 +246,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     // Organization id of the first result on screen. Table rows and cards
     // both carry the id; whichever layout is displayed has a non-empty box.
+    // With a company open there is none: the view is not a result.
     visibleOrganizationAnchor = (): PositionAnchor | null => {
-        const candidates = document.querySelectorAll<HTMLElement>('[data-organization-id]');
+        const candidates = document.querySelectorAll<HTMLElement>(RESULT_ANCHOR_SELECTOR);
         for (const element of Array.from(candidates)) {
             const rect = element.getBoundingClientRect();
             if (rect.height > 0 && rect.bottom > 0) {
@@ -254,8 +262,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         if (!/^\d+$/.test(id)) {
             return null;
         }
-        const candidates = document.querySelectorAll<HTMLElement>(`[data-organization-id="${id}"]`);
-        return Array.from(candidates).find((element) => element.getBoundingClientRect().height > 0) ?? null;
+        const candidates = document.querySelectorAll<HTMLElement>(RESULT_ANCHOR_SELECTOR);
+        return Array.from(candidates).find((element) => element.getAttribute('data-organization-id') === id
+            && element.getBoundingClientRect().height > 0) ?? null;
     };
 
     // Account hydration can reopen the drawer/docked panel and reflow rows
@@ -701,15 +710,21 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const params = allowlistedParams(window.location.search);
         params.delete('company');
         const query = params.toString();
+        // The position on this entry was saved while the company was on
+        // screen, so it is dropped with the marker; the rest of the state stays.
+        const {[POSITION_STATE_KEY]: _position, [VIEW_ENTRY_KEY]: _marker, ...kept} = window.history.state ?? {};
         window.history.replaceState(
-            window.history.state, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
-        this.showResults();
+            window.history.state ? kept : null, '',
+            `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+        this.showResults(false);
     };
 
     // Shows the results again exactly as they were: the region was only
-    // hidden, so search, filters and page are untouched; the scroll position
-    // comes from the entry and the row that was open takes focus.
-    private showResults = () => {
+    // hidden, so search, filters and page are untouched. Through history the
+    // entry's own saved position is restored; in place there is none to
+    // restore. The row the view was opened from takes focus and is never
+    // left off screen.
+    private showResults = (throughHistory = true) => {
         const id = this.state.view?.id;
         const openedRowId = this.openedRowId;
         this.openedRowId = null;
@@ -718,14 +733,35 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             // After the commit that shows the results again (and any list
             // state a popstate restored in the same turn) has painted.
             window.requestAnimationFrame(() => {
-                restoreResultPosition(this.findOrganizationAnchor);
-                // After a switch to a company that is gone, the row the view
-                // was opened from takes the focus.
-                const row = (id === undefined ? null : this.findOrganizationAnchor(String(id)))
-                    ?? (openedRowId === null ? null : this.findOrganizationAnchor(String(openedRowId)));
+                if (throughHistory) {
+                    restoreResultPosition(this.findOrganizationAnchor);
+                }
+                // The row the view was opened from; after a switch to a
+                // company that is gone it is still the one to come back to.
+                const row = (openedRowId === null ? null : this.findOrganizationAnchor(String(openedRowId)))
+                    ?? (id === undefined ? null : this.findOrganizationAnchor(String(id)));
+                if (row) {
+                    this.bringRowIntoView(row, throughHistory);
+                } else if (!throughHistory) {
+                    window.scrollTo({top: 0, behavior: INSTANT});
+                }
                 (row ?? this.resultsRef.current)?.focus({preventScroll: true});
             });
         });
+    };
+
+    // A restored row that is at least partly on screen stays where it was
+    // restored to; one that is not is centred, clear of the top bar and the
+    // Assistant bar. In place the row must be fully inside.
+    private bringRowIntoView = (row: HTMLElement, partlyIsEnough: boolean) => {
+        const rect = row.getBoundingClientRect();
+        const visible = partlyIsEnough
+            ? rect.bottom > 0 && rect.top < window.innerHeight
+            : rect.top >= 0 && rect.bottom <= window.innerHeight;
+        if (!visible) {
+            const top = Math.round(rect.top + window.scrollY - (window.innerHeight - rect.height) / 2);
+            window.scrollTo({top: Math.max(0, top), behavior: INSTANT});
+        }
     };
 
     private resultsRef = React.createRef<HTMLDivElement>();

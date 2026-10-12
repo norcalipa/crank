@@ -1460,6 +1460,161 @@ describe('OrganizationList', () => {
             await waitFor(() => expect(results()).toHaveFocus());
         });
 
+        describe('where the results land and which row takes focus (issue #486)', () => {
+            const rowOf = (name: string) => screen.getAllByRole('button', {name: `View details for ${name}`})[0];
+            // jsdom ignores `hidden`: a row inside the hidden results region
+            // has no box, as in a browser, so only what is shown can be an anchor.
+            const layOutLikeABrowser = () => rectSpy.mockImplementation(function (this: HTMLElement) {
+                const shown = this.hasAttribute('data-organization-id') && !this.closest('[hidden]');
+                return {top: shown ? rowTop : 0, bottom: shown ? rowTop + 40 : 0, height: shown ? 40 : 0,
+                    left: 0, right: 0, width: 0, x: 0, y: rowTop, toJSON: () => ({})} as DOMRect;
+            });
+            const backToResults = async () => {
+                fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            };
+
+            test('leaving a view in place keeps neither the saved position nor the marker, and keeps other keys', async () => {
+                render(<OrganizationList organizations={organizations} />);
+                fireEvent.click(screen.getAllByText('Organization 1')[0]);
+                await screen.findByTestId('company-view');
+                window.history.replaceState({
+                    ...window.history.state,
+                    crankPosition: {scrollY: 1409, anchor: '1', anchorOffset: 0},
+                    elsewhere: 'stays',
+                }, '');
+                expect(window.history.state).toMatchObject({crankCompanyView: true});
+
+                // The assistant's filters act on the results without going back.
+                act(() => {
+                    expect(applyWorkspaceFilters({})).toBe(true);
+                });
+
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+                expect(window.history.state).toEqual({elsewhere: 'stays'});
+            });
+
+            test('with a view open the scroll tracker has no anchor, so the position it saves names none', async () => {
+                window.history.replaceState({}, '', '/?company=1');
+                layOutLikeABrowser();
+                render(<OrganizationList organizations={organizations} />);
+                await screen.findByTestId('company-view');
+
+                fireEvent.scroll(window);
+
+                await waitFor(() => expect(window.history.state?.crankPosition).toBeDefined());
+                expect(window.history.state.crankPosition.anchor).toBeNull();
+            });
+
+            test('a view in place is never restored to the position saved while it was open', async () => {
+                window.history.replaceState({}, '', '/?company=1');
+                render(<OrganizationList organizations={organizations} />);
+                await screen.findByTestId('company-view');
+                window.history.replaceState({...window.history.state,
+                    crankPosition: {scrollY: 1409, anchor: null, anchorOffset: 0}}, '');
+                scrollTo.mockClear();
+
+                await backToResults();
+
+                await waitFor(() => expect(rowOf('Organization 1')).toHaveFocus());
+                expect(scrollTo).not.toHaveBeenCalledWith({top: 1409, behavior: 'instant'});
+            });
+
+            test('Back after a switch focuses the row the view was opened from, with preventScroll', async () => {
+                render(<OrganizationList organizations={organizations} />);
+                fireEvent.click(screen.getAllByText('Organization 1')[0]);
+                await screen.findByTestId('company-view');
+                act(() => {
+                    openWorkspaceCompany(2);
+                });
+                await waitFor(() => expect(screen.getByTestId('company-view')).toHaveAttribute('data-organization-id', '2'));
+                const focusSpy = jest.spyOn(HTMLElement.prototype, 'focus');
+
+                act(() => window.history.back());
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+
+                await waitFor(() => expect(rowOf('Organization 1')).toHaveFocus());
+                const calls = focusSpy.mock.calls.length;
+                expect(calls).toBeGreaterThan(0);
+                expect(focusSpy.mock.instances[calls - 1]).toBe(rowOf('Organization 1'));
+                expect(focusSpy.mock.calls[calls - 1][0]).toEqual({preventScroll: true});
+                focusSpy.mockRestore();
+            });
+
+            test('through history, a focus row that is not on screen after the restore is centred', async () => {
+                render(<OrganizationList organizations={organizations} />);
+                fireEvent.click(screen.getAllByText('Organization 2')[0]);
+                await screen.findByTestId('company-view');
+                scrollTo.mockClear();
+
+                rowTop = 2000;
+                act(() => window.history.back());
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+
+                // (768 - 40) / 2 above the row's page offset.
+                await waitFor(() => expect(scrollTo).toHaveBeenLastCalledWith({top: 1636, behavior: 'instant'}));
+            });
+
+            test('through history, a focus row restored partly on screen is not moved again', async () => {
+                render(<OrganizationList organizations={organizations} />);
+                fireEvent.click(screen.getAllByText('Organization 2')[0]);
+                await screen.findByTestId('company-view');
+                scrollTo.mockClear();
+
+                rowTop = 750;
+                act(() => window.history.back());
+                await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+                await waitFor(() => expect(rowOf('Organization 2')).toHaveFocus());
+
+                expect(scrollTo).toHaveBeenCalledTimes(1);
+                expect(scrollTo).toHaveBeenCalledWith({top: 630, behavior: 'instant'});
+            });
+
+            test('in place, a row off screen is brought fully into view and one already inside is left alone', async () => {
+                window.history.replaceState({}, '', '/?company=1');
+                render(<OrganizationList organizations={organizations} />);
+                await screen.findByTestId('company-view');
+                scrollTo.mockClear();
+                rowTop = 740;
+
+                await backToResults();
+
+                await waitFor(() => expect(scrollTo).toHaveBeenCalledTimes(1));
+                expect(scrollTo).toHaveBeenCalledWith({top: 376, behavior: 'instant'});
+
+                window.history.replaceState({}, '', '/?company=2');
+                act(() => {
+                    window.dispatchEvent(new PopStateEvent('popstate'));
+                });
+                await screen.findByTestId('company-view');
+                scrollTo.mockClear();
+                rowTop = 300;
+
+                await backToResults();
+
+                await waitFor(() => expect(rowOf('Organization 2')).toHaveFocus());
+                expect(scrollTo).not.toHaveBeenCalled();
+            });
+
+            test('in place with the row off the page, the page goes to the top and the results region takes focus', async () => {
+                window.history.replaceState({}, '', '/?company=2&page=1');
+                global.fetch = jest.fn().mockImplementation((url) => {
+                    if (url === '/api/organizations/2/') return Promise.resolve(ok(record(2, 'Organization 2')));
+                    if (url.endsWith('/scores/')) return Promise.resolve(ok([]));
+                    if (url.endsWith('/provenance/')) return Promise.resolve(ok(null));
+                    return Promise.resolve(ok({}));
+                });
+                render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+                await screen.findByTestId('company-view');
+                scrollTo.mockClear();
+
+                await backToResults();
+
+                await waitFor(() => expect(results()).toHaveFocus());
+                expect(scrollTo).toHaveBeenCalledWith({top: 0, behavior: 'instant'});
+            });
+        });
+
         test('a popstate to a URL without a company shows the results; one to a malformed company does too', async () => {
             render(<OrganizationList organizations={organizations} />);
             act(() => {
