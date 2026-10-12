@@ -308,14 +308,18 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
 
 describe('company view (issue #486)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
-    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'));
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
     const rule = (selector: string) => {
         const match = section.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`));
         return match ? match[1] : null;
     };
 
     it('has its own section at the end of the stylesheet', () => {
-        expect(popupCss.indexOf('/* issue #486 company view */')).toBeGreaterThan(0);
+        const start = popupCss.indexOf('/* issue #486 company view */');
+        const end = popupCss.indexOf('/* end issue #486 company view */');
+        expect(start).toBeGreaterThan(0);
+        expect(end).toBeGreaterThan(start);
+        expect(section).toBe(popupCss.slice(start, end));
         expect(section.length).toBeGreaterThan(200);
         expect(section).not.toMatch(/z-index/);
     });
@@ -351,7 +355,7 @@ describe('company view (issue #486)', () => {
 
 describe('company view visual review round 1 (issue #486)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
-    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'));
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
     const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const block = (selector: string, from = section) => {
         const match = from.match(new RegExp(`${escape(selector)}\\s*\\{([^}]*)\\}`));
@@ -419,7 +423,7 @@ describe('company view visual review round 1 (issue #486)', () => {
 
 describe('company view visual review round 2 (issue #486)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
-    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'));
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
     const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const block = (selector: string, from = section) => {
         const match = from.match(new RegExp(`${escape(selector)}\\s*\\{([^}]*)\\}`));
@@ -448,7 +452,7 @@ describe('company view visual review round 2 (issue #486)', () => {
 
 describe('company view visual review round 3 (issue #486)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
-    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'));
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
 
     it('lets the label column of "Check history" give way so a date or "Never" is never broken', () => {
         const rule = section.match(/\n\.company-view \.evidence-timestamps dl\s*\{([^}]*)\}/);
