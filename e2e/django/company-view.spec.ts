@@ -607,7 +607,9 @@ test.describe('company view (issue #486b)', () => {
     test('from a direct link, Back to results after scrolling the company puts its row on screen with focus', async ({page}) => {
         await page.setViewportSize(SHORT_PHONE);
         await login(page);
-        const id = await lastListedId(page);
+        await lastListedId(page);
+        // A row above the last: the old restore put the list at the end, where the last row happens to be on screen.
+        const id = (await listedIds(page))[1];
         await page.goto(`/?company=${id}`);
         await expect(view(page).getByTestId('provenance-section')).toBeVisible();
         await page.evaluate(() => window.scrollTo({top: 500, behavior: 'instant' as ScrollBehavior}));
