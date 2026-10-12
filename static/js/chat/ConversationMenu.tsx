@@ -251,7 +251,6 @@ export function ConversationMenu({
         // its own time when no pointerdown reached us; a keyboard or assistive
         // activation (detail 0) only by its own click, whatever press went down before.
         const began = e.detail > 0 ? confirmPressStartRef.current ?? e.timeStamp : e.timeStamp;
-        confirmPressStartRef.current = null;
         if (performance.now() - confirmOpenedAtRef.current < CONFIRM_ARM_DELAY_MS) return;
         if (began - confirmOpenedStampRef.current < CONFIRM_ARM_DELAY_MS) return;
         setWorking(true);
