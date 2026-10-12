@@ -925,14 +925,14 @@ test.describe('one transcript scroller (issue #483)', () => {
 // the second press of a double press lands on the confirm button. It must be
 // ignored; a deliberate press after the delay still confirms. Only sizes where
 // the delete confirm button opens under part of the item are listed: at others
-// (320x480 and 375x440 since the chat layout change) a press on the item cannot
+// (320x480, 375x440 and, with CI's fonts, 320x568) a press on the item cannot
 // land on the button, so there is nothing to ignore.
 test.describe('a double press on Delete conversation does not delete (issue #568)', () => {
     test.use({hasTouch: true});
 
     const SIZES = [
         {width: 375, height: 667}, {width: 390, height: 844}, {width: 1024, height: 800}, {width: 1280, height: 800},
-        {width: 320, height: 568}, {width: 375, height: 380}, {width: 320, height: 420},
+        {width: 375, height: 380}, {width: 320, height: 420},
     ];
 
     type Press = (page: Page, x: number, y: number) => Promise<void>;
