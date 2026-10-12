@@ -64,7 +64,10 @@ export function restoreResultPosition(getAnchor: (id: string) => HTMLElement | n
     if (position.anchor) {
         const el = getAnchor(position.anchor);
         if (el) {
-            const top = el.getBoundingClientRect().top + window.scrollY - position.anchorOffset;
+            // The saved offset is a whole number and a row can sit on a half
+            // pixel; a whole-number target keeps an engine that rounds scroll
+            // positions down from moving the list 1px on every restore.
+            const top = Math.round(el.getBoundingClientRect().top + window.scrollY - position.anchorOffset);
             window.scrollTo({top, behavior: INSTANT});
             return true;
         }

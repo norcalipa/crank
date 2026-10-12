@@ -65,7 +65,18 @@ test.describe('company view (issue #486b)', () => {
         await expect(view(page)).toBeVisible();
         await page.locator('textarea[aria-label="Message"]').fill('What stands out here?');
         await page.getByLabel('Send message').click();
-        await expect.poll(() => bodies.some((body) => body.includes('"surface":"company"') && body.includes('organization_id'))).toBe(true);
+        // The turn names this company: the body's organization_id is the `company` in the page URL.
+        await expect.poll(() => {
+            const companyId = new URL(page.url()).searchParams.get('company');
+            return bodies.some((body) => {
+                try {
+                    const {context} = JSON.parse(body);
+                    return context?.surface === 'company' && companyId !== null && String(context.organization_id) === companyId;
+                } catch {
+                    return false;
+                }
+            });
+        }).toBe(true);
         await expect(view(page)).toBeVisible();
     });
 
@@ -374,7 +385,7 @@ test.describe('company view (issue #486b)', () => {
             }
             return null;
         });
-        test.skip(id === null, 'the seeded rating source is not listed by the organizations API');
+        expect(id, 'the seeded rating source is listed by the organizations API').not.toBeNull();
         await page.goto(`/?company=${id}`);
         await expect(view(page)).toBeVisible();
         await expect(page.getByTestId('not-ranked')).toHaveText(/Not ranked in this list/);
@@ -544,7 +555,7 @@ test.describe('company view (issue #486b)', () => {
         await opener(page).click();
         await expect(page.getByTestId('assistant-context-line')).toHaveText(`About ${COMPANY}`);
         const unlisted = await unlistedId(page);
-        test.skip(unlisted === null, 'the seeded rating source is not listed by the organizations API');
+        expect(unlisted, 'the seeded rating source is listed by the organizations API').not.toBeNull();
         await page.route(detailUrl, (route) => route.fulfill({status: 500, contentType: 'application/json', body: '{}'}));
         await page.evaluate((id) => window.dispatchEvent(new CustomEvent('crank:company-open', {detail: {organizationId: id}})), unlisted);
         await expect(page.getByTestId('company-view-retry')).toBeVisible();
@@ -552,12 +563,107 @@ test.describe('company view (issue #486b)', () => {
         await expect(view(page).getByRole('heading', {name: 'Company not loaded'})).toBeVisible();
     });
 
+    // Issue #486, review round 1: where the results land and which row is focused when they come back.
+    // A short phone, so the seeded list's last row lies below the first screen.
+    const SHORT_PHONE = {width: 375, height: 480};
+    const RESULT_ROWS = 'tr.organization-row[data-organization-id], article.organization-card[data-organization-id]';
+    const listedIds = (page: Page) => page.evaluate((selector) => [...document.querySelectorAll(selector)]
+        .filter((row) => row.getBoundingClientRect().height > 0)
+        .map((row) => row.getAttribute('data-organization-id') as string), RESULT_ROWS);
+    // One evaluate reads the row's rectangle, the viewport and the focus together, and what covers two corners.
+    const rowState = (page: Page, id: string) => page.evaluate(({selector, id}) => {
+        const row = [...document.querySelectorAll(selector)]
+            .find((el) => el.getAttribute('data-organization-id') === id && el.getBoundingClientRect().height > 0);
+        if (!row) return null;
+        const r = row.getBoundingClientRect();
+        const covered = (y: number) => {
+            const hit = document.elementFromPoint(r.left + 2, y);
+            return !hit || !(hit === row || row.contains(hit));
+        };
+        return {
+            top: r.top, bottom: r.bottom, viewport: window.innerHeight,
+            inside: r.top >= 0 && r.bottom <= window.innerHeight,
+            covered: covered(Math.max(r.top, 0) + 2) || covered(Math.min(r.bottom, window.innerHeight) - 2),
+            focused: document.activeElement === row,
+        };
+    }, {selector: RESULT_ROWS, id});
+    const expectRowShownAndFocused = async (page: Page, id: string) => {
+        await expect.poll(async () => {
+            const state = await rowState(page, id);
+            return state !== null && state.inside && !state.covered && state.focused;
+        }, {message: `row ${id} is on screen, uncovered and focused`}).toBe(true);
+    };
+    const lastListedId = async (page: Page) => {
+        await page.goto('/');
+        await expect(opener(page)).toBeVisible();
+        const ids = await listedIds(page);
+        expect(ids.length).toBeGreaterThan(2);
+        const last = ids[ids.length - 1];
+        const state = await rowState(page, last);
+        expect(state?.top, 'the last row lies below the first screen').toBeGreaterThanOrEqual(SHORT_PHONE.height);
+        return last;
+    };
+
+    test('from a direct link, Back to results after scrolling the company puts its row on screen with focus', async ({page}) => {
+        await page.setViewportSize(SHORT_PHONE);
+        await login(page);
+        const id = await lastListedId(page);
+        await page.goto(`/?company=${id}`);
+        await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+        await page.evaluate(() => window.scrollTo({top: 500, behavior: 'instant' as ScrollBehavior}));
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
+        // Past the 200 ms save, so a position saved while the company was open exists.
+        await page.waitForTimeout(400);
+
+        await view(page).getByRole('button', {name: 'Back to results'}).click();
+
+        await expect(view(page)).toHaveCount(0);
+        await expectRowShownAndFocused(page, id);
+    });
+
+    test('from a direct link to a row below the first screen, Back to results puts it on screen with focus', async ({page}) => {
+        await page.setViewportSize(SHORT_PHONE);
+        await login(page);
+        const id = await lastListedId(page);
+        await page.goto(`/?company=${id}`);
+        await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+
+        await view(page).getByRole('button', {name: 'Back to results'}).click();
+
+        await expect(view(page)).toHaveCount(0);
+        await expectRowShownAndFocused(page, id);
+    });
+
+    test('after a switch from inside the view, Back returns to the row the view was opened from, where it was', async ({page}) => {
+        await page.setViewportSize(SHORT_PHONE);
+        await login(page);
+        const other = await lastListedId(page);
+        await opener(page).scrollIntoViewIfNeeded();
+        const first = await opener(page).getAttribute('data-organization-id') as string;
+        expect(first).not.toBe(other);
+        const before = await rowState(page, first);
+        expect(before).not.toBeNull();
+        await opener(page).click();
+        await expect(view(page)).toBeVisible();
+        await page.evaluate((id) => window.dispatchEvent(new CustomEvent('crank:company-open', {detail: {organizationId: Number(id)}})), other);
+        await expect.poll(() => companyParam(page)).toBe(other);
+        await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+
+        await page.goBack();
+
+        await expect(view(page)).toHaveCount(0);
+        await expectRowShownAndFocused(page, first);
+        await expect.poll(async () => Math.abs(((await rowState(page, first))?.top ?? Infinity) - (before?.top ?? 0)), {
+            message: 'the opened row is where it was',
+        }).toBeLessThanOrEqual(2);
+    });
+
     test('Retry keeps the focus in the view: the heading, then Back to results on the next Tab', async ({page}) => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page);
         await page.goto('/');
         const id = await unlistedId(page);
-        test.skip(id === null, 'the seeded rating source is not listed by the organizations API');
+        expect(id, 'the seeded rating source is listed by the organizations API').not.toBeNull();
         let failing = true;
         await page.route(detailUrl, (route) => (failing
             ? route.fulfill({status: 500, contentType: 'application/json', body: '{}'})

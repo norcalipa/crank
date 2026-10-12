@@ -1506,20 +1506,6 @@ describe('OrganizationList', () => {
                 expect(window.history.state.crankPosition.anchor).toBeNull();
             });
 
-            test('a view in place is never restored to the position saved while it was open', async () => {
-                window.history.replaceState({}, '', '/?company=1');
-                render(<OrganizationList organizations={organizations} />);
-                await screen.findByTestId('company-view');
-                window.history.replaceState({...window.history.state,
-                    crankPosition: {scrollY: 1409, anchor: null, anchorOffset: 0}}, '');
-                scrollTo.mockClear();
-
-                await backToResults();
-
-                await waitFor(() => expect(rowOf('Organization 1')).toHaveFocus());
-                expect(scrollTo).not.toHaveBeenCalledWith({top: 1409, behavior: 'instant'});
-            });
-
             test('Back after a switch focuses the row the view was opened from, with preventScroll', async () => {
                 render(<OrganizationList organizations={organizations} />);
                 fireEvent.click(screen.getAllByText('Organization 1')[0]);

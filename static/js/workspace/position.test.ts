@@ -53,6 +53,26 @@ describe('result position', () => {
         expect(window.scrollTo).toHaveBeenCalledWith({top: 720, behavior: 'instant'});
     });
 
+    test('a row on a half pixel restores to a whole-number target and saves the same offset again', () => {
+        saveResultPosition('row-3', 120);
+        // The row sits at page offset 840.5; an engine that rounds scroll targets down scrolls by whole pixels.
+        const pageTop = 840.5;
+        let scrollY = 240;
+        Object.defineProperty(window, 'scrollY', {configurable: true, get: () => scrollY});
+        window.scrollTo = jest.fn((options: ScrollToOptions) => {
+            scrollY = Math.floor(options.top as number);
+        }) as unknown as typeof window.scrollTo;
+        const el = document.createElement('div');
+        el.getBoundingClientRect = () => ({top: pageTop - scrollY} as DOMRect);
+
+        restoreResultPosition(() => el);
+
+        const target = (window.scrollTo as jest.Mock).mock.calls[0][0].top;
+        expect(Number.isInteger(target)).toBe(true);
+        saveResultPosition('row-3', el.getBoundingClientRect().top);
+        expect(readResultPosition()).toMatchObject({anchor: 'row-3', anchorOffset: 120});
+    });
+
     test('malformed positions are ignored', () => {
         window.history.replaceState({crankPosition: {scrollY: 'x'}}, '');
         expect(readResultPosition()).toBeNull();
