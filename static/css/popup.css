@@ -4899,6 +4899,13 @@ span.priority-chip-button { cursor: default; }
     }
 }
 
+/* "Check history": a date or "Never" is never broken across lines. When the
+   text column is short of room the label column gives way instead and a
+   label wraps at a space. */
+.company-view .evidence-timestamps dl {
+    grid-template-columns: minmax(0, max-content) max-content;
+}
+
 /* A heading in a narrow view is phone-sized whatever the viewport is. */
 @container company-view (max-width: 28rem) {
     .company-view .company-view-header h2 {

@@ -1023,6 +1023,7 @@ describe('CompanyView states (issue #486)', () => {
 
         expect(screen.getByRole('heading', {level: 2, name: 'Company not found'})).toHaveFocus();
         expect(screen.getByTestId('company-not-found')).toHaveTextContent('This company is no longer listed.');
+        expect(screen.getByTestId('company-not-found')).toHaveAttribute('role', 'status');
         expect(screen.queryByTestId('provenance-retry')).not.toBeInTheDocument();
         expect(global.fetch).not.toHaveBeenCalled();
         fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));

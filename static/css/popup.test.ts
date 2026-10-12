@@ -446,6 +446,19 @@ describe('company view visual review round 2 (issue #486)', () => {
     });
 });
 
+describe('company view visual review round 3 (issue #486)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'));
+
+    it('lets the label column of "Check history" give way so a date or "Never" is never broken', () => {
+        const rule = section.match(/\n\.company-view \.evidence-timestamps dl\s*\{([^}]*)\}/);
+        expect(rule).not.toBeNull();
+        expect(rule![1]).toMatch(/grid-template-columns:\s*minmax\(0,\s*max-content\)\s+max-content\s*;/);
+        // The rule it overrides stays above the view's section.
+        expect(popupCss.indexOf('.evidence-timestamps dl { display: grid')).toBeLessThan(popupCss.indexOf('/* issue #486 company view */'));
+    });
+});
+
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const containerBlock = popupCss.match(/@container organization-results \(max-width: 56rem\) \{[\s\S]*?\n\}\n/)![0];

@@ -883,6 +883,8 @@ test.describe('company view (issue #486b)', () => {
         const root = document.querySelector('[data-testid="company-view"]')!;
         root.querySelectorAll('details').forEach((node) => { node.open = true; });
         const box = root.getBoundingClientRect();
+        const rootStyle = getComputedStyle(root);
+        const viewWidth = root.clientWidth - parseFloat(rootStyle.paddingLeft) - parseFloat(rootStyle.paddingRight);
         const broken: string[] = [];
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -905,17 +907,16 @@ test.describe('company view (issue #486b)', () => {
             }
             // A web address has break opportunities after its slashes and punctuation, so it may take more
             // lines than it has words when the text starts part-way along a line, without any column being
-            // crushed: count its segments. A crushed column breaks inside a segment and still fails.
+            // crushed: count its segments.
             const words = text.split(/\s+|(?<=[/?&=#])/).filter(Boolean).length;
             if (lines <= words) continue;
-            // A word wider than the line box it sits in (the nearest non-inline ancestor) has to break; anything else is a crushed column.
-            let column: Element = parent;
-            while (column.parentElement && getComputedStyle(column).display === 'inline') column = column.parentElement;
+            // Only a word wider than the view itself has to break. A word that fits the view but not its own
+            // column is a crushed column, and it is reported.
             const probe = document.createElement('span');
             probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(parent).font}`;
             probe.textContent = text.split(/\s+/).sort((a, b) => b.length - a.length)[0];
             document.body.appendChild(probe);
-            const wider = probe.getBoundingClientRect().width > column.clientWidth - parseFloat(getComputedStyle(column).paddingLeft) - parseFloat(getComputedStyle(column).paddingRight) + 0.5;
+            const wider = probe.getBoundingClientRect().width > viewWidth + 0.5;
             probe.remove();
             if (!wider) broken.push(`${text.slice(0, 30)}: ${lines} lines for ${words} words`);
         }
@@ -965,6 +966,70 @@ test.describe('company view (issue #486b)', () => {
                 expect(m.overflow).toBeLessThanOrEqual(0);
             }
         });
+    }
+
+    // Round 3, V1: in "Check history" a date or "Never" is printed on one line and no label reaches its value.
+    for (const size of [
+        {width: 1316, height: 900, assistant: true},
+        {width: 1000, height: 800, assistant: true},
+        {width: 1080, height: 800, assistant: false},
+        {width: 784, height: 800, assistant: false},
+        {width: 320, height: 640, assistant: false},
+    ]) {
+        for (const wide of [false, true]) {
+            test(`"Check history" keeps every date on one line at ${size.width}x${size.height}${size.assistant ? ' with the assistant open' : ''}${wide ? ' in the wider font' : ''}`, async ({page}) => {
+                await page.setViewportSize({width: size.width, height: size.height});
+                await login(page);
+                await page.goto('/');
+                if (wide) await page.addStyleTag({content: WIDE_FONT_CSS});
+                if (size.assistant) await page.locator('[data-testid="assistant-launcher"]').click();
+                await page.locator('tr[aria-label="View details for E2E Beta Labs"], article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
+                await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+
+                const m = await page.evaluate(() => {
+                    const root = document.querySelector('[data-testid="company-view"]')!;
+                    root.querySelectorAll('details').forEach((node) => { node.open = true; });
+                    const rectsOf = (node: Element) => {
+                        const range = document.createRange();
+                        range.selectNodeContents(node);
+                        return [...range.getClientRects()].filter((rect) => rect.width > 0.5);
+                    };
+                    const linesOf = (node: Element) => {
+                        let lines = 0;
+                        let lineTop = -Infinity;
+                        let lineHeight = 0;
+                        for (const r of rectsOf(node).sort((a, b) => a.top - b.top)) {
+                            if (r.top > lineTop + lineHeight / 2) {
+                                lines += 1;
+                                lineTop = r.top;
+                                lineHeight = r.height;
+                            }
+                        }
+                        return lines;
+                    };
+                    const values = [...root.querySelectorAll('.evidence-timestamps dl dd')].map((dd) => ({
+                        text: dd.textContent, lines: linesOf(dd),
+                    }));
+                    const reaching = [...root.querySelectorAll('.evidence-timestamps dl dt')].flatMap((dt) => {
+                        const dd = dt.nextElementSibling!;
+                        const label = rectsOf(dt);
+                        const value = rectsOf(dd);
+                        const labelRight = Math.max(...label.map((r) => r.right));
+                        const valueLeft = Math.min(...value.map((r) => r.left));
+                        return labelRight > valueLeft + 0.5 ? [`${dt.textContent} reaches ${dd.textContent}`] : [];
+                    });
+                    return {
+                        values, reaching,
+                        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                    };
+                });
+
+                expect(m.values.length, 'dates in every "Check history"').toBeGreaterThan(0);
+                expect(m.values.filter((value) => value.lines !== 1), 'dates not on exactly one line').toEqual([]);
+                expect(m.reaching, 'labels printed over their values').toEqual([]);
+                expect(m.overflow).toBeLessThanOrEqual(0);
+            });
+        }
     }
 
     // Round 2, G3: when the view is narrow the pending suggestion stacks and

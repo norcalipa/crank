@@ -1460,6 +1460,20 @@ describe('OrganizationList', () => {
             await waitFor(() => expect(results()).toHaveFocus());
         });
 
+        test('a ranked row shaped like the real payload (a type and no url) requests its record and shows the address from it', async () => {
+            const ranked = [{id: 9, name: 'Ranked Nine', ranking: 1, avg_score: 3.1, funding_round: 'S', rto_policy: 'R',
+                profile_completeness: 1, accelerated_vesting: false, type: 'C'}];
+            answerRecord(9, () => Promise.resolve(ok(record(9, 'Ranked Nine'))));
+            render(<OrganizationList organizations={ranked as never} />);
+
+            fireEvent.click(screen.getAllByText('Ranked Nine')[0]);
+
+            await screen.findByTestId('popup-details-grid');
+            const fetched = (global.fetch as jest.Mock).mock.calls.map(([url]) => url);
+            expect(fetched.filter((url) => url === '/api/organizations/9/')).toHaveLength(1);
+            expect(screen.getByRole('link', {name: 'https://org9.example.com'})).toBeInTheDocument();
+        });
+
         describe('where the results land and which row takes focus (issue #486)', () => {
             const rowOf = (name: string) => screen.getAllByRole('button', {name: `View details for ${name}`})[0];
             // jsdom ignores `hidden`: a row inside the hidden results region
