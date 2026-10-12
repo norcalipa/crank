@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Tests for the seed_e2e management command (issue #491)."""
 
+from datetime import timedelta
 from io import StringIO
 
 from django.contrib.auth import get_user_model
@@ -24,9 +25,11 @@ from crank.management.commands.seed_e2e import (
 )
 from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.job import JobListing, JobSourceCatalog
+from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
 from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
+from crank.services.match_recompute import RecomputeStatus, recompute_user
 from crank.settings.base import DEFAULT_ALGORITHM_ID
 
 
@@ -504,3 +507,53 @@ class SeedE2ECommandTests(TestCase):
         summary_lines = [line for line in text.splitlines() if "seed_e2e ready" in line]
         self.assertEqual(len(summary_lines), 1)
         self.assertLess(len(summary_lines[0]), 400)
+
+    # -- Issue #485: the fixture source has a successful crawl on record -----
+
+    def test_fixture_source_has_a_recent_successful_crawl(self):
+        before = timezone.now()
+        call_command("seed_e2e", stdout=StringIO())
+        source = JobSourceCatalog.objects.get(name=FIXTURE_SOURCE_NAME)
+        self.assertIsNotNone(source.last_crawl_at)
+        self.assertGreaterEqual(source.last_crawl_at, before)
+        self.assertLessEqual(source.last_crawl_at, timezone.now())
+
+    def test_rerun_repairs_a_cleared_or_stale_crawl_time_and_keeps_a_recent_one(self):
+        call_command("seed_e2e", stdout=StringIO())
+        source = JobSourceCatalog.objects.get(name=FIXTURE_SOURCE_NAME)
+        recent = source.last_crawl_at
+        call_command("seed_e2e", stdout=StringIO())
+        source.refresh_from_db()
+        self.assertEqual(source.last_crawl_at, recent)
+
+        JobSourceCatalog.objects.filter(pk=source.pk).update(last_crawl_at=None)
+        call_command("seed_e2e", stdout=StringIO())
+        source.refresh_from_db()
+        self.assertIsNotNone(source.last_crawl_at)
+        self.assertGreater(source.last_crawl_at, timezone.now() - timedelta(minutes=5))
+
+        JobSourceCatalog.objects.filter(pk=source.pk).update(
+            last_crawl_at=timezone.now() - timedelta(hours=48)
+        )
+        call_command("seed_e2e", stdout=StringIO())
+        source.refresh_from_db()
+        self.assertGreater(source.last_crawl_at, timezone.now() - timedelta(minutes=5))
+
+    def test_a_seeded_reader_with_matches_is_ok_with_an_inventory_not_partial_coverage(self):
+        call_command("seed_e2e", stdout=StringIO())
+        user = get_user_model().objects.get(username=E2E_USERNAME)
+        outcome = recompute_user(user, reason="e2e", force=True)
+        self.assertEqual(outcome.status, RecomputeStatus.PUBLISHED)
+        self.assertTrue(JobMatch.objects.filter(user=user).exists())
+        self.client.force_login(user)
+        payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(payload["state"], "ok")
+        self.assertIn("inventory", payload)
+        self.assertNotIn("coverage", payload)
+        self.assertGreaterEqual(payload["inventory"]["active_listings"], 1)
+        self.assertIsNotNone(payload["inventory"]["last_success_at"])
+
+        # With the crawl time cleared the same reader is in the all-failing state.
+        JobSourceCatalog.objects.filter(name=FIXTURE_SOURCE_NAME).update(last_crawl_at=None)
+        payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(payload["state"], "partial_coverage")
