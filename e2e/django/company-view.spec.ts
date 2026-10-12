@@ -616,8 +616,10 @@ test.describe('company view (issue #486b)', () => {
         await expect(view(page).getByTestId('provenance-section')).toBeVisible();
         await page.evaluate(() => window.scrollTo({top: 500, behavior: 'instant' as ScrollBehavior}));
         await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
-        // Past the 200 ms save, so a position saved while the company was open exists.
-        await page.waitForTimeout(400);
+        // A position saved on the entry while the company was open exists.
+        await expect.poll(() => page.evaluate(
+            () => (window.history.state?.crankPosition?.scrollY as number | undefined) ?? 0,
+        )).toBeGreaterThan(100);
 
         await view(page).getByRole('button', {name: 'Back to results'}).click();
 

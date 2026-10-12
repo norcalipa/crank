@@ -622,10 +622,18 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.openView(organization.id, 'user');
     };
 
-    // Shows the company in place of the results (issue #486). `user` opens add
-    // one history entry the first time, so Back returns to the results; a
-    // view opened from inside a view replaces it. `url` opens (`?company=` on
-    // load, Back/Forward) never touch history: the URL already says it.
+    // Shows the company in place of the results (issue #486). History rules:
+    // 1. Only an open from the results adds a history entry, exactly one; a
+    //    switch from inside the view replaces it; an open from the address
+    //    (`?company=` on load, Back/Forward) never writes history, the URL
+    //    already says it.
+    // 2. The `crankCompanyView` marker is written by that one push and removed
+    //    by `leaveViewInPlace`; nothing copies `history.state` onto a new entry.
+    // 3. "Back to results" and "Clear context" go back through that entry when
+    //    it exists, and rewrite the address in place when it does not.
+    // 4. A purge or an account change always closes in place, never through
+    //    history: a traversal queued with the sign-out form's submission could
+    //    cancel the sign-out.
     openView = (id: number, source: 'user' | 'url'): boolean => {
         if (!isCompanyId(id)) {
             return false;
