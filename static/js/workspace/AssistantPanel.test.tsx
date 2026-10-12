@@ -111,6 +111,8 @@ describe('AssistantPanel', () => {
         test.each([
             ['a view of another company', 4, {surface: 'company' as const, organizationId: 3, organizationName: 'Acme'}],
             ['a view with the context cleared', 3, {surface: 'rankings' as const}],
+            ['a view with no context at all', 3, null],
+            ['a context that has an id but no name', 3, {surface: 'company' as const, organizationId: 3}],
         ])('over %s it says Back to company', (_label, viewId, context) => {
             addView(viewId);
             render(<AssistantPanel mode="sheet" context={context}/>);
