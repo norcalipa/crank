@@ -795,7 +795,10 @@ test.describe('company view (issue #486b)', () => {
                     lineHeight = r.height;
                 }
             }
-            const words = text.split(/\s+/).length;
+            // A web address has break opportunities after its slashes and punctuation, so it may take more
+            // lines than it has words when the text starts part-way along a line, without any column being
+            // crushed: count its segments. A crushed column breaks inside a segment and still fails.
+            const words = text.split(/\s+|(?<=[/?&=#])/).filter(Boolean).length;
             if (lines <= words) continue;
             // A word wider than the line box it sits in (the nearest non-inline ancestor) has to break; anything else is a crushed column.
             let column: Element = parent;
@@ -830,12 +833,16 @@ test.describe('company view (issue #486b)', () => {
         };
     });
 
-    for (const width of [768, 800, 820, 834, 853, 900, 991, 992, 1000, 1008, 1024, 1100, 1120, 1248, 1279, 1280, 1366, 1440, 375, 320]) {
-        test(`no text in the view is crushed at ${width}px, assistant open and closed`, async ({page}) => {
+    // CI's Chromium has no web font for the page and falls back to a wider one: check that font here too.
+    const WIDE_FONT_CSS = "body, button, input, textarea, select { font-family: 'DejaVu Sans', sans-serif !important; }";
+    for (const [width, wide] of [768, 800, 820, 834, 853, 900, 991, 992, 1000, 1008, 1024, 1100, 1120, 1248, 1279, 1280, 1366, 1440, 375, 320]
+        .flatMap((w) => [[w, false], [w, true]] as const)) {
+        test(`no text in the view is crushed at ${width}px${wide ? ' in the wider font' : ''}, assistant open and closed`, async ({page}) => {
             await page.setViewportSize({width, height: 800});
             await login(page);
             for (const assistant of width >= 768 ? ['closed', 'open'] : ['closed']) {
                 await page.goto('/');
+                if (wide) await page.addStyleTag({content: WIDE_FONT_CSS});
                 if (assistant === 'open') await page.locator('[data-testid="assistant-launcher"]').click();
                 await page.locator('tr[aria-label="View details for E2E Beta Labs"], article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
                 await expect(view(page).getByTestId('provenance-section')).toBeVisible();
