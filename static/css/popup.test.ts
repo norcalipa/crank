@@ -569,3 +569,37 @@ describe('collapsed priorities row and review step (issue #480 adversarial revie
         expect(popupCss).toMatch(/\.priorities-review-search\[aria-disabled='true'\] \{ opacity: 0\.65; \}/);
     });
 });
+
+describe('job-match panel result refresh styles (issue #485)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+
+    it('keeps the new rules in their own section ahead of the result-card rules, never at the end of the file', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        expect(start).toBeGreaterThan(0);
+        expect(next).toBeGreaterThan(start);
+        expect(popupCss.indexOf('/* issue #485 result refresh */', start + 1)).toBe(-1);
+        expect(popupCss.slice(start, next)).toMatch(/#job-match-panel a\.btn \{\s*display: inline-flex;\s*align-items: center;\s*justify-content: center;\s*\}/);
+    });
+
+    it('indents the folded line under the message, past the icon column', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        expect(popupCss.slice(start, next)).toMatch(/#job-match-panel \.job-match-notice-folded \{\s*margin-left: 1\.5rem;\s*\}/);
+    });
+
+    it('keeps the icon of a box with no button on its first line, and leaves the stale banner with a button centred', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        expect(popupCss.slice(start, next)).toMatch(
+            /#job-match-panel \.job-match-stale-banner--plain \.job-match-stale-icon \{\s*align-self: start;\s*margin-top: 0\.125rem;\s*\}/,
+        );
+        // The wide-screen rule that centres the items is still there, for the box with a button.
+        expect(popupCss).toMatch(/@media \(min-width: 576px\) \{\s*#job-match-panel \.job-match-stale-banner \{\s*grid-template-columns: auto minmax\(0, 1fr\) auto;\s*align-items: center;/);
+    });
+
+    it('scopes the heading scroll margin to the widths that show the sticky top bar', () => {
+        expect(popupCss).toMatch(/@media \(max-width: 767\.98px\) \{\s*#job-match-panel \.job-match-panel-title \{ scroll-margin-top: 4\.5rem; \}\s*\}/);
+        expect(popupCss).not.toMatch(/^#job-match-panel \.job-match-panel-title \{ scroll-margin-top/m);
+    });
+});

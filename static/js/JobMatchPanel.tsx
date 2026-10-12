@@ -61,6 +61,9 @@ interface RevisionBlock {
     data_revision?: number | null;
     generated_at?: string | null;
     stale?: boolean;
+    // A recompute for this user is in flight (issue #485): "stale" then means
+    // the answer is on its way, not that the reader has to act.
+    pending?: boolean;
     // Monotonic result-list generation (issue #475): a lower value than the
     // one on screen is a late response and never replaces it (issue #479).
     // Null for pre-generation users, which are never guarded.
@@ -173,6 +176,31 @@ function acceptsGeneration(
 
 type PanelPhase = 'loading' | 'error' | 'ready';
 
+// A read answered by the login page (a followed redirect) or a 401 means the
+// session ended, not that the server failed (issue #485).
+class SessionExpiredError extends Error {}
+
+function pathOf(url: string): string | null {
+    try {
+        return new URL(url, window.location.href).pathname;
+    } catch {
+        return null;
+    }
+}
+
+// A 401, or a followed redirect that ended on the sign-in page (its path, not
+// its query string). Any other redirect goes on to the normal handling.
+function sessionExpired(res: Response, signInUrl: string): boolean {
+    if (res.status === 401) {
+        return true;
+    }
+    if (res.redirected !== true || !res.url) {
+        return false;
+    }
+    const landed = pathOf(res.url);
+    return landed !== null && landed === pathOf(signInUrl);
+}
+
 /**
  * Parse a JSON response, translating the raw ``res.json()`` DOMException
  * ("Failed to execute 'json' on 'Response'...") that a login redirect or HTML
@@ -180,11 +208,14 @@ type PanelPhase = 'loading' | 'error' | 'ready';
  * failure is rewritten: status-code and network errors keep their readable
  * message so the retry path stays informative.
  */
+const LOAD_FAILED_MESSAGE = 'We couldn’t load your job matches. Please try again.';
+const REFRESH_FAILED_MESSAGE = 'We couldn’t refresh your job matches.';
+
 async function parseJson<T>(res: Response): Promise<T> {
     try {
         return await res.json();
     } catch {
-        throw new Error('We couldn’t load your job matches. Please try again.');
+        throw new Error(LOAD_FAILED_MESSAGE);
     }
 }
 
@@ -722,70 +753,161 @@ function MatchLegend() {
     );
 }
 
-/** A stale-result warning with a visible refresh action (issue #467 round-2).
- * Rendered ONCE above the result list — never repeated per card — so the
- * state reads as a single consolidated banner, not an icon-only action
- * duplicated on every listing. The "Refresh matches" control is a labelled
- * >=44px target. */
-function StaleNotice({revision, onRefresh}: {revision?: RevisionBlock | null; onRefresh: () => void}) {
-    if (!revision || !revision.stale) {
-        return null;
-    }
+type ReloadHandler = (event: React.MouseEvent<HTMLElement>) => void;
+
+/** The one alert box above the results (issue #485). `aria-disabled` and the
+ * spinner mark a read in flight; the label never changes, so the control keeps
+ * its size and its focus. */
+function ReloadButton({label, testid, running, onReload}: {label: string; testid: string; running: boolean; onReload: ReloadHandler}) {
     return (
-        <div className="alert alert-warning py-2 small mb-3" role="status" aria-live="polite" data-testid="stale-notice">
-            <div className="job-match-stale-banner">
-                <Icon name="clock" className="job-match-stale-icon" />
-                <span className="job-match-stale-message">
-                    These results are stale — refresh to recompute with your latest preferences.
-                </span>
-                <button type="button" className="btn btn-sm btn-outline-light job-match-stale-refresh" onClick={onRefresh}
-                        aria-label="Refresh matches" data-testid="stale-refresh">
-                    <Icon name="refresh-cw" className="me-1" />Refresh matches
-                </button>
+        <button type="button" className="btn btn-sm btn-outline-light job-match-stale-refresh" onClick={onReload}
+                aria-disabled={running || undefined} data-testid={testid}>
+            <Icon name={running ? 'spinner' : 'refresh-cw'} className="me-1" />{label}
+        </button>
+    );
+}
+
+function NoticeBox({tone, testid, icon, children, button, folded}: {
+    tone: 'warning' | 'info';
+    testid: string;
+    icon: string;
+    children: React.ReactNode;
+    button?: React.ReactNode;
+    folded?: React.ReactNode;
+}) {
+    return (
+        <div className={`alert alert-${tone} py-2 small mb-3`} role="status" aria-live="polite" data-testid={testid}>
+            <div className={`job-match-stale-banner${button ? '' : ' job-match-stale-banner--plain'}`}>
+                <Icon name={icon} className="job-match-stale-icon" />
+                <span className="job-match-stale-message">{children}</span>
+                {button}
             </div>
+            {folded && <div className="job-match-notice-folded text-muted mt-1" data-testid="notice-folded">{folded}</div>}
         </div>
     );
 }
 
-/** Unsupported-criteria notice when the user set a criterion matching cannot
- * evaluate. Field paths are mapped to human labels (requirementLabel) so an
- * internal name like ``minimum_total_compensation`` never reaches the DOM. */
+const STALE_SENTENCE = 'Newer data or priorities exist.';
+
+/** Exactly one alert box, whatever is true (issue #485). Priority: a failed
+ * refresh, degraded coverage, stale results, a crawl in flight. The box
+ * carries its own sentence and control; at most one other condition is folded
+ * into a single muted line inside it. A crawl is never folded, and a stale
+ * flag is not folded under a failed refresh (its sentence gives the age). */
+function NoticeStack({emptyState, failed, stale, pending, running, onReload}: {
+    emptyState: EmptyStatePayload;
+    failed: {since: string | null; lastChecked: string; countOnly: boolean} | null;
+    stale: boolean;
+    pending: boolean;
+    running: boolean;
+    onReload: ReloadHandler;
+}) {
+    const coverage = emptyState.state === 'partial_coverage' ? emptyState.coverage : undefined;
+    const allFailing = !!coverage && coverage.failing_sources >= coverage.enabled_sources;
+    if (failed) {
+        const folded = !coverage ? null : allFailing
+            ? 'No job source is returning listings right now.'
+            : `${coverage.failing_sources} of ${coverage.enabled_sources} job sources aren’t returning listings.`;
+        return (
+            <NoticeBox tone="warning" testid="refresh-failed-notice" icon="alert-triangle" folded={folded}
+                       button={<ReloadButton label="Try again" testid="refresh-failed-retry" running={running} onReload={onReload} />}>
+                <strong>Couldn’t refresh.</strong>{' '}
+                {failed.since
+                    ? (failed.countOnly ? `This count is from ${failed.since}.` : `Showing results from ${failed.since}.`)
+                    : `Last checked ${failed.lastChecked}.`}
+            </NoticeBox>
+        );
+    }
+    if (coverage) {
+        return (
+            <NoticeBox tone="warning" testid="coverage-notice" icon="database"
+                       folded={stale ? STALE_SENTENCE : null}>
+                {allFailing
+                    ? 'No job source is returning listings right now. These are the last results we have, so some openings may be missing.'
+                    : `Coverage is limited: ${coverage.failing_sources} of ${coverage.enabled_sources} job sources aren’t returning listings right now, so some openings may be missing.`}
+                {emptyState.inventory && (
+                    <span className="d-block text-muted mt-1">{inventoryText(emptyState.inventory)}</span>
+                )}
+            </NoticeBox>
+        );
+    }
+    if (stale) {
+        // `pending` says a recompute is switched on, not that one is running:
+        // nothing for the reader to press, and nothing promised.
+        return pending ? (
+            <NoticeBox tone="warning" testid="stale-notice" icon="clock">
+                {STALE_SENTENCE} These results are waiting to be updated.
+            </NoticeBox>
+        ) : (
+            <NoticeBox tone="warning" testid="stale-notice" icon="clock"
+                       button={<ReloadButton label="Check again" testid="stale-refresh" running={running} onReload={onReload} />}>
+                {STALE_SENTENCE}
+            </NoticeBox>
+        );
+    }
+    if (emptyState.refreshing) {
+        return (
+            <NoticeBox tone="info" testid="refresh-notice" icon="spinner">
+                Job listings are being gathered right now. These are your current results.
+            </NoticeBox>
+        );
+    }
+    return null;
+}
+
+/** Criteria matching cannot evaluate, as one muted line under the timestamp
+ * and the inventory line (issue #485). It arrives with the results and is not
+ * a change to announce, so it has no role and no live region. Field paths are
+ * mapped to human labels (requirementLabel) so an internal name like
+ * ``minimum_total_compensation`` never reaches the DOM. */
 function UnsupportedNotice({unsupported}: {unsupported?: string[]}) {
     if (!unsupported || unsupported.length === 0) {
         return null;
     }
-    const labels = unsupported.map(requirementLabel);
-    const list = labels.length === 1
-        ? labels[0]
-        : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
     return (
-        <div className="alert alert-info py-2 small mb-3" role="status" aria-live="polite" data-testid="unsupported-notice">
-            <div className="d-flex align-items-start gap-2">
-                <Icon name="info" className="flex-shrink-0 mt-1" />
-                <span className="flex-grow-1 text-start">
-                    {list} could not be evaluated and {labels.length === 1 ? 'is' : 'are'} not included in these matches.
-                </span>
-            </div>
-        </div>
+        <p className="text-muted small mb-3" data-testid="unsupported-notice">
+            Not used in these matches: {unsupported.map(requirementLabel).join(', ')}.
+        </p>
     );
 }
 
-/** Results-generated timestamp (issue #467 round-2): a visible, readable
- * <time> line shown in both healthy and stale views so the user can see when
- * the matches were computed. */
-function ResultTimestamp({revision}: {revision?: RevisionBlock | null}) {
-    const iso = revision?.generated_at;
+function formatWhen(iso: string | null | undefined): string | null {
     if (!iso) {
         return null;
     }
     const d = new Date(iso);
-    if (isNaN(d.getTime())) {
+    return isNaN(d.getTime()) ? null : d.toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'});
+}
+
+/** The `ok` inventory line sits directly under the timestamp (issue #485). */
+function InventoryAge({emptyState, paired = false}: {emptyState: EmptyStatePayload; paired?: boolean}) {
+    if (emptyState.state !== 'ok' || !emptyState.inventory) {
         return null;
     }
+    // `paired`: the unsupported-criteria line follows.
     return (
-        <p className="text-muted small mb-3" data-testid="results-timestamp">
+        <p className={`text-muted small ${paired ? 'mb-1' : 'mb-3'}`} data-testid="inventory-age">
+            {inventoryText(emptyState.inventory)}
+        </p>
+    );
+}
+
+const hasInventoryAge = (emptyState: EmptyStatePayload): boolean => emptyState.state === 'ok' && !!emptyState.inventory;
+
+/** Results-generated timestamp (issue #467 round-2): a visible, readable
+ * <time> line shown in both healthy and stale views so the user can see when
+ * the matches were computed. */
+function ResultTimestamp({revision, paired = false}: {revision?: RevisionBlock | null; paired?: boolean}) {
+    const iso = revision?.generated_at;
+    const when = formatWhen(iso);
+    if (!iso || !when) {
+        return null;
+    }
+    // `paired`: another muted line follows, so the lines read as one group.
+    return (
+        <p className={`text-muted small ${paired ? 'mb-1' : 'mb-3'}`} data-testid="results-timestamp">
             Results generated at{' '}
-            <time dateTime={iso}>{d.toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'})}</time>
+            <time dateTime={iso}>{when}</time>
         </p>
     );
 }
@@ -795,45 +917,12 @@ function inventoryText(inventory: NonNullable<EmptyStatePayload['inventory']>): 
     if (inventory.last_success_at) {
         const refreshed = new Date(inventory.last_success_at);
         if (!isNaN(refreshed.getTime())) {
-            parts.push(`inventory last refreshed ${refreshed.toLocaleDateString()}`);
+            parts.push(`inventory last refreshed ${refreshed.toLocaleDateString(undefined, {dateStyle: 'medium'})}`);
         } else if (inventory.age_hours !== null && inventory.age_hours !== undefined) {
             parts.push(`inventory last refreshed ${inventory.age_hours}h ago`);
         }
     }
     return parts.join(' · ');
-}
-
-/** Refresh/coverage notices rendered *alongside* results, never instead. */
-function ResultNotices({emptyState}: {emptyState: EmptyStatePayload}) {
-    return (
-        <>
-            {emptyState.refreshing && (
-                <div className="alert alert-info py-2 small d-flex align-items-start gap-2 mb-2"
-                     role="status" aria-live="polite" data-testid="refresh-notice">
-                    <Icon name="spinner" className="flex-shrink-0 mt-1" />
-                    <span className="flex-grow-1">
-                        A refresh is in progress — these are your current results; new listings may appear shortly.
-                    </span>
-                </div>
-            )}
-            {emptyState.state === 'partial_coverage' && emptyState.coverage && (
-                <div className="alert alert-warning py-2 small mb-2"
-                     role="status" aria-live="polite" data-testid="coverage-notice">
-                    <div className="d-flex align-items-start gap-2">
-                        <Icon name="alert-triangle" className="flex-shrink-0 mt-1" />
-                        <span className="flex-grow-1">
-                            Coverage is limited: {emptyState.coverage.failing_sources} of
-                            {' '}{emptyState.coverage.enabled_sources} job sources aren’t returning
-                            listings right now, so some openings may be missing.
-                        </span>
-                    </div>
-                    {emptyState.inventory && (
-                        <div className="text-muted mt-1 ms-4">{inventoryText(emptyState.inventory)}</div>
-                    )}
-                </div>
-            )}
-        </>
-    );
 }
 
 export interface JobMatchPanelProps {
@@ -894,15 +983,80 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     // the signed-out state instead of a job-match error that can never clear.
     const [authed, setAuthed] = React.useState(isAuthenticated);
     React.useEffect(() => setAuthed(isAuthenticated), [isAuthenticated]);
+    // Signed in again: the "ended" wording is over.
+    // A defensive reset that nothing can observe today: the purge and hydration
+    // handlers repeat both statements. Removal or justification: issue #485.
+    React.useEffect(() => {
+        if (authed) {
+            setSessionEnded(false);
+            endedByPanelRef.current = false;
+        }
+    }, [authed]);
     const awaitingHydrationRef = React.useRef(false);
 
-    // `quiet` re-reads behind the list that is already shown (the evidence
-    // re-check), instead of replacing it with the loading skeleton.
-    const loadStatus = React.useCallback(async (quiet: boolean) => {
+    // Issue #485: once a result set is on screen every later read is quiet. The
+    // skeleton is only for a first load and the load after a purge; a failed
+    // quiet read leaves the last-known results with a notice instead.
+    const hasResultsRef = React.useRef(false);
+    const [refreshFailed, setRefreshFailedState] = React.useState(false);
+    const [refreshRunning, setRefreshRunningState] = React.useState(false);
+    // Mirrors of the two flags for handlers that must read them synchronously:
+    // a second press while a read runs sends nothing and aborts nothing.
+    const refreshRunningRef = React.useRef(false);
+    const refreshFailedRef = React.useRef(false);
+    const setRefreshRunning = React.useCallback((value: boolean) => {
+        refreshRunningRef.current = value;
+        setRefreshRunningState(value);
+    }, []);
+    const setRefreshFailed = React.useCallback((value: boolean) => {
+        refreshFailedRef.current = value;
+        setRefreshFailedState(value);
+    }, []);
+    // One visually hidden status line: what the client knows (a read started,
+    // a read ended). A first failure is announced by the failed notice itself.
+    const [readNote, setReadNote] = React.useState('');
+    const [lastLoadedAt, setLastLoadedAt] = React.useState<string | null>(null);
+    // Bumped whenever a read settles, so focus can be put back (below).
+    const [settled, setSettled] = React.useState(0);
+    // The session ended under a read (a redirect or a 401): the signed-out card
+    // then says so, and focus follows a read that was started from the panel.
+    const [sessionEnded, setSessionEnded] = React.useState(false);
+    const endedFocusRef = React.useRef(false);
+    // True while `authed` is false because this panel saw the session end, not
+    // because the page was rendered signed out.
+    const endedByPanelRef = React.useRef(false);
+    // The control a read was started from, when that control is replaced by
+    // the read's outcome (see the effect that moves focus).
+    const refocusRef = React.useRef<HTMLElement | null>(null);
+
+    // Drop everything that belongs to the account that was signed in.
+    const clearShownResults = React.useCallback(() => {
+        hasResultsRef.current = false;
+        refocusRef.current = null;
+        shownGenerationRef.current = null;
+        setRefreshFailed(false);
+        setRefreshRunning(false);
+        setReadNote('');
+        setLastLoadedAt(null);
+        setEmptyState(null);
+        setMatchCount(0);
+        setRankedMatches(null);
+        setStoredRevision(null);
+        setPhase('loading');
+    }, [setRefreshFailed, setRefreshRunning]);
+
+    const loadStatus = React.useCallback(async (quietRequested: boolean) => {
         if (!authed) return;
+        const quiet = quietRequested || hasResultsRef.current;
         const request = guardRef.current.begin();
+        // Focus on a panel control when the read starts: if the session ends
+        // under it, focus is put on the heading rather than dropped to <body>.
+        const fromPanel = quiet && !!document.activeElement?.closest('[data-testid="job-match-panel"]');
         if (!quiet) {
             setPhase('loading');
+        } else {
+            setRefreshRunning(true);
+            setReadNote('Checking your job matches…');
         }
         setErrorMsg(null);
         try {
@@ -911,11 +1065,21 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 fetch('/api/job-matches/?page=1&page_size=1', {signal: request.signal}),
                 fetch('/api/job-matches/ranked/?limit=10', {signal: request.signal}),
             ]);
+            if ([statusRes, matchRes, rankedRes].some((res) => sessionExpired(res, signInUrl))) {
+                throw new SessionExpiredError();
+            }
+            // A refresh over results that are on screen must not quietly show
+            // less than it did: a failed ranked read is a failed refresh. A
+            // failed matches page alone is tolerated, as the generation
+            // guard (issue #479) expects.
+            if (hasResultsRef.current && !rankedRes.ok) {
+                throw new Error(REFRESH_FAILED_MESSAGE);
+            }
             if (!statusRes.ok) {
                 // Never expose raw implementation details (issue #467 round-2):
                 // an HTTP status code reads as an internal error to a user, so
                 // it is rewritten to actionable copy with a labelled retry.
-                throw new Error('We couldn’t load your job matches. Please try again.');
+                throw new Error(LOAD_FAILED_MESSAGE);
             }
             const statusData: EmptyStatePayload = await parseJson(statusRes);
             let matchData: {count?: number; results?: RankedJobMatch[]} | null = null;
@@ -932,6 +1096,10 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             if (!acceptsGeneration(shownGenerationRef.current, rankedData, revision?.result_generation ?? null)) {
                 // Older, unverifiable or endpoint-mismatched result set:
                 // keep what is shown.
+                setRefreshRunning(false);
+                setRefreshFailed(false);
+                setReadNote('Finished checking your job matches.');
+                setSettled((n) => n + 1);
                 setPhase('ready');
                 return;
             }
@@ -960,16 +1128,51 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             if (Object.keys(reported).length > 0) {
                 setWorkspaceContext(reported);
             }
+            hasResultsRef.current = true;
+            setLastLoadedAt(new Date().toISOString());
+            setRefreshRunning(false);
+            setRefreshFailed(false);
+            setReadNote(quiet ? 'Finished checking your job matches.' : '');
+            setSettled((n) => n + 1);
             setPhase('ready');
         } catch (e) {
             if (!request.isLatest()) {
                 return;
             }
-            setErrorMsg(e instanceof Error ? e.message : 'Could not load job match status.');
+            setRefreshRunning(false);
+            setSettled((n) => n + 1);
+            if (e instanceof SessionExpiredError) {
+                // The session ended: show the signed-out card and nothing of
+                // the account that was signed in (issue #485).
+                clearShownResults();
+                endedFocusRef.current = fromPanel;
+                setSessionEnded(true);
+                endedByPanelRef.current = true;
+                setAuthed(false);
+                return;
+            }
+            if (hasResultsRef.current) {
+                // The first failure is announced by the notice that appears;
+                // a "Try again" that fails again would otherwise be silent.
+                setReadNote(refreshFailedRef.current ? 'Couldn’t refresh your job matches again.' : '');
+                setRefreshFailed(true);
+                return;
+            }
+            // Only the panel's own sentences are shown; a dropped connection
+            // would otherwise print the browser's wording.
+            setErrorMsg(e instanceof Error && (e.message === LOAD_FAILED_MESSAGE || e.message === REFRESH_FAILED_MESSAGE)
+                ? e.message : LOAD_FAILED_MESSAGE);
             setPhase('error');
         }
-    }, [authed]);
+    }, [authed, clearShownResults, setRefreshFailed, setRefreshRunning, signInUrl]);
     const fetchStatus = React.useCallback(() => loadStatus(false), [loadStatus]);
+    // A press on a control that starts a read while a read or a re-check runs
+    // sends nothing: it would abort the read in flight. (A priorities change
+    // calls fetchStatus directly, and the newest read still wins.)
+    const pressRefresh = React.useCallback(() => {
+        if (refreshRunningRef.current || recheckRunningRef.current) return;
+        void loadStatus(false);
+    }, [loadStatus]);
 
     React.useEffect(() => {
         fetchStatus();
@@ -977,17 +1180,26 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
 
     // A notice's Refresh unmounts with the list it reloads; focus goes to the
     // panel heading once the reload settles instead of dropping to <body>.
-    const refocusRef = React.useRef(false);
+    // A refresh does not move focus: the heading takes it only when the control
+    // that was pressed left the page with the notice it belonged to.
     React.useEffect(() => {
         if (phase === 'loading' || !refocusRef.current) return;
-        refocusRef.current = false;
-        // Every phase renders the heading, so it is always there to take focus.
-        document.getElementById('job-match-panel-title')!.focus();
-    }, [phase]);
-    const reloadFromNotice = React.useCallback(() => {
-        refocusRef.current = true;
+        const control = refocusRef.current;
+        refocusRef.current = null;
+        if (!control.isConnected) {
+            // Every phase renders the heading, so it is always there to take focus.
+            document.getElementById('job-match-panel-title')!.focus();
+        }
+    }, [phase, settled]);
+    // Press a control that is replaced when its read brings results: remember
+    // it, so focus can follow it to the heading.
+    const reloadFrom = React.useCallback((control: HTMLElement) => {
+        if (refreshRunningRef.current || recheckRunningRef.current) return;
+        refocusRef.current = control;
         void fetchStatus();
     }, [fetchStatus]);
+    const reloadFromNotice = React.useCallback(
+        (event: React.MouseEvent<HTMLElement>) => reloadFrom(event.currentTarget), [reloadFrom]);
     // Stored matches that cite replaced evidence are only resolved by a
     // recompute, so this asks for one and acts on the answer (issue #473).
     // The list stays on screen while it runs; only an answer that can have
@@ -1001,7 +1213,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const recheckEpochRef = React.useRef(0);
     const runRecheck = React.useCallback(async (control: HTMLElement, alwaysReread: boolean) => {
         // Single flight: a second press while one is running sends nothing.
-        if (recheckRunningRef.current) return;
+        if (recheckRunningRef.current || refreshRunningRef.current) return;
         recheckRunningRef.current = true;
         const epoch = recheckEpochRef.current;
         setRecheck((current) => ({kind: 'running', wasPaused: current.kind === 'paused'}));
@@ -1038,7 +1250,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     React.useEffect(() => {
         const shown = [...(rankedMatches?.job_matches || []), ...(rankedMatches?.organization_matches || [])];
         if (phase === 'ready' && !anyEvidenceChanged(shown)) {
-            setRecheck(RECHECK_IDLE);
+            // A re-check that is still out keeps its state until it answers.
+            setRecheck((current) => (current.kind === 'running' ? current : RECHECK_IDLE));
         }
     }, [phase, rankedMatches]);
 
@@ -1074,8 +1287,16 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         }
     }, [phase]);
     React.useEffect(() => {
+        if (!authed && endedFocusRef.current) {
+            endedFocusRef.current = false;
+            document.getElementById('job-match-panel-title')!.focus();
+        }
+    }, [authed, sessionEnded]);
+    React.useEffect(() => {
         const handlePurged = () => {
             guardRef.current.cancel();
+            setSessionEnded(false);
+            endedFocusRef.current = false;
             shownGenerationRef.current = null;
             // The re-check state belongs to the account that asked (#473).
             recheckEpochRef.current += 1;
@@ -1083,11 +1304,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setRecheck(RECHECK_IDLE);
             setRecheckAnnouncement('');
             setRecheckFocus(null);
-            setEmptyState(null);
-            setMatchCount(0);
-            setRankedMatches(null);
-            setStoredRevision(null);
-            setPhase('loading');
+            clearShownResults();
             // Private re-fetches wait for the post-change hydration, which is
             // the first point the account the cookie belongs to is known.
             awaitingHydrationRef.current = true;
@@ -1098,8 +1315,12 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             const detail = (event as CustomEvent).detail as
                 {authenticated?: boolean; unobserved?: boolean} | undefined;
             // A failed whoami says nothing about the account: keep the last
-            // known one and retry the fetch.
-            const next = detail && !detail.unobserved ? !!detail.authenticated : authed;
+            // known one and retry the fetch. When the panel itself ended the
+            // session, the last known account is the page's own: read again,
+            // and the ended card comes back if the session is still gone.
+            const panelEnded = endedByPanelRef.current;
+            endedByPanelRef.current = false;
+            const next = detail && !detail.unobserved ? !!detail.authenticated : (panelEnded ? isAuthenticated : authed);
             if (next === authed) {
                 void fetchStatus();
             } else {
@@ -1112,12 +1333,14 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             document.removeEventListener('crank:private-state-purged', handlePurged);
             document.removeEventListener('crank:auth-hydrated', handleHydrated);
         };
-    }, [fetchStatus, authed]);
+    }, [fetchStatus, authed, clearShownResults, isAuthenticated]);
 
-    const handleAction = React.useCallback((action: string) => {
+    const handleAction = React.useCallback((action: string, control: HTMLElement) => {
         switch (action) {
             case 'retry':
-                fetchStatus();
+                // The button goes when the read brings results: focus follows
+                // it to the heading (it stays while the empty state stays).
+                reloadFrom(control);
                 break;
             case 'suggest_company': {
                 window.dispatchEvent(new CustomEvent('crank:suggest-company'));
@@ -1153,7 +1376,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             default:
                 break;
         }
-    }, [fetchStatus]);
+    }, [reloadFrom]);
 
     if (!authed) {
         return (
@@ -1164,10 +1387,12 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 </div>
                 <div className="card-body">
                     <p className="text-muted mb-2" data-testid="job-match-signed-out">
-                        Sign in to see personalized job matches based on your saved preferences.
+                        {sessionEnded
+                            ? 'Your session has ended. Sign in again to see your job matches.'
+                            : 'Sign in to see personalized job matches based on your saved preferences.'}
                     </p>
                     <a href={signInUrl} className="btn btn-primary btn-sm" data-testid="job-match-sign-in-cta">
-                        Sign in to save your search
+                        {sessionEnded ? 'Sign in again' : 'Sign in to save your search'}
                     </a>
                 </div>
             </section>
@@ -1184,6 +1409,13 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         <span className="visually-hidden" aria-live="polite" aria-atomic="true"
               data-testid="recheck-announcement">
             {phase === 'ready' && anyEvidenceChanged(shownMatches) ? '' : recheckAnnouncement}
+        </span>
+    );
+
+    const readAnnouncer = (
+        <span className="visually-hidden" aria-live="polite" aria-atomic="true"
+              data-testid="read-announcement">
+            {readNote}
         </span>
     );
 
@@ -1208,6 +1440,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                         <span className="visually-hidden">Loading your match status…</span>
                     </div>
                 </div>
+                {readAnnouncer}
                 {recheckAnnouncer}
             </section>
         );
@@ -1231,10 +1464,28 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                         </div>
                     </div>
                 </div>
+                {readAnnouncer}
                 {recheckAnnouncer}
             </section>
         );
     }
+
+    // The failed notice names the time of what is on screen: the revision the
+    // "Results generated at" line prints in that view (the last successful read
+    // when the rows carry no time). With nothing listed it only says when the
+    // last successful read was, and never "Showing results".
+    // The count-only view lists nothing, so it says "This count is from".
+    const failedFor = (shownRevision: RevisionBlock | null | undefined, shown: 'listed' | 'count' | 'nothing') => {
+        if (!refreshFailed) {
+            return null;
+        }
+        const lastChecked = formatWhen(lastLoadedAt)!;
+        return {
+            since: shown === 'nothing' ? null : formatWhen(shownRevision?.generated_at) ?? lastChecked,
+            lastChecked,
+            countOnly: shown === 'count',
+        };
+    };
 
     // Ready phase: show ranked matches if available, else empty state or match count
     const hasRankedMatches = rankedMatches && (
@@ -1249,11 +1500,14 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         // One consolidated stale flag and one generated-at timestamp for the
         // whole result set (a single computation stamps every row).
         const staleResults = [...jobs, ...orgs].some((m) => m.revision?.stale);
+        const pendingResults = [...jobs, ...orgs].some((m) => m.revision?.pending);
         const resultRevision = jobs[0]?.revision || orgs[0]?.revision || null;
         // An evidence change also makes the stored results stale; one notice
         // (the one naming the cause) is shown, never both.
         const evidenceChangedResults = anyEvidenceChanged([...jobs, ...orgs]);
         const canRecheck = recheck.kind !== 'paused' && !(recheck.kind === 'running' && recheck.wasPaused);
+        const inventoryPaired = hasInventoryAge(emptyState!);
+        const unsupported = jobs[0]?.unsupported || orgs[0]?.unsupported || [];
         return (
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
@@ -1263,20 +1517,22 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     {/* With the notice showing, this asks for the same re-check
                         as the notice's button and then always re-reads. */}
                     <button type="button" className="btn btn-sm btn-outline-light"
-                            onClick={evidenceChangedResults ? recheckAndReload : fetchStatus}
+                            onClick={evidenceChangedResults ? recheckAndReload : pressRefresh}
                             aria-label="Refresh match status"
-                            aria-disabled={recheck.kind === 'running' || undefined}
+                            aria-disabled={recheck.kind === 'running' || refreshRunning || undefined}
                             data-testid="job-match-refresh">
-                        <Icon name="refresh-cw" />
+                        <Icon name={refreshRunning ? 'spinner' : 'refresh-cw'} />
                     </button>
                 </div>
-                <div className="card-body">
-                    <ResultNotices emptyState={emptyState!} />
-                    <UnsupportedNotice unsupported={jobs[0]?.unsupported || orgs[0]?.unsupported} />
-                    <StaleNotice revision={{stale: staleResults && !evidenceChangedResults}} onRefresh={reloadFromNotice} />
+                <div className="card-body" aria-busy={refreshRunning || undefined}>
+                    <NoticeStack emptyState={emptyState!} failed={failedFor(resultRevision, 'listed')}
+                                 stale={staleResults && !evidenceChangedResults} pending={pendingResults}
+                                 running={refreshRunning || recheck.kind === 'running'} onReload={reloadFromNotice} />
                     <EvidenceChangedNotice matches={[...jobs, ...orgs]} recheck={recheck} stale={staleResults} onRefresh={recheckMatches} />
                     <MatchLegend />
-                    <ResultTimestamp revision={resultRevision} />
+                    <ResultTimestamp revision={resultRevision} paired={inventoryPaired || unsupported.length > 0} />
+                    <InventoryAge emptyState={emptyState!} paired={unsupported.length > 0} />
+                    <UnsupportedNotice unsupported={unsupported} />
                     {jobs.length > 0 && (
                         <div data-testid="ranked-job-matches" className="mb-3">
                             <h3 className="job-match-section-heading mb-2">Ranked Job Listings</h3>
@@ -1357,6 +1613,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                         </div>
                     )}
                 </div>
+                {readAnnouncer}
                 {recheckAnnouncer}
             </section>
         );
@@ -1369,20 +1626,24 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 <div className="card-header d-flex justify-content-between align-items-center">
                     <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                     <button type="button" className="btn btn-sm btn-outline-light"
-                            onClick={fetchStatus} aria-label="Refresh match status"
+                            onClick={pressRefresh} aria-label="Refresh match status"
+                            aria-disabled={refreshRunning || recheck.kind === 'running' || undefined}
                             data-testid="job-match-refresh">
-                        <Icon name="refresh-cw" />
+                        <Icon name={refreshRunning ? 'spinner' : 'refresh-cw'} />
                     </button>
                 </div>
-                <div className="card-body">
-                    <ResultNotices emptyState={emptyState!} />
-                    <StaleNotice revision={storedRevision} onRefresh={reloadFromNotice} />
-                    <ResultTimestamp revision={storedRevision} />
+                <div className="card-body" aria-busy={refreshRunning || undefined}>
+                    <NoticeStack emptyState={emptyState!} failed={failedFor(storedRevision, 'count')}
+                                 stale={!!storedRevision?.stale} pending={!!storedRevision?.pending}
+                                 running={refreshRunning || recheck.kind === 'running'} onReload={reloadFromNotice} />
+                    <ResultTimestamp revision={storedRevision} paired={hasInventoryAge(emptyState!)} />
+                    <InventoryAge emptyState={emptyState!} />
                     <p className="mb-0" role="status" aria-live="polite">
                         <Icon name="check-circle" className="text-success me-1" />
                         You have <strong>{matchCount}</strong> job match{matchCount === 1 ? '' : 'es'} ready to review.
                     </p>
                 </div>
+                {readAnnouncer}
                 {recheckAnnouncer}
             </section>
         );
@@ -1397,13 +1658,16 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <div className="card-header d-flex justify-content-between align-items-center">
                 <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                 <button type="button" className="btn btn-sm btn-outline-light"
-                        onClick={fetchStatus} aria-label="Refresh match status"
+                        onClick={pressRefresh} aria-label="Refresh match status"
+                        aria-disabled={refreshRunning || recheck.kind === 'running' || undefined}
                         data-testid="job-match-refresh">
-                    <Icon name="refresh-cw" />
+                    <Icon name={refreshRunning ? 'spinner' : 'refresh-cw'} />
                 </button>
             </div>
-            <div className="card-body">
-                <ResultNotices emptyState={state} />
+            <div className="card-body" aria-busy={refreshRunning || undefined}>
+                <NoticeStack emptyState={state} failed={failedFor(null, 'nothing')} stale={false} pending={false}
+                             running={refreshRunning || recheck.kind === 'running'} onReload={reloadFromNotice} />
+                <InventoryAge emptyState={state} />
                 {/* Single-item message: plain block, no list-bullet marker or
                     leading icon indent (round-2 critique). */}
                 <div role="status" aria-live="polite"
@@ -1469,10 +1733,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                             return (
                                 <button key={action} type="button"
                                         className={className}
-                                        onClick={() => handleAction(action)}
+                                        onClick={(event) => handleAction(action, event.currentTarget)}
+                                        aria-disabled={(action === 'retry' && (refreshRunning || recheck.kind === 'running')) || undefined}
                                         data-testid={`action-${action}`}
                                         aria-label={label}>
-                                    <Icon name={ACTION_ICONS[action] || 'arrow-right'} className="me-1" />
+                                    <Icon name={action === 'retry' && refreshRunning ? 'spinner' : ACTION_ICONS[action] || 'arrow-right'} className="me-1" />
                                     {label}
                                 </button>
                             );
@@ -1480,6 +1745,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     </div>
                 )}
             </div>
+            {readAnnouncer}
             {recheckAnnouncer}
         </section>
     );

@@ -21,6 +21,7 @@ const PANEL_STATUS_PAYLOADS: Record<string, Record<string, unknown>> = {
         title: 'Matches ready',
         message: 'You have job matches ready to review.',
         actions: [],
+        inventory: {active_listings: 4, last_success_at: '2026-09-14T10:00:00Z', age_hours: 2.5},
     },
     refreshing_with_results: {
         state: 'ok',
@@ -28,6 +29,7 @@ const PANEL_STATUS_PAYLOADS: Record<string, Record<string, unknown>> = {
         message: 'You have job matches ready to review.',
         actions: [],
         refreshing: true,
+        inventory: {active_listings: 4, last_success_at: '2026-09-14T10:00:00Z', age_hours: 2.5},
     },
     partial_coverage: {
         state: 'partial_coverage',
@@ -35,7 +37,7 @@ const PANEL_STATUS_PAYLOADS: Record<string, Record<string, unknown>> = {
         message: (
             'Your matches come from the job sources that are working, but not '
             + 'every source is returning listings, so some openings may be '
-            + 'missing. Results refresh automatically.'
+            + 'missing.'
         ),
         actions: ['retry', 'explore_companies', 'suggest_company', 'help'],
         refreshing: true,

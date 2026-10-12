@@ -130,6 +130,9 @@ class JobMatchStatusViewTests(TestCase):
 
     def test_ok_state_with_matches(self):
         source = self.make_source(enabled=True)
+        # A source that has never succeeded is degraded (issue #485).
+        source.last_crawl_at = timezone.now()
+        source.save()
         listing = self.make_listing(source, "Active")
         prefs = {
             "compensation": {"minimum_salary": 100000, "currency": "USD", "equity_minimum_percent": None},
@@ -166,6 +169,10 @@ class JobMatchStatusViewTests(TestCase):
         from crank.models.job_match import MatchResultState
 
         source = self.make_source(enabled=True)
+        # A source that has never succeeded is degraded (issue #485); keep
+        # this fixture healthy so the pin still exercises the ``ok`` state.
+        source.last_crawl_at = timezone.now()
+        source.save()
         listing = self.make_listing(source, "Engineer")
         self.make_preference(
             self.user, preferences={"work_location": {"modes": ["remote"]}}
@@ -322,6 +329,7 @@ class RefreshingWithResultsTests(TestCase):
             adapter_key="synthetic.v1",
             base_url="https://jobs.example.test",
             enabled=True,
+            last_crawl_at=timezone.now(),
         )
         listing = self.make_listing("Active")
         self.make_preference()
@@ -542,13 +550,46 @@ class PartialCoverageTests(TestCase):
         payload = self.client.get("/api/job-matches/status/").json()
         self.assertEqual(payload["state"], "ok")
 
-    def test_single_failing_source_is_not_partial(self):
-        """One degraded source with no healthy source is not partial."""
+    def test_every_source_failing_reports_total_coverage_loss(self):
+        """All enabled sources degraded: state stays partial_coverage and the
+        coverage block says failing == enabled (issue #485)."""
         self.healthy.enabled = False
         self.healthy.save()
         self.client.force_login(self.user)
         payload = self.client.get("/api/job-matches/status/").json()
-        self.assertNotEqual(payload["state"], "partial_coverage")
+        self.assertEqual(payload["state"], "partial_coverage")
+        self.assertEqual(
+            payload["coverage"], {"enabled_sources": 1, "failing_sources": 1}
+        )
+        self.assertIn("No job source is returning listings", payload["message"])
+        self.assertNotIn("automatically", payload["message"])
+
+    def test_partial_message_does_not_promise_automatic_refresh(self):
+        self.client.force_login(self.user)
+        payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(payload["state"], "partial_coverage")
+        self.assertIn("not every source is returning listings", payload["message"])
+        self.assertNotIn("automatically", payload["message"])
+
+    def test_ok_state_carries_inventory_with_last_success(self):
+        from crank.models.crawl_run import CrawlRun
+
+        self.healthy.approval_state = JobSourceCatalog.ApprovalState.APPROVED
+        self.healthy.save()
+        CrawlRun.objects.create(
+            source_type=CrawlRun.SourceType.JOB,
+            job_source=self.degraded,
+            source_key="degraded.v1",
+            outcome=CrawlRun.Outcome.SUCCESS,
+            started_at=timezone.now() - timedelta(hours=1),
+            finished_at=timezone.now() - timedelta(hours=1),
+        )
+        self.client.force_login(self.user)
+        payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(payload["state"], "ok")
+        self.assertEqual(payload["inventory"]["active_listings"], 1)
+        self.assertIsNotNone(payload["inventory"]["last_success_at"])
+        self.assertIsNotNone(payload["inventory"]["age_hours"])
 
     def test_transition_ok_to_partial_and_back(self):
         """ok -> partial when a source degrades; back when it recovers."""

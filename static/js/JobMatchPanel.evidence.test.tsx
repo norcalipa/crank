@@ -6,7 +6,7 @@ import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
 import {EVIDENCE_CHANGED_MARKER, EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS} from './labels';
-import {closeAssistant, resetWorkspaceForTests} from './workspace/store';
+import {closeAssistant, resetWorkspaceForTests, setPrioritiesRevision} from './workspace/store';
 
 // Requirement chips carry the read-time status of the fact behind each
 // outcome (issue #473): a stale- or prose-backed match is never the bare
@@ -671,7 +671,7 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         expect(notice()).toHaveAttribute('data-recheck', 'idle');
     });
 
-    test('a re-read that fails after a successful re-check shows the load error with focus on the heading', async () => {
+    test('a re-read that fails after a successful re-check keeps the list with a retry notice and the pressed control focused', async () => {
         let refreshed = false;
         global.fetch = jest.fn((url: string) => {
             if (url.includes('/api/job-matches/refresh/')) {
@@ -692,8 +692,10 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button');
         button.focus();
         fireEvent.click(button);
-        expect(await screen.findByTestId('job-match-error')).toHaveTextContent('We couldn’t load your job matches.');
-        await waitFor(() => expect(heading()).toHaveFocus());
+        expect(await screen.findByTestId('refresh-failed-notice')).toHaveTextContent('Couldn’t refresh.');
+        expect(screen.queryByTestId('job-match-error')).not.toBeInTheDocument();
+        expect(screen.getByTestId('ranked-job-matches')).toBeInTheDocument();
+        expect(button).toHaveFocus();
     });
 
     test('the header refresh re-checks when the notice is showing and keeps its focus', async () => {
@@ -716,15 +718,20 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         expect(screen.getAllByRole('button', {name: 'Refresh matches'})).toHaveLength(1);
     });
 
-    test('the stale banner alone still reloads without a recompute request and keeps focus', async () => {
+    test('the stale banner alone still re-reads without a recompute request and keeps focus on its button', async () => {
         const stale = {...settledJob(), revision: {stale: true, generated_at: '2026-09-22T08:00:00Z'}};
         const fetchMock = await renderRanked([stale]);
         expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument();
         const before = fetchMock.mock.calls.length;
-        fireEvent.click(within(screen.getByTestId('stale-notice')).getByRole('button', {name: 'Refresh matches'}));
+        const button = within(screen.getByTestId('stale-notice')).getByRole('button', {name: 'Check again'});
+        button.focus();
+        fireEvent.click(button);
         await waitFor(() => expect(fetchMock.mock.calls.length).toBe(before + 3));
         expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/refresh/'))).toBe(false);
-        await waitFor(() => expect(screen.getByRole('heading', {name: 'Your Job Matches'})).toHaveFocus());
+        // Still stale: the notice and its button stay, and so does focus.
+        await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+        expect(button).toBeInTheDocument();
+        expect(button).toHaveFocus();
     });
 
     test('the header refresh does not move focus to the heading', async () => {
@@ -787,5 +794,249 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         expect(screen.getByTestId('ranked-org-7')).toHaveTextContent('Series G or Later · In-Office');
         // An empty code reads Unknown; an unrecognized one is shown as-is.
         expect(screen.getByTestId('ranked-org-8')).toHaveTextContent('Unknown · Z');
+    });
+
+    describe('a re-check and a plain read never run at once (issue #485)', () => {
+        const hold = () => {
+            let release!: () => void;
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            return {release, gate};
+        };
+
+        /** The evidence notice and the failed notice, both showing. */
+        async function bothNoticesShowing() {
+            document.cookie = 'csrftoken=tok485';
+            let rankedAnswer: () => Promise<Response> = () => Promise.resolve(json({job_matches: [changedJob()], organization_matches: []}));
+            let recheckAnswer: () => Promise<Response> = () => Promise.resolve(json({status: 'published'}));
+            const calls: {url: string; method: string}[] = [];
+            global.fetch = jest.fn((url: string, init: RequestInit = {}) => {
+                calls.push({url, method: init.method || 'GET'});
+                if (url.includes('/api/job-matches/refresh/')) return recheckAnswer();
+                if (url.includes('/api/job-matches/status/')) {
+                    return Promise.resolve(json({state: 'ok', title: 'Matches', message: '', actions: []}));
+                }
+                if (url.includes('/api/job-matches/ranked/')) return rankedAnswer();
+                return Promise.resolve(json({count: 1, next: null, previous: null, results: []}));
+            }) as unknown as typeof fetch;
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('evidence-changed-notice');
+            rankedAnswer = () => Promise.resolve(new Response('', {status: 503}));
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+            await screen.findByTestId('refresh-failed-notice');
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            rankedAnswer = () => Promise.resolve(json({job_matches: [changedJob()], organization_matches: []}));
+            return {
+                calls,
+                onRecheck: (fn: () => Promise<Response>) => { recheckAnswer = fn; },
+                onRanked: (fn: () => Promise<Response>) => { rankedAnswer = fn; },
+            };
+        }
+
+        test('Try again during a re-check is disabled with the spinner and sends nothing', async () => {
+            const setup = await bothNoticesShowing();
+            const held = hold();
+            setup.onRecheck(() => held.gate.then(() => json({status: 'published'})));
+            const tryAgain = within(screen.getByTestId('refresh-failed-notice')).getByRole('button', {name: 'Try again'});
+            const before = setup.calls.length;
+            const postsBefore = posts(setup.calls).length;
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            await waitFor(() => expect(tryAgain).toHaveAttribute('aria-disabled', 'true'));
+            expect(tryAgain.querySelector('[data-icon="spinner"]')).not.toBeNull();
+            expect(setup.calls.length).toBe(before + 1);
+            fireEvent.click(tryAgain);
+            fireEvent.click(tryAgain);
+            expect(setup.calls.length).toBe(before + 1);
+            held.release();
+            // The re-check ran alone, then re-read once: 1 + 3 requests.
+            await waitFor(() => expect(setup.calls.length).toBe(before + 4));
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            expect(posts(setup.calls)).toHaveLength(postsBefore + 1);
+        });
+
+        test('Refresh matches during a plain read sends nothing', async () => {
+            const setup = await bothNoticesShowing();
+            const held = hold();
+            setup.onRanked(() => held.gate.then(() => json({job_matches: [changedJob()], organization_matches: []})));
+            const before = setup.calls.length;
+            fireEvent.click(within(screen.getByTestId('refresh-failed-notice')).getByRole('button', {name: 'Try again'}));
+            await waitFor(() => expect(setup.calls.length).toBe(before + 3));
+            const postsBefore = posts(setup.calls).length;
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            expect(setup.calls.length).toBe(before + 3);
+            expect(posts(setup.calls)).toHaveLength(postsBefore);
+            held.release();
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+        });
+
+        describe('a re-check that is still out keeps every refresh control disabled', () => {
+            const staleJob = () => ({...settledJob(), revision: {stale: true, generated_at: '2026-09-22T08:00:00Z'}});
+            const reads = (calls: {url: string; method: string}[]) => calls.filter((call) => call.method === 'GET');
+            const idle = () => waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            /** What the server answers; a null `ranked` is a failed read. */
+            type Served = {status: unknown; ranked: unknown | null; matches: unknown};
+
+            /** The evidence notice shows; "Refresh matches" is pressed and its POST held;
+             * then a priorities change reads the `next` view while the POST is still out. */
+            async function recheckOutThenRead(next: Served) {
+                let current: Served = {
+                    status: {state: 'ok', title: 'Matches', message: '', actions: []},
+                    ranked: {job_matches: [changedJob()], organization_matches: []},
+                    matches: {count: 1, next: null, previous: null, results: []},
+                };
+                const held = hold();
+                const calls: {url: string; method: string}[] = [];
+                global.fetch = jest.fn((url: string, init: RequestInit = {}) => {
+                    calls.push({url, method: init.method || 'GET'});
+                    if (url.includes('/api/job-matches/refresh/')) return held.gate.then(() => json({status: 'published'}));
+                    if (url.includes('/api/job-matches/status/')) return Promise.resolve(json(current.status));
+                    if (url.includes('/api/job-matches/ranked/')) {
+                        return Promise.resolve(current.ranked === null ? new Response('', {status: 503}) : json(current.ranked));
+                    }
+                    return Promise.resolve(json(current.matches));
+                }) as unknown as typeof fetch;
+                render(<JobMatchPanel/>);
+                await screen.findByTestId('evidence-changed-notice');
+                fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+                await waitFor(() => expect(posts(calls)).toHaveLength(1));
+                current = next;
+                act(() => setPrioritiesRevision(5));
+                await waitFor(() => expect(screen.queryByTestId('evidence-changed-notice')).toBeNull());
+                await idle();
+                return {calls, held, serve: (served: Served) => { current = served; }};
+            }
+
+            /** A press on each control sends nothing while the POST is out. */
+            const pressAll = (calls: {url: string; method: string}[], testids: string[]) => {
+                const before = calls.length;
+                testids.forEach((testid) => {
+                    expect(screen.getByTestId(testid)).toHaveAttribute('aria-disabled', 'true');
+                    fireEvent.click(screen.getByTestId(testid));
+                });
+                expect(calls.length).toBe(before);
+            };
+
+            /** After the POST answers every control is enabled and a press sends the three reads. */
+            async function enabledAgain(calls: {url: string; method: string}[], held: {release: () => void}, testid: string) {
+                held.release();
+                await waitFor(() => expect(screen.getByTestId('job-match-refresh')).not.toHaveAttribute('aria-disabled'));
+                await idle();
+                const before = reads(calls).length;
+                fireEvent.click(screen.getByTestId(testid));
+                await waitFor(() => expect(reads(calls).length).toBe(before + 3));
+                await idle();
+            }
+
+            test('after a priorities read brings a stale list, the header refresh and "Check again" stay disabled until the answer', async () => {
+                const {calls, held} = await recheckOutThenRead({
+                    status: {state: 'ok', title: 'Matches', message: '', actions: []},
+                    ranked: {job_matches: [staleJob()], organization_matches: []},
+                    matches: {count: 1, next: null, previous: null, results: []},
+                });
+                expect(screen.getByTestId('stale-refresh')).toHaveAttribute('aria-disabled', 'true');
+                expect(screen.getByTestId('stale-refresh').querySelector('[data-icon="spinner"]')).not.toBeNull();
+                pressAll(calls, ['job-match-refresh', 'stale-refresh']);
+                await enabledAgain(calls, held, 'job-match-refresh');
+                expect(screen.getByTestId('stale-refresh')).not.toHaveAttribute('aria-disabled');
+                const before = reads(calls).length;
+                fireEvent.click(screen.getByTestId('stale-refresh'));
+                await waitFor(() => expect(reads(calls).length).toBe(before + 3));
+            });
+
+            test('after a priorities read brings an empty state, its Refresh and the header refresh stay disabled until the answer', async () => {
+                const {calls, held, serve} = await recheckOutThenRead({
+                    status: {state: 'crawl_running', title: 'Jobs are being gathered', message: 'A crawl is in progress.', actions: ['retry']},
+                    ranked: {job_matches: [], organization_matches: []},
+                    matches: {count: 0, next: null, previous: null, results: []},
+                });
+                pressAll(calls, ['job-match-refresh', 'action-retry']);
+                // A later priorities read fails: the notice's own "Try again" is disabled too.
+                serve({status: {state: 'crawl_running', title: 'Jobs are being gathered', message: 'A crawl is in progress.', actions: ['retry']},
+                    ranked: null, matches: {count: 0, next: null, previous: null, results: []}});
+                act(() => setPrioritiesRevision(6));
+                const tryAgain = await within(await screen.findByTestId('refresh-failed-notice')).findByRole('button', {name: 'Try again'});
+                await idle();
+                pressAll(calls, ['job-match-refresh', 'action-retry']);
+                const failedBefore = calls.length;
+                expect(tryAgain).toHaveAttribute('aria-disabled', 'true');
+                fireEvent.click(tryAgain);
+                expect(calls.length).toBe(failedBefore);
+                serve({status: {state: 'crawl_running', title: 'Jobs are being gathered', message: 'A crawl is in progress.', actions: ['retry']},
+                    ranked: {job_matches: [], organization_matches: []}, matches: {count: 0, next: null, previous: null, results: []}});
+                await enabledAgain(calls, held, 'action-retry');
+                expect(screen.getByTestId('action-retry')).not.toHaveAttribute('aria-disabled');
+            });
+
+            test('in the count-only view the header refresh and "Check again" stay disabled until the answer', async () => {
+                const {calls, held} = await recheckOutThenRead({
+                    status: {state: 'ok', title: 'Matches', message: '', actions: []},
+                    ranked: {job_matches: [], organization_matches: []},
+                    matches: {count: 1, next: null, previous: null, results: [{revision: {stale: true, generated_at: '2026-09-22T08:00:00Z'}}]},
+                });
+                expect(screen.queryByTestId('ranked-job-matches')).toBeNull();
+                expect(screen.getByTestId('stale-refresh').querySelector('[data-icon="spinner"]')).not.toBeNull();
+                pressAll(calls, ['job-match-refresh', 'stale-refresh']);
+                await enabledAgain(calls, held, 'job-match-refresh');
+            });
+        });
+
+        test('after a purge during a re-check, the next account\'s refresh controls send, and the earlier answer changes nothing', async () => {
+            const staleNext = {...settledJob(), listing_id: 77, title: 'Next account job',
+                revision: {stale: true, generated_at: '2026-09-22T08:00:00Z'}};
+            let rankedJobs: unknown[] = [changedJob()];
+            const held = hold();
+            const calls: {url: string; method: string}[] = [];
+            global.fetch = jest.fn((url: string, init: RequestInit = {}) => {
+                calls.push({url, method: init.method || 'GET'});
+                if (url.includes('/api/job-matches/refresh/')) return held.gate.then(() => json({status: 'published'}));
+                if (url.includes('/api/job-matches/status/')) {
+                    return Promise.resolve(json({state: 'ok', title: 'Matches', message: '', actions: []}));
+                }
+                if (url.includes('/api/job-matches/ranked/')) {
+                    return Promise.resolve(json({job_matches: rankedJobs, organization_matches: []}));
+                }
+                return Promise.resolve(json({count: 1, next: null, previous: null, results: []}));
+            }) as unknown as typeof fetch;
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('evidence-changed-notice');
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            await waitFor(() => expect(posts(calls)).toHaveLength(1));
+            rankedJobs = [staleNext];
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            act(() => { document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true}})); });
+            await screen.findByTestId('ranked-job-77');
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            const reads = () => calls.filter((call) => call.method === 'GET').length;
+            let before = reads();
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+            await waitFor(() => expect(reads()).toBe(before + 3));
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            before = reads();
+            fireEvent.click(screen.getByTestId('stale-refresh'));
+            await waitFor(() => expect(reads()).toBe(before + 3));
+            await waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            // The earlier account's answer arrives late: nothing of it shows, nothing is read.
+            before = reads();
+            held.release();
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(reads()).toBe(before);
+            expect(screen.getByTestId('ranked-job-77')).toBeInTheDocument();
+            expect(screen.queryByTestId('evidence-changed-notice')).toBeNull();
+            expect(screen.getByTestId('job-match-refresh')).not.toHaveAttribute('aria-disabled');
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+            await waitFor(() => expect(reads()).toBe(before + 3));
+        });
+
+        test('the controls work again once a re-check has ended, also when its request failed', async () => {
+            const setup = await bothNoticesShowing();
+            setup.onRecheck(() => Promise.reject(new Error('Network down')));
+            fireEvent.click(within(notice()).getByRole('button', {name: 'Refresh matches'}));
+            await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'failed'));
+            const tryAgain = within(screen.getByTestId('refresh-failed-notice')).getByRole('button', {name: 'Try again'});
+            expect(tryAgain).not.toHaveAttribute('aria-disabled');
+            const before = setup.calls.length;
+            fireEvent.click(tryAgain);
+            await waitFor(() => expect(setup.calls.length).toBe(before + 3));
+        });
     });
 });
