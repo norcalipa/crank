@@ -385,7 +385,8 @@ describe('company view visual review round 1 (issue #486)', () => {
     it('keeps the Assistant bar at the bottom edge of a short phone page, from the bar\'s own height', () => {
         const phone = section.slice(section.indexOf('body:has(.assistant-dock) .app-content:has(.company-view)'));
         const declarations = block('body:has(.assistant-dock) .app-content:has(.company-view)', phone) as string;
-        const bar = '(44px + 1rem + 1px + var(--safe-area-inset-bottom))';
+        // The bar's button is 44.5px tall, so the bar is 2px (not 1px) over 44px + 1rem.
+        const bar = '(44px + 1rem + 2px + var(--safe-area-inset-bottom))';
         expect(declarations).toContain(`min-height: calc(100vh - 49px - ${bar});`);
         expect(declarations).toContain(`min-height: calc(100dvh - 49px - ${bar});`);
         expect(declarations.indexOf('100vh')).toBeLessThan(declarations.indexOf('100dvh'));
@@ -413,6 +414,35 @@ describe('company view visual review round 1 (issue #486)', () => {
         expect(label).toMatch(/text-overflow:\s*ellipsis/);
         expect(label).toMatch(/overflow:\s*hidden/);
         expect(block('.assistant-back-to-results')).toMatch(/min-width:\s*0/);
+    });
+});
+
+describe('company view visual review round 2 (issue #486)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'));
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const block = (selector: string, from = section) => {
+        const match = from.match(new RegExp(`${escape(selector)}\\s*\\{([^}]*)\\}`));
+        return match ? match[1] : null;
+    };
+
+    it('puts the evidence link under its text whenever the view, not the viewport, is 44rem or narrower', () => {
+        const query = section.slice(section.indexOf('@container company-view (max-width: 44rem)'));
+        expect(query).toMatch(/^@container company-view \(max-width: 44rem\)/);
+        expect(block('.company-view .evidence-row-value', query)).toMatch(/display:\s*flex/);
+        expect(block('.company-view .evidence-row-value > .correction-action', query)).toMatch(/white-space:\s*normal/);
+        // The viewport rule it overrides is left where it is, above the view's section.
+        expect(popupCss.indexOf('@media (min-width: 992px) {\n    .evidence-row-value')).toBeLessThan(popupCss.indexOf('/* issue #486 company view */'));
+    });
+
+    it('keeps the stacked pending-suggestion row left-aligned against Bootstrap\'s important align-items-center', () => {
+        const query = section.slice(section.indexOf('@container company-view (max-width: 28rem)'));
+        expect(block("[data-testid^='your-pending-correction-']", query.slice(query.indexOf('Bootstrap')))).toMatch(/align-items:\s*flex-start !important/);
+    });
+
+    it('sizes the heading of a narrow view like a phone heading', () => {
+        const query = section.slice(section.indexOf('@container company-view (max-width: 28rem) {\n    .company-view .company-view-header h2'));
+        expect(block('.company-view .company-view-header h2', query)).toMatch(/font-size:\s*1\.25rem/);
     });
 });
 

@@ -4876,6 +4876,34 @@ span.priority-chip-button { cursor: default; }
         align-items: flex-start;
         gap: .125rem;
     }
+
+    /* The pending row carries Bootstrap's align-items-center, which is
+       !important, so the stacked row needs the same weight to stay left. */
+    .company-view [data-testid^='your-pending-correction-'] {
+        align-items: flex-start !important;
+    }
+}
+
+/* The evidence text and its "Suggest a correction" link sit side by side only
+   while the view has room for both: the viewport rule above (min-width 992px)
+   was written for a dialog that was never narrower than 744px, and the view
+   can be 456px wide inside a 1000px viewport. Below 44rem of view width the
+   link goes under the text, as it already does below 992px. */
+@container company-view (max-width: 44rem) {
+    .company-view .evidence-row-value {
+        display: flex;
+    }
+
+    .company-view .evidence-row-value > .correction-action {
+        white-space: normal;
+    }
+}
+
+/* A heading in a narrow view is phone-sized whatever the viewport is. */
+@container company-view (max-width: 28rem) {
+    .company-view .company-view-header h2 {
+        font-size: 1.25rem;
+    }
 }
 
 /* While a company is open it is the page's subject: the rankings
@@ -4901,11 +4929,13 @@ span.priority-chip-button { cursor: default; }
 /* Phones: a short state (loading, not found, load error) keeps the Assistant
    bar at the bottom edge. The page is at least as tall as the viewport minus
    the sticky top bar (.app-mobile-topbar: 48px plus its 1px border) and the
-   bar (the same expression as the padding above). */
+   bar. The bar's button is 44.5px tall, so the bar is half a pixel taller
+   than the padding expression above (44px + 1rem + 1px): the 2px here keeps
+   the page from being 1px taller than the window. */
 @media (max-width: 767.98px) {
     body:has(.assistant-dock) .app-content:has(.company-view) {
-        min-height: calc(100vh - 49px - (44px + 1rem + 1px + var(--safe-area-inset-bottom)));
-        min-height: calc(100dvh - 49px - (44px + 1rem + 1px + var(--safe-area-inset-bottom)));
+        min-height: calc(100vh - 49px - (44px + 1rem + 2px + var(--safe-area-inset-bottom)));
+        min-height: calc(100dvh - 49px - (44px + 1rem + 2px + var(--safe-area-inset-bottom)));
     }
 }
 
