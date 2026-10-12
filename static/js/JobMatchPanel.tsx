@@ -777,7 +777,7 @@ function NoticeBox({tone, testid, icon, children, button, folded}: {
 }) {
     return (
         <div className={`alert alert-${tone} py-2 small mb-3`} role="status" aria-live="polite" data-testid={testid}>
-            <div className="job-match-stale-banner">
+            <div className={`job-match-stale-banner${button ? '' : ' job-match-stale-banner--plain'}`}>
                 <Icon name={icon} className="job-match-stale-icon" />
                 <span className="job-match-stale-message">{children}</span>
                 {button}

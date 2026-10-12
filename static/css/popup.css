@@ -1634,6 +1634,14 @@ body.app-nav-drawer-open {
     margin-left: 1.5rem;
 }
 
+/* A box with no button keeps its icon on the first line at every width; the
+   banner grid centres its items from 576px up, which put the icon beside the
+   middle of a message of three lines. A box with a button is unchanged. */
+#job-match-panel .job-match-stale-banner--plain .job-match-stale-icon {
+    align-self: start;
+    margin-top: 0.125rem;
+}
+
 /* Job-search result cards (issue #396) */
 .job-card, .org-card {
     box-sizing: border-box;

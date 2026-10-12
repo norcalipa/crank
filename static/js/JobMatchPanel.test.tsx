@@ -2683,6 +2683,29 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
             expect(screen.getByTestId('unsupported-notice')).toHaveClass('mb-3');
         });
 
+        test('a notice box without a button is drawn with the first-line icon variant, one with a button is not', async () => {
+            const banner = (testid: string) => screen.getByTestId(testid).querySelector('.job-match-stale-banner')!;
+            status = () => jsonResponse(statusPayload('partial_coverage', {coverage: {enabled_sources: 3, failing_sources: 1}, inventory}));
+            await showResults();
+            expect(banner('coverage-notice')).toHaveClass('job-match-stale-banner--plain');
+            cleanup();
+            status = () => jsonResponse(statusPayload('ok', {refreshing: true}));
+            await showResults();
+            expect(banner('refresh-notice')).toHaveClass('job-match-stale-banner--plain');
+            cleanup();
+            healthy(3, {stale: true, pending: true});
+            await showResults();
+            expect(banner('stale-notice')).toHaveClass('job-match-stale-banner--plain');
+            cleanup();
+            healthy(3, {stale: true});
+            await showResults();
+            expect(banner('stale-notice')).not.toHaveClass('job-match-stale-banner--plain');
+            ranked = () => jsonResponse({}, 503);
+            pressRefresh();
+            await screen.findByTestId('refresh-failed-notice');
+            expect(banner('refresh-failed-notice')).not.toHaveClass('job-match-stale-banner--plain');
+        });
+
         test('it does not count as an alert box', async () => {
             withUnsupported(['roles.titles']);
             healthy(3, {stale: true});
