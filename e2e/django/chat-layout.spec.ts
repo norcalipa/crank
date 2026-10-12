@@ -2,8 +2,12 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 // One transcript scroller in the assistant panel (issue #483), on the real seeded page: the transcript is the
 // only element that scrolls, it gets most of the panel body, and the follow rule still holds.
-import {expect, Page, test} from '@playwright/test';
-import {E2E_PASSWORD, login, requireDjangoTier, waitForConfirmArmed} from './support';
+import {expect, Locator, Page, test} from '@playwright/test';
+import {CONFIRM_ARM_DELAY_MS} from '../../static/js/chat/confirmArmDelay';
+import {
+    E2E_PASSWORD, expectPressOnConfirm, expectStartedInside, login, mouseDown, mousePress, readPressGaps, recordPresses,
+    requireDjangoTier, trackDeletes, waitForConfirmArmed, waitUntil,
+} from './support';
 
 const PREFS_USER = 'e2e_prefs_user';
 const WIDE_FONT_CSS = "body, button, input, textarea, select { font-family: 'DejaVu Sans', sans-serif !important; }";
@@ -672,5 +676,85 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
             if (await page.getByTestId('jump-to-latest').count()) problems.push(`${now.viewport}: "Jump to latest" shows in an empty conversation`);
         }
         expect(problems).toEqual([]);
+    });
+});
+
+// Issue #568: the confirmation opens under the pointer that chose its item. On the real page at 375x440 the centre
+// of "Delete conversation…" is on the confirm button, so a second press at that point, however late it is released,
+// must be ignored. (The fixture page's menu sits higher at heights up to 480, so only this tier proves the case.)
+test.describe('a press that starts right after Delete conversation opens its confirmation does nothing (issue #568)', () => {
+    test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE === '1', 'needs assistant replies: not part of the provider-outage pass');
+
+    test.beforeEach(async ({page}) => {
+        requireDjangoTier();
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        await recordPresses(page);
+    });
+
+    test.afterEach(async ({page}, testInfo) => {
+        if (testInfo.status === 'skipped') return;
+        await page.unrouteAll({behavior: 'ignoreErrors'});
+        await page.goto('/');
+        await setPriorities(page, null);
+    });
+
+    // Opens the chat at 375x440 with a conversation, and returns the centre of the item once More is open.
+    const prepare = async (page: Page) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await page.goto('/');
+        await setPriorities(page, TEN);
+        await openChat(page);
+        await ensureConversation(page, 2);
+        await page.setViewportSize({width: 375, height: 440});
+        await openChat(page);
+        const deletes = trackDeletes(page);
+        const articles = page.locator('[role="log"] article');
+        const articlesBefore = await articles.count();
+        await page.getByTestId('conversation-more').click();
+        const item = (await page.getByTestId('conversation-delete').boundingBox())!;
+        return {deletes, articles, articlesBefore, x: item.x + item.width / 2, y: item.y + item.height / 2};
+    };
+
+    const expectNothingDeleted = async (page: Page, deletes: string[], articles: Locator, articlesBefore: number, what: string) => {
+        // Give a (wrongly) accepted press the time to send its request.
+        await page.waitForTimeout(150);
+        expect(deletes, `${what} sent no delete request`).toEqual([]);
+        await expect(page.getByTestId('confirm-panel')).toBeVisible();
+        await expect(articles).toHaveCount(articlesBefore);
+        await expect(page.getByRole('alert')).toHaveCount(0);
+    };
+
+    test('375x440: two presses 150 ms apart on the centre of the item delete nothing', async ({page}) => {
+        test.setTimeout(120_000);
+        const {deletes, articles, articlesBefore, x, y} = await prepare(page);
+        await mousePress(page, x, y);
+        const openedAt = Date.now();
+        await expect(page.getByTestId('confirm-panel')).toBeVisible();
+        await expectPressOnConfirm(page, x, y);
+        await waitUntil(page, openedAt, 150);
+        await mousePress(page, x, y);
+        await expectStartedInside(page, 'the second press (gap 150 ms)');
+        await expectNothingDeleted(page, deletes, articles, articlesBefore, 'the second press');
+    });
+
+    test('375x440: a press held from 150 ms to 560 ms after the opening press deletes nothing; a deliberate press then deletes', async ({page}) => {
+        test.setTimeout(120_000);
+        const {deletes, articles, articlesBefore, x, y} = await prepare(page);
+        await mousePress(page, x, y);
+        const openedAt = Date.now();
+        await expect(page.getByTestId('confirm-panel')).toBeVisible();
+        await expectPressOnConfirm(page, x, y);
+        await waitUntil(page, openedAt, 150);
+        await mouseDown(page, x, y);
+        await waitUntil(page, openedAt, CONFIRM_ARM_DELAY_MS + 60);
+        await page.mouse.up();
+        await expectStartedInside(page, 'the held press');
+        const {end} = await readPressGaps(page);
+        expect(end, 'the held press was released after the delay').toBeGreaterThanOrEqual(CONFIRM_ARM_DELAY_MS);
+        await expectNothingDeleted(page, deletes, articles, articlesBefore, 'the held press');
+
+        await waitForConfirmArmed(page);
+        await page.getByTestId('confirm-action').click();
+        await expect.poll(() => deletes.length, {message: 'a deliberate press deletes'}).toBe(1);
     });
 });

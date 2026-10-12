@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 // Shared helpers for the Django-backed Playwright tier (issue #491).
 import {expect, Page, test} from '@playwright/test';
-import {CONFIRM_ARM_DELAY_MS} from '../../static/js/chat/ConversationMenu';
+import {CONFIRM_ARM_DELAY_MS} from '../../static/js/chat/confirmArmDelay';
 
 /** E2E account created by `manage.py seed_e2e` (throwaway, dev-only). */
 export const E2E_USERNAME = 'e2e_user';
@@ -80,4 +80,88 @@ export function rectsIntersect(a: DOMRect, b: DOMRect): boolean {
  */
 export async function waitForConfirmArmed(page: Page): Promise<void> {
     await page.waitForTimeout(CONFIRM_ARM_DELAY_MS);
+}
+
+/**
+ * The page records when each pointerdown and click happened (the browser's own event times), so a case
+ * about a press made soon after a confirmation opened can prove that its press really started inside the
+ * delay. Call before the first navigation of the test.
+ */
+interface PressEntry {type: string; t: number; id: string | null}
+
+export async function recordPresses(page: Page): Promise<void> {
+    await page.addInitScript(() => {
+        const log: PressEntry[] = [];
+        (window as unknown as {__pressLog: PressEntry[]}).__pressLog = log;
+        for (const type of ['pointerdown', 'click']) {
+            document.addEventListener(type, (e) => {
+                const target = e.target as Element | null;
+                log.push({type, t: e.timeStamp, id: target?.closest?.('[data-testid]')?.getAttribute('data-testid') ?? null});
+            }, true);
+        }
+    });
+}
+
+/**
+ * When the second press on the confirm button started (its pointerdown, or its click when no pointer was
+ * involved) and when it ended, in ms after the click that opened the confirmation, by the page's own event times.
+ */
+export async function readPressGaps(page: Page): Promise<{start: number; end: number | null}> {
+    const log = await page.evaluate(() => (window as unknown as {__pressLog: PressEntry[]}).__pressLog);
+    const opening = log.map((e) => e.type === 'click' && e.id === 'conversation-delete').lastIndexOf(true);
+    expect(opening, 'the opening click was recorded').toBeGreaterThanOrEqual(0);
+    const after = log.slice(opening + 1);
+    const down = after.find((e) => e.type === 'pointerdown' && e.id === 'confirm-action');
+    const click = after.find((e) => e.type === 'click' && e.id === 'confirm-action');
+    const first = down ?? click;
+    expect(first, 'the second press was recorded').toBeDefined();
+    return {start: first!.t - log[opening].t, end: click ? click.t - log[opening].t : null};
+}
+
+/** Before a case asserts that nothing was deleted: the press it made really started inside the delay. */
+export async function expectStartedInside(page: Page, what: string): Promise<void> {
+    const {start} = await readPressGaps(page);
+    test.info().annotations.push({type: `start of ${what}`, description: `${start} ms`});
+    expect(
+        start,
+        `the runner was too slow to prove anything: ${what} started ${start} ms after the opening click, and the delay is ${CONFIRM_ARM_DELAY_MS} ms`,
+    ).toBeLessThan(CONFIRM_ARM_DELAY_MS);
+}
+
+/**
+ * Waits until `ms` have passed since `since` (a Date.now() taken right after the opening press), so the
+ * checks made in between count toward the gap instead of adding to it.
+ */
+export async function waitUntil(page: Page, since: number, ms: number): Promise<void> {
+    await page.waitForTimeout(Math.max(0, ms - (Date.now() - since)));
+}
+
+/** The conversation delete requests the page sends from now on. */
+export function trackDeletes(page: Page): string[] {
+    const deletes: string[] = [];
+    page.on('request', (request) => {
+        const {pathname} = new URL(request.url());
+        if (request.method() === 'POST' && /^\/api\/agent\/conversations\/\d+\/delete\/$/.test(pathname)) deletes.push(pathname);
+    });
+    return deletes;
+}
+
+export const inside = (box: {x: number; y: number; width: number; height: number}, x: number, y: number): boolean =>
+    x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height;
+
+export async function mouseDown(page: Page, x: number, y: number): Promise<void> {
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+}
+
+export async function mousePress(page: Page, x: number, y: number): Promise<void> {
+    await mouseDown(page, x, y);
+    await page.mouse.up();
+}
+
+/** Before a press at (x, y) asserts anything: with the confirmation open, that point is on the confirm button. */
+export async function expectPressOnConfirm(page: Page, x: number, y: number): Promise<void> {
+    expect(inside((await page.getByTestId('confirm-action').boundingBox())!, x, y), 'the press point is inside the confirm button').toBe(true);
+    const hit = await page.evaluate(([px, py]) => document.elementFromPoint(px, py)?.closest('[data-testid]')?.getAttribute('data-testid'), [x, y]);
+    expect(hit, 'the confirm button is what the press hits').toBe('confirm-action');
 }
