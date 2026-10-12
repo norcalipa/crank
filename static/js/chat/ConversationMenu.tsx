@@ -2,6 +2,8 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 
+import {CONFIRM_ARM_DELAY_MS} from './confirmArmDelay';
+
 export const NEW_CONVERSATION_COPY =
     'Your current history will be archived. Your saved priorities are not changed.';
 export const DELETE_CONVERSATION_COPY =
@@ -10,11 +12,6 @@ export const ABOUT_HISTORY_COPY =
     'Your messages and preference updates are saved to your account. New conversation archives this history '
     + 'and starts a fresh one, Export conversation downloads a copy, and Delete conversation removes it '
     + 'permanently. None of these change your saved priorities or job matches.';
-
-// A confirmation opens under the pointer that chose its item, so a second press
-// of a double press would land on the confirm button; presses earlier than this
-// after it opened are ignored.
-export const CONFIRM_ARM_DELAY_MS = 500;
 
 type ConfirmKind = 'new' | 'delete';
 
@@ -90,7 +87,12 @@ export function ConversationMenu({
     const exportPanelRef = React.useRef<HTMLDivElement>(null);
     const failureRef = React.useRef<HTMLParagraphElement>(null);
     const focusFirstItemRef = React.useRef(true);
+    // Handler time (performance.now) and event time (the opening click's timeStamp)
+    // are compared only with their own kind: the first catches presses handled
+    // close together, the second presses that were made, or began, early.
     const confirmOpenedAtRef = React.useRef(0);
+    const confirmOpenedStampRef = React.useRef(0);
+    const confirmPressStartRef = React.useRef<number | null>(null);
 
     const items: MenuItem[] = [
         {id: 'new', label: 'New conversation…', testId: 'conversation-new', disabled: !hasConversation || pending},
@@ -211,7 +213,7 @@ export function ConversationMenu({
         if (!keepFocus) moreRef.current?.focus();
     };
 
-    const handleItem = (item: MenuItem) => {
+    const handleItem = (item: MenuItem, e: React.MouseEvent) => {
         setOpen(false);
         setExportError(null);
         setStatus('');
@@ -227,6 +229,8 @@ export function ConversationMenu({
         setAboutOpen(false);
         setFailure(null);
         confirmOpenedAtRef.current = performance.now();
+        confirmOpenedStampRef.current = e.timeStamp;
+        confirmPressStartRef.current = null;
         setConfirming(item.id);
     };
 
@@ -241,9 +245,15 @@ export function ConversationMenu({
         moreRef.current?.focus();
     };
 
-    const runConfirm = async () => {
+    const runConfirm = async (e: React.MouseEvent) => {
         if (!confirming || working) return;
+        // A pointer click (detail > 0) is judged by when its press went down, or by
+        // its own time when no pointerdown reached us; a keyboard or assistive
+        // activation (detail 0) only by its own click, whatever press went down before.
+        const began = e.detail > 0 ? confirmPressStartRef.current ?? e.timeStamp : e.timeStamp;
+        confirmPressStartRef.current = null;
         if (performance.now() - confirmOpenedAtRef.current < CONFIRM_ARM_DELAY_MS) return;
+        if (began - confirmOpenedStampRef.current < CONFIRM_ARM_DELAY_MS) return;
         setWorking(true);
         setFailure(null);
         const error = await (confirming === 'new' ? onNewConversation() : onDeleteConversation());
@@ -299,7 +309,7 @@ export function ConversationMenu({
                                         disabled={item.disabled}
                                         className={`chat-more-item chat-focus${item.danger ? ' chat-more-item-danger' : ''}`}
                                         data-testid={item.testId}
-                                        onClick={() => handleItem(item)}
+                                        onClick={(e) => handleItem(item, e)}
                                     >
                                         {item.label}
                                     </button>
@@ -345,7 +355,8 @@ export function ConversationMenu({
                             className={`btn btn-sm ${deleting ? 'btn-danger' : 'btn-primary'} chat-focus`}
                             disabled={working}
                             aria-describedby={failure ? 'chat-confirm-copy chat-confirm-failure' : 'chat-confirm-copy'}
-                            onClick={() => void runConfirm()}
+                            onPointerDown={(e) => { confirmPressStartRef.current = e.timeStamp; }}
+                            onClick={(e) => void runConfirm(e)}
                             data-testid="confirm-action"
                         >
                             {working
