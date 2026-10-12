@@ -56,7 +56,8 @@ SPECIAL_PURPOSE_NETWORKS = tuple(
     )
 )
 
-WARNING_CACHE_KEY = "client-address-unavailable-warning"
+# One key per reason, so each reason logs at most one line per interval.
+WARNING_CACHE_KEY = "client-address-unavailable-warning:{reason}"
 WARNING_INTERVAL_SECONDS = 10 * 60
 
 _KEY_SALT = "crank.client_address"
@@ -105,8 +106,13 @@ def _bucket(value):
 
 
 def _warn_unavailable(source, reason):
-    """Log at most once per interval across the deployment; never the value."""
-    if cache.add(WARNING_CACHE_KEY, 1, WARNING_INTERVAL_SECONDS):
+    """Log each reason at most once per interval across the deployment.
+
+    The line is built from the source and reason vocabularies only, never from
+    a header value, and so is the key: ``reason`` is one of ``missing``,
+    ``multiple``, ``invalid`` or ``special``, so at most four keys exist.
+    """
+    if cache.add(WARNING_CACHE_KEY.format(reason=reason), 1, WARNING_INTERVAL_SECONDS):
         logger.warning(
             "client address unavailable: source=%s reason=%s", source, reason
         )

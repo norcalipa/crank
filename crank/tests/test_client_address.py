@@ -268,27 +268,49 @@ class ClientAddressTests(SimpleTestCase):
                     self.assertNotIn(value, message)
                     self.assertNotIn(value, repr(logs.records[0].args))
 
-    def test_warning_is_not_repeated_inside_the_window(self):
+    def test_each_reason_logs_once_per_window(self):
+        cases = (
+            ({}, "missing"),
+            ({HEADER: "198.51.100.7, 198.51.100.8"}, "multiple"),
+            ({HEADER: "not-an-address-538"}, "invalid"),
+            ({HEADER: "127.0.0.1"}, "special"),
+        )
+        for meta, reason in cases:
+            with self.subTest(reason=reason):
+                key = module.WARNING_CACHE_KEY.format(reason=reason)
+                self.assertIsNone(cache.get(key))
+                with self.assertLogs("crank.client_address", level="WARNING") as logs:
+                    client_address(_request(**meta))
+                self.assertEqual(len(logs.records), 1)
+                self.assertEqual(cache.get(key), 1)
+                with self.assertNoLogs("crank.client_address", level="WARNING"):
+                    client_address(_request(**meta))
+        # Four reasons, four lines, four keys: nothing else is written.
+        self.assertEqual(len(cache._cache), 4)
+
+    def test_a_different_reason_inside_the_window_still_logs(self):
         with self.assertLogs("crank.client_address", level="WARNING") as logs:
             client_address(_request())
-        self.assertEqual(len(logs.records), 1)
-        self.assertEqual(cache.get(module.WARNING_CACHE_KEY), 1)
+        self.assertIn("reason=missing", logs.records[0].getMessage())
+        with self.assertLogs("crank.client_address", level="WARNING") as logs:
+            client_address(_request(**{HEADER: "nope"}))
+        self.assertIn("reason=invalid", logs.records[0].getMessage())
         with self.assertNoLogs("crank.client_address", level="WARNING"):
             client_address(_request())
             client_address(_request(**{HEADER: "nope"}))
-        cache.delete(module.WARNING_CACHE_KEY)
+        cache.delete(module.WARNING_CACHE_KEY.format(reason="missing"))
         with self.assertLogs("crank.client_address", level="WARNING"):
             client_address(_request())
 
     def test_warning_window_is_ten_minutes(self):
         with patch.object(cache, "add", return_value=False) as add:
             client_address(_request())
-        add.assert_called_once_with("client-address-unavailable-warning", 1, 600)
+        add.assert_called_once_with("client-address-unavailable-warning:missing", 1, 600)
 
     def test_an_identified_address_logs_and_caches_nothing(self):
         with self.assertNoLogs("crank.client_address", level="WARNING"):
             self.resolve("198.51.100.7")
-        self.assertIsNone(cache.get(module.WARNING_CACHE_KEY))
+        self.assertEqual(cache._cache, {})
 
     @override_settings(CLIENT_IP_SOURCE="")
     def test_off_reads_no_header_and_writes_nothing(self):

@@ -825,9 +825,16 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
                 [record.getMessage() for record in logs.records],
                 ["client address unavailable: source=cloudflare reason=missing"],
             )
-            with self.assertNoLogs("crank.client_address", level="WARNING"):
+            # Another reason inside the window still logs, once.
+            with self.assertLogs("crank.client_address", level="WARNING") as logs:
                 malformed = self.post(1, address="198.51.100.7, 198.51.100.8")
                 self.assertEqual(malformed.status_code, 201)
+            self.assertEqual(
+                [record.getMessage() for record in logs.records],
+                ["client address unavailable: source=cloudflare reason=multiple"],
+            )
+            # The same reason again inside the window logs nothing.
+            with self.assertNoLogs("crank.client_address", level="WARNING"):
                 limited = self.post(0, address=None, data=self.body(field_key="locations"))
             self.assertEqual(limited.status_code, 429)
             self.assertEqual(limited.json()["limit_scope"], "account")

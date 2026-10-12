@@ -489,19 +489,33 @@ creating accounts. Company corrections therefore have two layers.
 **Dependency on the operator gate.** Anyone who can open a connection to the
 pod can send `CF-Connecting-IP`, and the app cannot tell a tunnel request from
 a direct one. The header is trustworthy only while Cloudflare is the only way
-in. `docs/runbook-client-address.md` is the gate that confirms this. A CI test
-refuses a merge that sets the switch in the ConfigMap `crank-config` without a
-passing record in `docs/client-address-verification.yaml`. It also walks
-every tracked file and refuses a merge that sets the switch in another
-ConfigMap, a container `env:` entry or a Secret in any YAML or JSON manifest
-in the repository (including inside a `kind: List`), that names it in any
-other file than the code, tests and documents that read it (so in a workflow,
-a composite action, a script, a Dockerfile or `docker-compose.yml`), that
-tracks a `.env` file, or that stops `.dockerignore` from keeping `.env` out
-of the image, since the app calls `load_dotenv()`.
+in. `docs/runbook-client-address.md` is the gate that confirms this. A test
+(`crank/tests/test_client_address.py`) fails when the switch is set in the
+ConfigMap `crank-config` without a passing record in
+`docs/client-address-verification.yaml`. It also walks every tracked file and
+fails when the switch is set in another ConfigMap, a container `env:` entry or
+a Secret in any YAML or JSON manifest in the repository (including inside a
+`kind: List`), when any other file than the code, tests and documents that read
+it names it (so a workflow, a composite action, a script, a Dockerfile or
+`docker-compose.yml`), when a `.env` file is tracked, or when `.dockerignore`
+stops keeping `.env` out of the image, since the app calls `load_dotenv()`.
+
+That is a test, not a merge control. It fails only when it runs, and nothing
+makes it run or makes a failure stop a merge: "Tests With Coverage"
+(`.github/workflows/tests-with-coverage.yml`) is the only workflow that runs
+pytest on a push and it skips a push that changes only files under `k8s/` or
+`.github/`, so a ConfigMap-only change starts no test; `main` requires one
+approving review and no status check; and the deploy workflow ("Update
+Deployment (prod)") runs on a push to `main` that changes
+`k8s/crank-configmap.yml` without waiting for any test. The honest two-file
+enabling change (ConfigMap and record) does start the run, and the runbook has
+the operator confirm that `Tests With Coverage` ran on the last commit and
+passed before merging. Closing these two gaps is an owner decision tracked in
+issue #566, section 5.
 
 The gate covers what is written out in tracked text files and nothing else.
-It does not see: anything applied to the cluster by hand; the contents of
+It does not see: whether the test ran at all, or whether a failing run stops
+the merge or the deploy (the two limits above, open, #566 section 5); anything applied to the cluster by hand; the contents of
 Secrets the operator creates; the contents of secrets-named files and of
 `.env-prod`, which it never opens; a secrets file copied to another name and
 applied under it; a name assembled at run time (by the shell, `envsubst`, a
@@ -540,9 +554,19 @@ compared with `main`, requests in flight, concurrency against real Redis), `cran
 3. **There is no global ceiling and no alert.** One account can queue 240
    corrections a day and one address 480. Nothing notifies staff. A hard
    global cap would recreate a site-wide lockout; an alert would not.
-4. **Shared addresses share a budget.** People behind one carrier NAT, office,
-   campus or VPN exit share the per-address caps, and one of them can use up
-   the rejected-attempt budget for the others for an hour.
+4. **Shared addresses share a budget, and one sender can lock the others
+   out.** People behind one carrier NAT, office, campus or VPN exit share the
+   per-address caps. Two accounts are enough: each is refused after 60
+   rejected attempts, and together they fill the address's 120. Once the
+   address is full, valid submissions from uninvolved accounts at that
+   address are refused too, until the hour's window passes. The 120 requests
+   cost the sender nothing (no stored row, no staff review), and the sender
+   can repeat it every hour for as long as they continue. The reach is
+   limited: the sender must share the address with the people affected, and
+   only the correction form is affected. Whether an address's rejected count
+   should refuse an account with no rejected attempt of its own is a
+   behaviour decision for the owner before enablement, recorded in issue
+   #566, section 6; this document does not change it.
 5. **The trust rests on network state the app cannot see.** If a path to the
    pod other than the tunnel appears later, anyone on it can forge the header:
    they avoid the per-address layer and can lock a chosen address out of

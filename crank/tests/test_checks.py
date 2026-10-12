@@ -177,6 +177,9 @@ class CheckCapabilityConfigTests(SimpleTestCase):
 class CheckClientIpSourceTests(SimpleTestCase):
     """``crank.W003`` / ``crank.W004`` (issue #538): warn, never block boot."""
 
+    # ``call_command("check")`` also runs the database checks.
+    databases = frozenset({"default"})
+
     def setUp(self):
         patcher = patch.dict(os.environ)
         patcher.start()

@@ -65,9 +65,9 @@ The table says who is supposed to; the gate below is what makes it true.
   (10 and 60) are checked first and are not loosened.
 - A request whose header is missing, duplicated or malformed is not refused and
   is not put in a shared bucket: it gets the per-account limits only, and the
-  app logs `client address unavailable` at most once every 10 minutes, with
-  the reason (`missing`, `multiple`, `invalid` or `special`) and never the
-  value.
+  app logs `client address unavailable` with the reason (`missing`,
+  `multiple`, `invalid` or `special`) and never the value, at most once every
+  10 minutes for each reason (so at most four lines in 10 minutes).
 - The same applies to an address no visitor can have (reason `special`):
   unspecified (`0.0.0.0/8`, `::`), loopback (`127.0.0.0/8`, `::1`), private
   (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), shared
@@ -226,11 +226,28 @@ cluster.
 
 2. In the same pull request, add `CLIENT_IP_SOURCE: "cloudflare"` to
    `k8s/crank-configmap.yml`.
-3. CI enforces the coupling (`crank/tests/test_client_address.py`): with
+3. A test checks the coupling (`crank/tests/test_client_address.py`): with
    `cloudflare` in the manifest, the last record must have
    `g1_public_path: pass`, `g2_private_path` of `pass` or `waived`,
    `edge_header_checks: pass`, a name, and a date that is not in the future.
-   The record is the operator's attestation; CI cannot check that it is true.
+   The test fails for an unrecorded switch **when it runs**, and nothing
+   makes it run or makes a failure stop the merge:
+
+   - The only workflow that runs pytest on a push is
+     `.github/workflows/tests-with-coverage.yml` ("Tests With Coverage"). It
+     skips a push whose changed files are all under its `paths-ignore` list
+     (`.github/**`, `k8s/**` and others; read the list in that file). The
+     record file under `docs/` is not on the list, so the two-file enabling
+     change below does start it; a ConfigMap-only change does not.
+   - `main` requires one approving review and no status check, so a failed or
+     missing run does not stop a merge.
+   - The deploy workflow ("Update Deployment (prod)") runs on a push to `main`
+     that changes `k8s/crank-configmap.yml` and does not wait for any test.
+
+   The record is the operator's attestation; the test cannot check that it is
+   true. Closing the two gaps (the workflow trigger, a required check or a
+   deploy dependency) is an owner decision tracked in
+   <https://github.com/norcalipa/crank/issues/566> section 5.
 
    `data` of the ConfigMap `crank-config` is the only place the switch may be
    set. The same test walks every file git tracks, wherever it lives, and
@@ -256,7 +273,8 @@ cluster.
      would set the variable.
 
    The enabling pull request therefore changes two files, the ConfigMap and
-   the record, and no test.
+   the record, and no test. These checks have the same limits as the
+   coupling test above: they bind only when the test runs and passes.
 
    What CI cannot see. The list below is what is known today, not a proof
    that nothing else passes; closing the routes marked "open" is tracked in
@@ -297,6 +315,12 @@ cluster.
    - a secrets-named file handed to `kubectl create -f` or
      `kubectl replace -f` (the check looks for `apply`), or picked up by
      `kubectl apply -f` on a directory (open);
+   - whether the test ran at all (open, #566 section 5): a change confined to
+     `k8s/` or `.github/` does not start "Tests With Coverage", so a
+     ConfigMap-only change is not checked by any test;
+   - whether a failing run stops anything (open, #566 section 5): no status
+     check is required on `main`, and the deploy workflow does not wait for
+     one;
    - whether the record is true.
 
    V1 below reads the environment of one running pod, so it sees what the
@@ -308,7 +332,12 @@ cluster.
    address source" must read `none`, the value the serving process has
    (the pod that answered the request, so repeat it if there are several).
    Run both before opening the enabling pull request.
-4. Merge only after the "Deploy to Kubernetes (prod)" run of the release that
+4. Before merging the enabling pull request, open its checks and confirm that
+   `Tests With Coverage` ran on the last commit and passed. If it is absent,
+   the gate did not run (for example because the pull request changes only
+   files under `k8s/` or `.github/`), and the pull request must not be merged.
+   Nothing else stops the merge.
+5. Merge only after the "Deploy to Kubernetes (prod)" run of the release that
    contains the limiter has finished. The manifest-only workflow deploys image
    tag `latest`, and that run is what moves `latest`.
 
@@ -360,7 +389,8 @@ per-address layer stays off and production keeps the per-account limits.
   returns 201, and the logs of **every** pod
   (`k3s kubectl -n crank logs -l app.kubernetes.io/name=crank --since=15m`)
   have no `client address unavailable` warning. The warning is written by one
-  pod, at most once every 10 minutes, so one pod's logs are not enough.
+  pod, at most once every 10 minutes for each reason, so one pod's logs are
+  not enough.
 
 ## Roll back
 
