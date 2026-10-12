@@ -984,6 +984,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [authed, setAuthed] = React.useState(isAuthenticated);
     React.useEffect(() => setAuthed(isAuthenticated), [isAuthenticated]);
     // Signed in again: the "ended" wording is over.
+    // A defensive reset that nothing can observe today: the purge and hydration
+    // handlers repeat both statements. Removal or justification: issue #485.
     React.useEffect(() => {
         if (authed) {
             setSessionEnded(false);

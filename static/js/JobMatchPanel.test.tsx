@@ -1892,6 +1892,24 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
         await screen.findByTestId('ranked-job-42');
     });
 
+    test('a purge over the count-only view leaves nothing of the earlier count for the next account', async () => {
+        // First account: the stored list has 77 matches and nothing is ranked.
+        parts.ranked(() => jsonResponse(rankedPayload()));
+        parts.matches(() => jsonResponse(matchPayload(77, [job(3)])));
+        render(<JobMatchPanel/>);
+        expect(await screen.findByText(/job matches ready to review/)).toHaveTextContent('You have 77 job matches ready to review.');
+        expect(screen.getByTestId('results-timestamp')).toBeInTheDocument();
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        // Next account: the matches page read fails and nothing is ranked.
+        parts.matches(() => jsonResponse({}, 500));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true}})); });
+        await waitFor(() => expect(screen.queryByTestId('job-match-loading')).not.toBeInTheDocument());
+        expect(screen.getByTestId('job-match-panel')).toBeInTheDocument();
+        expect(screen.queryByText(/job matches ready to review/)).not.toBeInTheDocument();
+        expect(screen.queryByText(/77/)).not.toBeInTheDocument();
+        expect(screen.queryByTestId('results-timestamp')).not.toBeInTheDocument();
+    });
+
     describe('stale results', () => {
         test('stale and pending: says the results are waiting to be updated and offers no action', async () => {
             healthy(3, {stale: true, pending: true});
