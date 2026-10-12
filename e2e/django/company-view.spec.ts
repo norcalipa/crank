@@ -786,13 +786,14 @@ test.describe('company view (issue #486b)', () => {
             const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0.5).map((r) => Math.round(r.top))).size;
             const words = text.split(/\s+/).length;
             if (lines <= words) continue;
-            // A word wider than its column has to break; anything else is a crushed column.
-            const column = parent.closest('.row > *, td, th, li, p, .evidence-row-value > *') ?? parent;
+            // A word wider than the line box it sits in (the nearest non-inline ancestor) has to break; anything else is a crushed column.
+            let column: Element = parent;
+            while (column.parentElement && getComputedStyle(column).display === 'inline') column = column.parentElement;
             const probe = document.createElement('span');
             probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(parent).font}`;
             probe.textContent = text.split(/\s+/).sort((a, b) => b.length - a.length)[0];
             document.body.appendChild(probe);
-            const wider = probe.getBoundingClientRect().width > column.getBoundingClientRect().width + 0.5;
+            const wider = probe.getBoundingClientRect().width > column.clientWidth - parseFloat(getComputedStyle(column).paddingLeft) - parseFloat(getComputedStyle(column).paddingRight) + 0.5;
             probe.remove();
             if (!wider) broken.push(`${text.slice(0, 30)}: ${lines} lines for ${words} words`);
         }
