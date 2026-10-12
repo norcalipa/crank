@@ -2546,6 +2546,14 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
             expect(screen.getByTestId('ranked-job-42')).toBe(card);
         });
 
+        test('a redirect whose final address cannot be read is a failed refresh, never an ended session', async () => {
+            await showResults();
+            parts.ranked(() => redirected('http://'));
+            pressRefresh();
+            expect(await screen.findByTestId('refresh-failed-notice')).toBeInTheDocument();
+            expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
+        });
+
         test('a same-origin redirect on a first load applies valid JSON', async () => {
             parts.ranked(() => json(rankedPayload([job(3)])));
             render(<JobMatchPanel/>);
