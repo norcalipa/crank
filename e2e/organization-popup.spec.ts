@@ -217,6 +217,16 @@ test.describe('company view in the main workspace (issues #464, #486) — deskto
 
     test('opening a row adds one history entry; Back returns to the results with the row focused and in place, Forward reopens', async ({page}) => {
         await page.goto(`${POPUP_FIXTURE}?search=a`);
+        // The fixture bundle mounts the list a second time over the one the
+        // list module mounts itself, so the first rows are replaced a moment
+        // after load. The second list is the authenticated one, with the
+        // Suggest a company button; wait for what a reader sees in the end:
+        // that button, the four companies matching "a" (company 3 among them)
+        // and no label placeholders left.
+        await expect(page.getByTestId('suggest-company-btn')).toBeVisible();
+        await expect(page.locator('tr.organization-row:visible')).toHaveCount(4);
+        await expect(page.locator('tr.organization-row[data-organization-id="3"]')).toBeVisible();
+        await expect(page.getByTestId('choice-skeleton')).toHaveCount(0);
         await page.evaluate(() => {
             document.documentElement.style.scrollBehavior = 'auto';
             const filler = document.createElement('div');
