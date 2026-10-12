@@ -31,6 +31,8 @@ test.describe('company view (issue #486b)', () => {
         await opener(page).click();
         await expect(view(page)).toBeVisible();
         await expect(page.locator('#organization-details-title')).toBeFocused();
+        // A ranked row carries no address: the view shows the seeded one from its record.
+        await expect(view(page).locator('.row', {hasText: 'URL:'}).getByRole('link')).toHaveText('https://e2e.example.test/');
         await expect.poll(() => companyParam(page)).not.toBeNull();
         expect(await historyLength(page)).toBe(lengthBefore + 1);
         await expect(page.getByTestId('organization-results-region')).toBeHidden();
