@@ -4,10 +4,10 @@ import '@testing-library/jest-dom';
 import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import * as React from 'react';
 
+import {CONFIRM_ARM_DELAY_MS} from './confirmArmDelay';
 import {
     ConversationMenu,
     ConversationMenuProps,
-    CONFIRM_ARM_DELAY_MS,
     DELETE_CONVERSATION_COPY,
     NEW_CONVERSATION_COPY,
 } from './ConversationMenu';
@@ -29,20 +29,31 @@ const setup = (overrides: Partial<ConversationMenuProps> = {}) => {
 
 const more = () => screen.getByRole('button', {name: 'More'});
 
-// The confirm button ignores presses until CONFIRM_ARM_DELAY_MS after its
-// confirmation opened; the clock the guard reads is driven by hand.
-let clock = 0;
-const advance = (ms: number) => { clock += ms; };
+// The confirm button ignores presses that start less than CONFIRM_ARM_DELAY_MS
+// after its confirmation opened. The guard reads two clocks: the event time of
+// the clicks and pointerdown (their timeStamp, which jsdom takes from the real
+// clock, so it is replaced here) and the time its handlers run (performance.now).
+// `setClocks` moves both together; a case about the difference moves
+// `handlerClock` alone with `skewHandler`.
+let eventClock = 0;
+let handlerClock = 0;
+const setClocks = (ms: number) => { eventClock = ms; handlerClock = ms; };
+const advance = (ms: number) => setClocks(eventClock + ms);
+const skewHandler = (ms: number) => { handlerClock += ms; };
 const armConfirm = () => advance(CONFIRM_ARM_DELAY_MS);
+
+const realTimeStamp = Object.getOwnPropertyDescriptor(Event.prototype, 'timeStamp');
 
 describe('ConversationMenu', () => {
     beforeEach(() => {
-        clock = 1000;
-        jest.spyOn(performance, 'now').mockImplementation(() => clock);
+        setClocks(1000);
+        jest.spyOn(performance, 'now').mockImplementation(() => handlerClock);
+        Object.defineProperty(Event.prototype, 'timeStamp', {configurable: true, get: () => eventClock});
     });
 
     afterEach(() => {
         jest.restoreAllMocks();
+        Object.defineProperty(Event.prototype, 'timeStamp', realTimeStamp!);
     });
 
     test('opens with focus on the first item and closes on Escape returning focus to More', () => {
@@ -275,28 +286,41 @@ describe('ConversationMenu', () => {
         });
     });
 
-    describe('a press right after a confirmation opens is ignored', () => {
+    describe('a press that starts right after a confirmation opens is ignored', () => {
         const openConfirm = (testId: 'conversation-new' | 'conversation-delete') => {
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId(testId));
         };
-        const press = () => fireEvent.click(screen.getByTestId('confirm-action'));
-
-        test.each([
+        const confirmButton = () => screen.getByTestId('confirm-action');
+        // A mouse or touch press: pointerdown, then (a click after) the release.
+        const down = () => fireEvent.pointerDown(confirmButton());
+        const release = () => fireEvent.click(confirmButton(), {detail: 1});
+        const press = () => { down(); release(); };
+        // A keyboard or assistive-technology activation: a click with no press (detail 0).
+        const activate = () => fireEvent.click(confirmButton());
+        const expectIgnored = (called: jest.Mock) => {
+            expect(called).not.toHaveBeenCalled();
+            expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+            expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+            expect(confirmButton()).toBeEnabled();
+        };
+        const kinds = [
             ['conversation-delete', 'onDeleteConversation', 'onNewConversation'],
             ['conversation-new', 'onNewConversation', 'onDeleteConversation'],
-        ] as const)('%s: ignored with no time between, at 499 ms, honoured at 500 ms', async (testId, called, other) => {
+        ] as const;
+
+        test('the delay is 500 ms', () => {
+            expect(CONFIRM_ARM_DELAY_MS).toBe(500);
+        });
+
+        test.each(kinds)('%s: ignored with no time between, at 499 ms, honoured at 500 ms', async (testId, called, other) => {
             const {props} = setup();
             openConfirm(testId);
             press();
-            expect(props[called]).not.toHaveBeenCalled();
-            expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
-            expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-            expect(screen.getByTestId('confirm-action')).toBeEnabled();
-            advance(CONFIRM_ARM_DELAY_MS - 1);
+            expectIgnored(props[called] as jest.Mock);
+            advance(499);
             press();
-            expect(props[called]).not.toHaveBeenCalled();
-            expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+            expectIgnored(props[called] as jest.Mock);
             advance(1);
             press();
             await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
@@ -304,23 +328,121 @@ describe('ConversationMenu', () => {
             await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
         });
 
-        test.each(['conversation-delete', 'conversation-new'] as const)(
-            '%s: the delay starts again after Cancel and a new open',
-            async (testId) => {
-                const {props} = setup();
-                const called = testId === 'conversation-delete' ? props.onDeleteConversation : props.onNewConversation;
-                openConfirm(testId);
-                armConfirm();
-                fireEvent.click(screen.getByTestId('confirm-cancel'));
-                openConfirm(testId);
-                press();
-                expect(called).not.toHaveBeenCalled();
-                expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
-                armConfirm();
-                press();
-                await waitFor(() => expect(called).toHaveBeenCalledTimes(1));
-            },
-        );
+        test.each(kinds)('%s: a press that goes down early is ignored however late it is released', (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(100);
+            down();
+            advance(500);
+            release();
+            expectIgnored(props[called] as jest.Mock);
+        });
+
+        test.each(kinds)('%s: a press down at 499 ms and released at 800 ms is ignored', (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(499);
+            down();
+            advance(301);
+            release();
+            expectIgnored(props[called] as jest.Mock);
+        });
+
+        test.each(kinds)('%s: a press down at 500 ms and released at 800 ms is honoured', async (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(500);
+            down();
+            advance(300);
+            release();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+        });
+
+        test.each(kinds)('%s: a click made early is ignored however late it is handled', (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(150);
+            // The click is stamped at 150 ms and the page gets to it 617 ms after opening.
+            skewHandler(467);
+            release();
+            expectIgnored(props[called] as jest.Mock);
+        });
+
+        test.each(kinds)('%s: a keyboard click made early is ignored however late it is handled', (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(150);
+            skewHandler(467);
+            activate();
+            expectIgnored(props[called] as jest.Mock);
+        });
+
+        test.each(kinds)('%s: two presses 550 ms apart by their event times and handled 2 ms apart are ignored', (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            // A frozen page: both presses were made 550 ms apart and are handled 2 ms apart.
+            advance(550);
+            skewHandler(-548);
+            press();
+            expectIgnored(props[called] as jest.Mock);
+        });
+
+        test.each(kinds)('%s: a press that went down early and was released elsewhere does not block a keyboard click', async (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(100);
+            down();
+            advance(600);
+            activate();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+        });
+
+        test.each(kinds)('%s: a press that went down early and was released elsewhere does not block a later press', async (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(100);
+            down();
+            advance(600);
+            press();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+        });
+
+        test.each(kinds)('%s: a pointer click with no pointerdown is judged by its own time', async (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(499);
+            release();
+            expectIgnored(props[called] as jest.Mock);
+            advance(1);
+            release();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+        });
+
+        test.each(kinds)('%s: the delay starts again after Cancel and a new open', async (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-cancel'));
+            openConfirm(testId);
+            press();
+            expectIgnored(props[called] as jest.Mock);
+            armConfirm();
+            press();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+        });
+
+        test.each(kinds)('%s: a press start left over from the previous confirmation is not carried into the next', async (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(100);
+            down();
+            fireEvent.click(screen.getByTestId('confirm-cancel'));
+            advance(100);
+            openConfirm(testId);
+            armConfirm();
+            release();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+        });
 
         test('opening the other confirmation starts the delay again', async () => {
             const {props} = setup();
@@ -335,16 +457,42 @@ describe('ConversationMenu', () => {
             await waitFor(() => expect(props.onDeleteConversation).toHaveBeenCalledTimes(1));
         });
 
-        test('a keyboard activation right after opening is ignored too', () => {
+        test.each(kinds)('%s: the delay counts from choosing the item, not from opening More', async (testId, called) => {
             const {props} = setup();
-            openConfirm('conversation-delete');
-            const confirm = screen.getByTestId('confirm-action');
-            confirm.focus();
-            // A keyboard activation of a button arrives as the same click event.
-            fireEvent.keyDown(confirm, {key: 'Enter'});
-            fireEvent.click(confirm);
-            expect(props.onDeleteConversation).not.toHaveBeenCalled();
-            expect(screen.getByRole('heading', {name: 'Delete conversation?'})).toBeInTheDocument();
+            fireEvent.click(more());
+            advance(700);
+            fireEvent.click(screen.getByTestId(testId));
+            press();
+            expectIgnored(props[called] as jest.Mock);
+            armConfirm();
+            press();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+        });
+
+        test.each(kinds)('%s: choosing the same item again while its confirmation is open starts the delay again', async (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(600);
+            openConfirm(testId);
+            press();
+            expectIgnored(props[called] as jest.Mock);
+            armConfirm();
+            press();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
+        });
+
+        test.each(kinds)('%s: a keyboard or assistive activation is judged by its own click: ignored at 499 ms, honoured at 500 ms', async (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            activate();
+            expectIgnored(props[called] as jest.Mock);
+            expect(screen.getByRole('heading', {name: testId === 'conversation-delete' ? 'Delete conversation?' : 'Start a new conversation?'})).toBeInTheDocument();
+            advance(499);
+            activate();
+            expectIgnored(props[called] as jest.Mock);
+            advance(1);
+            activate();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
         });
 
         test('the confirmation still moves focus to its heading when it opens', () => {
