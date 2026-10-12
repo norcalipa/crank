@@ -4770,7 +4770,11 @@ span.priority-chip-button { cursor: default; }
 /* The company opens in the page's main content, beside the assistant, not
    over it: an in-flow card that scrolls with the document. The content rules
    above are scoped under .popup-details, which the view keeps. */
+/* The view's own width decides how its label/value rows lay out: beside an
+   open drawer it can be narrower than a phone at a viewport of 768px or more. */
 .company-view {
+    container-type: inline-size;
+    container-name: company-view;
     min-width: 0;
     margin-bottom: 1.5rem;
     background-color: #212529;
@@ -4843,4 +4847,103 @@ span.priority-chip-button { cursor: default; }
     .company-view .card-body {
         padding: 1rem;
     }
+}
+
+/* A label wraps inside its own column; it never runs over its value. */
+.company-view .text-end {
+    white-space: normal;
+    overflow-wrap: break-word;
+}
+
+/* At 28rem or less every label/value row stacks: label above value, no
+   offset column (the layout phones already get). */
+@container company-view (max-width: 28rem) {
+    .company-view .row > [class*='col-'] {
+        width: 100%;
+    }
+
+    .company-view .row > .offset-5 {
+        margin-left: 0;
+    }
+
+    .company-view .row > .text-end {
+        text-align: left !important;
+    }
+
+    .company-view .popup-details-score-row,
+    .company-view [data-testid^='your-pending-correction-'] {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: .125rem;
+    }
+}
+
+/* While a company is open it is the page's subject: the rankings
+   introduction steps aside so the view starts at the top of the scroll area.
+   The page heading stays in the accessibility tree. */
+.homepage-container:has(.company-view) > h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.homepage-container:has(.company-view) > h1 + p,
+.homepage-container:has(.company-view) > .how-ranking-works {
+    display: none;
+}
+
+/* Phones: a short state (loading, not found, load error) keeps the Assistant
+   bar at the bottom edge. The page is at least as tall as the viewport minus
+   the sticky top bar (.app-mobile-topbar: 48px plus its 1px border) and the
+   bar (the same expression as the padding above). */
+@media (max-width: 767.98px) {
+    body:has(.assistant-dock) .app-content:has(.company-view) {
+        min-height: calc(100vh - 49px - (44px + 1rem + 1px + var(--safe-area-inset-bottom)));
+        min-height: calc(100dvh - 49px - (44px + 1rem + 1px + var(--safe-area-inset-bottom)));
+    }
+}
+
+/* Not found and load error are a compact block, so the sentence, Retry and
+   Back to results sit together on wide screens. */
+.company-view--compact {
+    max-width: 40rem;
+}
+
+/* The ranked line is the message; the empty score line under it is the
+   quiet one. */
+.popup-details-scores .table td[data-testid='no-scores'] {
+    font-weight: 400;
+    text-align: left !important;
+}
+
+/* Action labels are the body size and centred, whatever their length. */
+.company-view .popup-company-actions .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 100%;
+    text-align: center;
+}
+
+/* The sheet's first button names where it goes; a long name stays on one
+   line. */
+.assistant-back-to-results {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .5rem;
+    min-width: 0;
+}
+
+.assistant-back-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }

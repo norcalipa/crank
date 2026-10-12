@@ -16,6 +16,7 @@ import {
     registerCompanyTarget,
     registerFilterTarget,
     setWorkspaceContext,
+    setWorkspaceEntity,
     subscribeWorkspace,
 } from './workspace/store';
 import {RtoPolicyCode, WORKSPACE_FOCUS_EVENT, WorkspaceFilters} from './workspace/types';
@@ -199,6 +200,17 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     componentDidUpdate(_prevProps: unknown, prevState: OrganizationListState) {
         const companyChanged = prevState.view?.organization?.id !== this.state.view?.organization?.id;
+        // A view that ended without a company (gone, or failed to load) must
+        // not leave the previous company in the assistant. The URL keeps its
+        // ?company=, so only the assistant's company goes.
+        const failed = (status?: string) => status === 'not-found' || status === 'error';
+        if (failed(this.state.view?.status) && !failed(prevState.view?.status)
+            && this.reportedOrganizationId !== null) {
+            if (getWorkspaceSnapshot().context?.organizationId === this.reportedOrganizationId) {
+                setWorkspaceEntity({});
+            }
+            this.reportedOrganizationId = null;
+        }
         if (companyChanged
             || prevState.searchTerm !== this.state.searchTerm
             || prevState.acceleratedVesting !== this.state.acceleratedVesting
@@ -267,6 +279,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // is then the assistant's, so leaving the view must not clear it, while
     // "Clear context" still takes the view with it (issue #486).
     private askedOrganizationId: number | null = null;
+    // The company the view was first opened with from the results, so Back
+    // can focus its row after a switch to a company the list does not show.
+    private openedRowId: number | null = null;
 
     // Applies assistant-proposed filters (issue #484), one history entry, on
     // top of the current search; page resets to 1. Only enum values reach here.
@@ -575,6 +590,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const generation = ++this.modalGeneration;
         this.closeRequested = false;
         this.askedOrganizationId = null;
+        if (current === null) {
+            this.openedRowId = id;
+        }
         const row = this.state.organizations.find(org => org.id === id) ?? null;
         closeSuggestCompany();
         if (source === 'user') {
@@ -683,13 +701,18 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // comes from the entry and the row that was open takes focus.
     private showResults = () => {
         const id = this.state.view?.id;
+        const openedRowId = this.openedRowId;
+        this.openedRowId = null;
         ++this.modalGeneration;
         this.setState({view: null}, () => {
             // After the commit that shows the results again (and any list
             // state a popstate restored in the same turn) has painted.
             window.requestAnimationFrame(() => {
                 restoreResultPosition(this.findOrganizationAnchor);
-                const row = id === undefined ? null : this.findOrganizationAnchor(String(id));
+                // After a switch to a company that is gone, the row the view
+                // was opened from takes the focus.
+                const row = (id === undefined ? null : this.findOrganizationAnchor(String(id)))
+                    ?? (openedRowId === null ? null : this.findOrganizationAnchor(String(openedRowId)));
                 (row ?? this.resultsRef.current)?.focus({preventScroll: true});
             });
         });

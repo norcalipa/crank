@@ -54,10 +54,15 @@ const CompanyView: React.FC<CompanyViewProps> = ({
 
     const heading = organization
         ? organization.name
-        : (name ?? (status === 'not-found' ? 'Company not found' : (status === 'error' ? 'Company' : 'Loading company…')));
+        : (name ?? (status === 'not-found' ? 'Company not found' : (status === 'error' ? 'Company not loaded' : 'Loading company…')));
+
+    // Not found and load error are short: a compact block keeps the sentence,
+    // Retry and Back to results together. Loading keeps the full width so the
+    // view does not change width when the record arrives.
+    const compact = status === 'not-found' || status === 'error';
 
     return (
-        <section className="company-view popup-details" data-testid="company-view"
+        <section className={`company-view popup-details${compact ? ' company-view--compact' : ''}`} data-testid="company-view"
                  data-organization-id={organizationId} aria-labelledby="organization-details-title">
             <div className="company-view-header">
                 <h2 id="organization-details-title" ref={headingRef} tabIndex={-1}>{heading}</h2>
@@ -76,7 +81,11 @@ const CompanyView: React.FC<CompanyViewProps> = ({
                     <p>This company could not be loaded.</p>
                     {onRetry && (
                         <button type="button" className="btn btn-outline-light" data-testid="company-view-retry"
-                                onClick={onRetry}>
+                                onClick={() => {
+                                    // Retry is removed when the record arrives; the heading keeps focus in the view.
+                                    headingRef.current?.focus({preventScroll: true});
+                                    onRetry();
+                                }}>
                             Retry
                         </button>
                     )}

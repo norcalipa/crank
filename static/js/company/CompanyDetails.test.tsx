@@ -189,6 +189,36 @@ describe('CompanyDetails', () => {
         expect(notPrevented).toBe(false);
     });
 
+    test.each([
+        ['at the limit', 'N'.repeat(40), 'N'.repeat(40)],
+        ['over the limit', 'N'.repeat(41), 'this company'],
+    ])('the Ask label keeps the name or says "this company" (%s)', async (_label, name, shown) => {
+        renderDetails({organization: company(1, {name})});
+        await loaded();
+        expect(screen.getByTestId('company-chat-cta')).toHaveTextContent(`Ask the assistant about ${shown}`);
+        expect(screen.getByTestId('company-chat-cta')).not.toHaveClass('btn-sm');
+    });
+
+    test.each([
+        ['at the limit', 'S'.repeat(40), 'S'.repeat(40)],
+        ['over the limit', 'S'.repeat(41), 'this company'],
+    ])('the signed-out button follows the same rule (%s)', async (_label, name, shown) => {
+        renderDetails({
+            organization: company(1, {name}), isAuthenticated: false,
+            signInUrlTemplate: '/accounts/login/?next=%2F%3Fcompany%3D__COMPANY_ID__',
+        });
+        await loaded();
+        expect(screen.getByTestId('company-sign-in-cta')).toHaveTextContent(`Sign in to ask about ${shown}`);
+        expect(screen.getByTestId('company-sign-in-cta')).not.toHaveClass('btn-sm');
+    });
+
+    test('Not ranked is plain text and the empty score line is the muted one', async () => {
+        renderDetails({organization: company(1, {ranking: undefined, avg_score: undefined, avg_scores: []})});
+        await loaded();
+        expect(screen.getByTestId('not-ranked')).not.toHaveClass('text-muted');
+        await waitFor(() => expect(screen.getByTestId('no-scores')).toHaveClass('text-muted'));
+    });
+
     test('Ask stays a plain link for modified clicks and without the workspace host', async () => {
         const {onAsk} = renderDetails();
         await loaded();

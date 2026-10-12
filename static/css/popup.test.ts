@@ -349,6 +349,73 @@ describe('company view (issue #486)', () => {
     });
 });
 
+describe('company view visual review round 1 (issue #486)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'));
+    const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const block = (selector: string, from = section) => {
+        const match = from.match(new RegExp(`${escape(selector)}\\s*\\{([^}]*)\\}`));
+        return match ? match[1] : null;
+    };
+
+    it('makes the view a named query container, so its own width decides the row layout', () => {
+        expect(block('.company-view')).toMatch(/container-type:\s*inline-size/);
+        expect(block('.company-view')).toMatch(/container-name:\s*company-view/);
+    });
+
+    it('lets a label wrap in its column and stacks every label/value row at 28rem or less', () => {
+        expect(block('.company-view .text-end')).toMatch(/white-space:\s*normal/);
+        const query = section.slice(section.indexOf('@container company-view (max-width: 28rem)'));
+        expect(query).toMatch(/^@container company-view \(max-width: 28rem\)/);
+        expect(block(".company-view .row > [class*='col-']", query)).toMatch(/width:\s*100%/);
+        expect(block('.company-view .row > .offset-5', query)).toMatch(/margin-left:\s*0/);
+        expect(block('.company-view .row > .text-end', query)).toMatch(/text-align:\s*left !important/);
+        expect(query).toMatch(/\.popup-details-score-row,[\s\S]*your-pending-correction-[\s\S]*flex-direction:\s*column/);
+    });
+
+    it('hides the rankings introduction while a company is open but keeps the h1 for assistive technology', () => {
+        const heading = block('.homepage-container:has(.company-view) > h1');
+        expect(heading).toMatch(/position:\s*absolute/);
+        expect(heading).toMatch(/clip:\s*rect\(0, 0, 0, 0\)/);
+        expect(heading).not.toMatch(/display:\s*none/);
+        const intro = block('.homepage-container:has(.company-view) > h1 + p,\n.homepage-container:has(.company-view) > .how-ranking-works');
+        expect(intro).toMatch(/display:\s*none/);
+    });
+
+    it('keeps the Assistant bar at the bottom edge of a short phone page, from the bar\'s own height', () => {
+        const phone = section.slice(section.indexOf('body:has(.assistant-dock) .app-content:has(.company-view)'));
+        const declarations = block('body:has(.assistant-dock) .app-content:has(.company-view)', phone) as string;
+        const bar = '(44px + 1rem + 1px + var(--safe-area-inset-bottom))';
+        expect(declarations).toContain(`min-height: calc(100vh - 49px - ${bar});`);
+        expect(declarations).toContain(`min-height: calc(100dvh - 49px - ${bar});`);
+        expect(declarations.indexOf('100vh')).toBeLessThan(declarations.indexOf('100dvh'));
+        expect(section.slice(0, section.indexOf('body:has(.assistant-dock) .app-content:has(.company-view)')))
+            .toMatch(/@media \(max-width: 767\.98px\)\s*\{\s*$/);
+        expect(popupCss).toMatch(/body:has\(\.assistant-dock\) \.app-content \{\s*padding-bottom: calc\(44px \+ 1rem \+ 1px \+ var\(--safe-area-inset-bottom\)\)/);
+    });
+
+    it('makes not found and load error a compact block of at most 40rem', () => {
+        expect(block('.company-view--compact')).toMatch(/max-width:\s*40rem/);
+    });
+
+    it('gives the empty score line the quiet emphasis and centres the action labels', () => {
+        const none = block(".popup-details-scores .table td[data-testid='no-scores']");
+        expect(none).toMatch(/font-weight:\s*400/);
+        expect(none).toMatch(/text-align:\s*left !important/);
+        const actions = block('.company-view .popup-company-actions .btn');
+        expect(actions).toMatch(/justify-content:\s*center/);
+        expect(actions).toMatch(/text-align:\s*center/);
+    });
+
+    it('keeps the sheet\'s Back label on one line with an ellipsis', () => {
+        const label = block('.assistant-back-label');
+        expect(label).toMatch(/white-space:\s*nowrap/);
+        expect(label).toMatch(/text-overflow:\s*ellipsis/);
+        expect(label).toMatch(/overflow:\s*hidden/);
+        expect(block('.assistant-back-to-results')).toMatch(/min-width:\s*0/);
+    });
+});
+
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const containerBlock = popupCss.match(/@container organization-results \(max-width: 56rem\) \{[\s\S]*?\n\}\n/)![0];

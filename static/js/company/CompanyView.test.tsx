@@ -1033,7 +1033,7 @@ describe('CompanyView states (issue #486)', () => {
         const onRetry = jest.fn();
         const {rerender} = view({status: 'error', organization: null});
 
-        expect(screen.getByRole('heading', {level: 2, name: 'Company'})).toBeInTheDocument();
+        expect(screen.getByRole('heading', {level: 2, name: 'Company not loaded'})).toBeInTheDocument();
         expect(screen.getByRole('alert')).toHaveTextContent('This company could not be loaded.');
         expect(screen.queryByTestId('company-view-retry')).not.toBeInTheDocument();
 
@@ -1042,6 +1042,33 @@ describe('CompanyView states (issue #486)', () => {
         fireEvent.click(screen.getByTestId('company-view-retry'));
         expect(onRetry).toHaveBeenCalledTimes(1);
         expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('Retry moves focus to the heading before it asks for the record again', () => {
+        const order: string[] = [];
+        const onRetry = jest.fn(() => order.push(`retry:${document.activeElement?.tagName}`));
+        view({status: 'error', organization: null, onRetry});
+        const retry = screen.getByTestId('company-view-retry');
+        retry.focus();
+        expect(retry).toHaveFocus();
+
+        fireEvent.click(retry);
+
+        expect(order).toEqual(['retry:H2']);
+        expect(screen.getByRole('heading', {level: 2, name: 'Company not loaded'})).toHaveFocus();
+    });
+
+    test('only the two short states are a compact block; loading keeps the full width', () => {
+        const {rerender} = view({status: 'loading', organization: null});
+        const props = {organizationId: 5, organization: null, onBack: () => {}, onAsk: () => {}, onSuggestCorrection: () => {}};
+        expect(screen.getByTestId('company-view')).not.toHaveClass('company-view--compact');
+        rerender(<CompanyView {...props} status="not-found"/>);
+        expect(screen.getByTestId('company-view')).toHaveClass('company-view--compact');
+        rerender(<CompanyView {...props} status="error"/>);
+        expect(screen.getByTestId('company-view')).toHaveClass('company-view--compact');
+        rerender(<CompanyView {...props} status="ready" organization={ranked}/>);
+        expect(screen.getByTestId('company-view')).not.toHaveClass('company-view--compact');
+        expect(screen.getAllByRole('button', {name: /Back to results/})).toHaveLength(1);
     });
 
     test('a company that is not ranked in the list says so where rank and coverage would be', async () => {

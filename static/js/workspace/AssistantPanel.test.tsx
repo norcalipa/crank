@@ -83,6 +83,54 @@ describe('AssistantPanel', () => {
         expect(screen.queryByTestId('assistant-back-to-results')).not.toBeInTheDocument();
     });
 
+    describe('the sheet\'s first button over a company view (issue #486)', () => {
+        const addView = (id: number) => {
+            const view = document.createElement('section');
+            view.setAttribute('data-testid', 'company-view');
+            view.setAttribute('data-organization-id', String(id));
+            document.body.appendChild(view);
+            return view;
+        };
+        afterEach(() => {
+            document.querySelectorAll('[data-testid="company-view"]').forEach(element => element.remove());
+        });
+        const backButton = () => screen.getByTestId('assistant-back-to-results');
+
+        test('with no company view it says Back to results', () => {
+            render(<AssistantPanel mode="sheet" context={{surface: 'company', organizationId: 3, organizationName: 'Acme'}}/>);
+            expect(backButton()).toHaveAccessibleName('Back to results');
+        });
+
+        test('over the view of the company in the context it names that company', () => {
+            addView(3);
+            render(<AssistantPanel mode="sheet" context={{surface: 'company', organizationId: 3, organizationName: 'Acme'}}/>);
+            expect(backButton()).toHaveAccessibleName('Back to Acme');
+            expect(backButton().querySelector('.assistant-back-label')).toHaveTextContent('Back to Acme');
+        });
+
+        test.each([
+            ['a view of another company', 4, {surface: 'company' as const, organizationId: 3, organizationName: 'Acme'}],
+            ['a view with the context cleared', 3, {surface: 'rankings' as const}],
+        ])('over %s it says Back to company', (_label, viewId, context) => {
+            addView(viewId);
+            render(<AssistantPanel mode="sheet" context={context}/>);
+            expect(backButton()).toHaveAccessibleName('Back to company');
+        });
+
+        test('a company opened while the sheet is open updates the label, and the button still closes the sheet', () => {
+            const {rerender} = render(<AssistantPanel mode="sheet" context={null}/>);
+            expect(backButton()).toHaveAccessibleName('Back to results');
+
+            addView(7);
+            rerender(<AssistantPanel mode="sheet" context={{surface: 'company', organizationId: 7, organizationName: 'Newco'}}/>);
+            expect(backButton()).toHaveAccessibleName('Back to Newco');
+
+            setWorkspaceContext({surface: 'company', organizationId: 7, organizationName: 'Newco'});
+            fireEvent.click(backButton());
+            expect(getWorkspaceSnapshot().visibility).not.toBe('open');
+        });
+    });
+
     test('the lazy chunk marks the store loaded once resolved', async () => {
         expect(getWorkspaceSnapshot().loaded).toBe(false);
         render(<AssistantPanel mode="drawer" context={null}/>);

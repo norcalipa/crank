@@ -64,6 +64,15 @@ export function companySignInUrl(template: string | undefined, companyId: number
     return template.split(COMPANY_ID_PLACEHOLDER).join(String(companyId));
 }
 
+// A name longer than this is not repeated in an action label: five wrapped
+// lines of the same name make the button harder to read than the generic words.
+export const ACTION_NAME_MAX = 40;
+
+/** The words that stand for the company in an action label. */
+export function actionTarget(name: string): string {
+    return name.length > ACTION_NAME_MAX ? 'this company' : name;
+}
+
 /** The chat route scoped to one company; the /chat/ view validates the id. */
 export function companyChatUrl(companyId: number): string {
     return `/chat/?company=${companyId}`;
@@ -223,16 +232,16 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
                 {isAuthenticated ? (
                     <a href={companyChatUrl(organization.id)}
                        onClick={handleAskClick}
-                       className="btn btn-sm btn-primary"
+                       className="btn btn-primary"
                        data-testid="company-chat-cta">
-                        Ask the assistant about {organization.name}
+                        Ask the assistant about {actionTarget(organization.name)}
                     </a>
                 ) : (
                     companySignInUrl(signInUrlTemplate, organization.id) && (
                         <a href={companySignInUrl(signInUrlTemplate, organization.id) as string}
-                           className="btn btn-sm btn-primary"
+                           className="btn btn-primary"
                            data-testid="company-sign-in-cta">
-                            Sign in to ask about {organization.name}
+                            Sign in to ask about {actionTarget(organization.name)}
                         </a>
                     )
                 )}
@@ -290,7 +299,7 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
                             </div>
                         </>
                     ) : (
-                        <p className="popup-details-not-ranked text-muted mb-2" data-testid="not-ranked">
+                        <p className="popup-details-not-ranked mb-2" data-testid="not-ranked">
                             Not ranked in this list
                         </p>
                     )}

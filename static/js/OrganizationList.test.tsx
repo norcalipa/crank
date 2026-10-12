@@ -8,7 +8,7 @@ import * as React from 'react';
 import OrganizationList from './OrganizationList';
 import SuggestCompanyHost from './suggestCompany/SuggestCompanyHost';
 import * as suggestCompanyController from './suggestCompany/controller';
-import {applyWorkspaceFilters, clearWorkspaceContext, getWorkspaceSnapshot, openWorkspaceCompany, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext} from './workspace/store';
+import {applyWorkspaceFilters, clearWorkspaceContext, getWorkspaceSnapshot, openWorkspaceCompany, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext, setWorkspaceEntity} from './workspace/store';
 
 interface Organization {
     id: number;
@@ -1330,6 +1330,101 @@ describe('OrganizationList', () => {
             await screen.findByTestId('popup-details-grid');
             expect(new URLSearchParams(window.location.search).get('company')).toBe('77');
             expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 77});
+        });
+
+        // Answers the record request for one id; everything else keeps the default mock.
+        const answerRecord = (id: number, answer: () => Promise<unknown>) => {
+            const base = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url: string) => (
+                url === `/api/organizations/${id}/` ? answer() : base(url)));
+        };
+        const gone = () => Promise.resolve({ok: false, status: 404, json: () => Promise.resolve({})});
+        const broken = () => Promise.resolve({ok: false, status: 500, json: () => Promise.resolve({})});
+        const companyParam = () => new URLSearchParams(window.location.search).get('company');
+
+        test('switching to a company that is gone drops the previous company from the assistant, not from the URL', async () => {
+            answerRecord(77, gone);
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('popup-details-grid');
+            expect(getWorkspaceSnapshot().context).toMatchObject({organizationId: 1, organizationName: 'Organization 1'});
+
+            act(() => {
+                openWorkspaceCompany(77);
+            });
+            await screen.findByTestId('company-not-found');
+
+            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+            expect(getWorkspaceSnapshot().context?.organizationName).toBeUndefined();
+            expect(companyParam()).toBe('77');
+        });
+
+        test('switching to a record that fails to load does the same, and a successful Retry sets the new company', async () => {
+            const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+            let reply: () => Promise<unknown> = broken;
+            answerRecord(77, () => reply());
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('popup-details-grid');
+
+            act(() => {
+                openWorkspaceCompany(77);
+            });
+            await screen.findByTestId('company-view-error');
+            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+            expect(companyParam()).toBe('77');
+
+            reply = () => Promise.resolve(ok(record(77, 'Seventy Seven')));
+            fireEvent.click(screen.getByTestId('company-view-retry'));
+            await screen.findByRole('region', {name: 'Seventy Seven'});
+            expect(getWorkspaceSnapshot().context).toMatchObject({organizationId: 77, organizationName: 'Seventy Seven'});
+            consoleError.mockRestore();
+        });
+
+        test('a deep link to a company that is gone makes no store write, and one the user put in the context elsewhere stays', async () => {
+            window.history.replaceState({}, '', '/?company=777');
+            answerRecord(777, gone);
+            const storeWrite = jest.spyOn(require('./workspace/store'), 'setWorkspaceEntity');
+            const {unmount} = render(<OrganizationList organizations={organizations} />);
+            await screen.findByTestId('company-not-found');
+            expect(storeWrite).not.toHaveBeenCalled();
+            storeWrite.mockRestore();
+            unmount();
+
+            window.history.replaceState({}, '', '/');
+            let release: () => void = () => {};
+            answerRecord(77, () => new Promise(resolve => {
+                release = () => resolve({ok: false, status: 404, json: () => Promise.resolve({})});
+            }));
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('popup-details-grid');
+            act(() => {
+                openWorkspaceCompany(77);
+            });
+            // While the record loads, the user puts another company in the context.
+            act(() => setWorkspaceEntity({surface: 'company', organizationId: 5, organizationName: 'Elsewhere'}));
+            await act(async () => release());
+            await screen.findByTestId('company-not-found');
+
+            expect(getWorkspaceSnapshot().context).toMatchObject({organizationId: 5, organizationName: 'Elsewhere'});
+        });
+
+        test('after a switch to a company that is gone, Back focuses the row the view was opened from', async () => {
+            answerRecord(77, gone);
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 2')[0]);
+            await screen.findByTestId('company-view');
+            act(() => {
+                openWorkspaceCompany(77);
+            });
+            await screen.findByTestId('company-not-found');
+
+            act(() => window.history.back());
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+
+            const row = screen.getAllByRole('button', {name: 'View details for Organization 2'})[0];
+            await waitFor(() => expect(row).toHaveFocus());
         });
 
         test('from a deep link there is no entry to go back through: Back to results rewrites the URL in place', async () => {
