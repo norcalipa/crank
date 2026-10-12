@@ -532,3 +532,59 @@ test.describe('label/value rows follow the view\'s width (#486b, fixture tier)',
         });
     }
 });
+
+// The evidence text beside "Suggest a correction" keeps its room when the view,
+// not the viewport, is narrow (issue #486b, review round 2): a 1000px viewport
+// with an open drawer leaves the view about 456px wide, where a viewport rule
+// used to squeeze the text to 52px and break words letter by letter.
+test.describe('evidence text beside its correction link follows the view\'s width (#486b, fixture tier)', () => {
+    test.use({viewport: {width: 1000, height: 800}});
+
+    test('in a view about 456px wide inside a 1000px viewport the evidence text is at least 200px wide and no run breaks', async ({page}) => {
+        await stubProvenance(page, 'long');
+        await page.goto(POPUP_FIXTURE);
+        await openCompanyView(page);
+        await page.evaluate(() => {
+            const main = document.querySelector('main#main-content') as HTMLElement;
+            main.style.cssText += ';width:496px;max-width:496px;flex:0 0 496px';
+        });
+        await view(page).locator('details').evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLDetailsElement).open = true; }));
+        const result = await page.evaluate(() => {
+            const root = document.querySelector('[data-testid="company-view"]') as HTMLElement;
+            const block = root.querySelector('[data-testid="provenance-section"]') as HTMLElement;
+            const rows = [...block.querySelectorAll('.evidence-row-value')];
+            const broken: string[] = [];
+            const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                const text = (node.textContent ?? '').trim();
+                const parent = node.parentElement;
+                if (!text || !parent || !parent.offsetParent || parent.closest('.visually-hidden')) continue;
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0.5).map((r) => Math.round(r.top))).size;
+                const words = text.split(/\s+/).length;
+                if (lines <= words) continue;
+                // A word wider than its column has to break (the long source address).
+                const probe = document.createElement('span');
+                probe.style.cssText = `position:absolute;visibility:hidden;white-space:nowrap;font:${getComputedStyle(parent).font}`;
+                probe.textContent = text.split(/\s+/).sort((a, b) => b.length - a.length)[0];
+                document.body.appendChild(probe);
+                const wider = probe.getBoundingClientRect().width > parent.getBoundingClientRect().width + 0.5;
+                probe.remove();
+                if (!wider) broken.push(`${text.slice(0, 30)}: ${lines} lines for ${words} words`);
+            }
+            return {
+                viewWidth: root.getBoundingClientRect().width,
+                evidenceRows: rows.length,
+                textWidths: rows.map((row) => (row.firstElementChild as HTMLElement).getBoundingClientRect().width),
+                withLinks: rows.filter((row) => row.querySelector(':scope > .correction-action')).length,
+                broken,
+            };
+        });
+        expect(result.viewWidth).toBeLessThanOrEqual(470);
+        expect(result.evidenceRows).toBeGreaterThan(0);
+        expect(result.withLinks).toBeGreaterThan(0);
+        for (const width of result.textWidths) expect(width).toBeGreaterThanOrEqual(200);
+        expect(result.broken).toEqual([]);
+    });
+});
