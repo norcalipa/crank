@@ -2500,6 +2500,37 @@ describe('JobMatchPanel quiet refresh and truthful states (issue #485)', () => {
             expect(fetchMock).not.toHaveBeenCalled();
             expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent('Sign in to see personalized job matches');
         });
+
+        test('after an observed sign-out a purge whose whoami fails sends no read and shows nothing of the earlier account', async () => {
+            await showResults();
+            purge();
+            hydrate({authenticated: false});
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
+            const before = fetchMock.mock.calls.length;
+            purge();
+            hydrate({unobserved: true});
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(fetchMock.mock.calls.length).toBe(before);
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
+            expect(screen.queryByText('Senior Engineer')).not.toBeInTheDocument();
+        });
+
+        test('after the panel ended the session and a hydration observed the sign-out, a purge whose whoami fails sends no read', async () => {
+            await showResults();
+            parts.ranked(redirected);
+            pressRefresh();
+            expect(await screen.findByTestId('job-match-signed-out')).toHaveTextContent(ENDED);
+            purge();
+            hydrate({authenticated: false});
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
+            const before = fetchMock.mock.calls.length;
+            purge();
+            hydrate({unobserved: true});
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(fetchMock.mock.calls.length).toBe(before);
+            expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(VISITOR);
+            expect(screen.queryByText('Senior Engineer')).not.toBeInTheDocument();
+        });
     });
 
     describe('a redirect is an ended session only when it lands on the sign-in page', () => {
