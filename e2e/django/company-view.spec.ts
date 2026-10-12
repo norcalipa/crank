@@ -783,7 +783,18 @@ test.describe('company view (issue #486b)', () => {
             if (!text || !parent || !parent.offsetParent || parent.closest('.visually-hidden, [hidden]')) continue;
             const range = document.createRange();
             range.selectNodeContents(node);
-            const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0.5).map((r) => Math.round(r.top))).size;
+            // Rects of one line can differ in height and top by a pixel or two (a fallback font for one
+            // glyph), so a new line starts only when a rect begins below the middle of the current one.
+            let lines = 0;
+            let lineTop = -Infinity;
+            let lineHeight = 0;
+            for (const r of [...range.getClientRects()].filter((rect) => rect.width > 0.5).sort((a, b) => a.top - b.top)) {
+                if (r.top > lineTop + lineHeight / 2) {
+                    lines += 1;
+                    lineTop = r.top;
+                    lineHeight = r.height;
+                }
+            }
             const words = text.split(/\s+/).length;
             if (lines <= words) continue;
             // A word wider than the line box it sits in (the nearest non-inline ancestor) has to break; anything else is a crushed column.
