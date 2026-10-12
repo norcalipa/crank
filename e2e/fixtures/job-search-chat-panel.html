@@ -10,23 +10,41 @@
     <link rel="stylesheet" href="/static/css/popup.css">
 </head>
 <body>
-    <!-- Assistant panel wrapper (issue #483): the chat sits under a priorities block inside
-         .assistant-panel-body, so a short viewport makes the panel body the one scroller.
-         ?priorities=<px> sets the height of the block above the chat card. -->
-    <div class="assistant-panel assistant-panel--sheet" style="position: fixed; inset: 0;">
+    <!-- Assistant panel markup (issue #483): the chat sits under a stand-in for the priorities block inside
+         .assistant-panel-body, as workspace/AssistantPanel.tsx renders it. The panel's flex column gives the
+         chat its height and the transcript is the only scroller.
+         ?mode=docked|drawer|sheet picks the panel mode (default: by viewport width, like the workspace shell).
+         ?priorities=<px> sets the height of the block above the chat (default 57, the collapsed row).
+         ?open=1 makes it an open block: its content is that tall and scrolls inside, so the block can give way. -->
+    <aside class="assistant-panel" id="fixture-panel" aria-label="Assistant">
         <div class="assistant-panel-inner">
             <div class="assistant-panel-header"><h2 class="assistant-panel-title">Assistant</h2></div>
             <div class="assistant-panel-body" data-testid="assistant-panel-body">
-                <div data-testid="priorities-sidebar" id="priorities-block">Your priorities</div>
+                <section class="priorities-section priorities-sidebar" data-testid="priorities-sidebar" id="priorities-block">Your priorities</section>
                 <div id="job-search-chat"></div>
             </div>
         </div>
-    </div>
+    </aside>
     <script>
         (function () {
-            var px = new URLSearchParams(location.search).get('priorities') || '120';
-            document.getElementById('priorities-block').style.cssText =
-                'height:' + px + 'px;margin-bottom:.75rem;padding:.75rem;border:1px solid #6c757d;border-radius:.5rem;';
+            var params = new URLSearchParams(location.search);
+            var panel = document.getElementById('fixture-panel');
+            var block = document.getElementById('priorities-block');
+            var px = params.get('priorities') || '57';
+            if (params.get('open') === '1') {
+                block.innerHTML = '<div class="priorities-scroll" data-testid="priorities-scroll"><div style="height:' + px + 'px">Your priorities, open</div></div>';
+            } else {
+                block.style.height = px + 'px';
+                block.style.boxSizing = 'border-box';
+            }
+            function apply() {
+                var mode = params.get('mode') || (window.innerWidth < 768 ? 'sheet' : window.innerWidth < 1280 ? 'drawer' : 'docked');
+                panel.className = 'assistant-panel assistant-panel--' + mode;
+                document.body.classList.remove('assistant-docked', 'assistant-drawer', 'assistant-sheet');
+                document.body.classList.add('assistant-' + mode);
+            }
+            apply();
+            window.addEventListener('resize', apply);
         })();
     </script>
     <div id="suggest-company-host"></div>

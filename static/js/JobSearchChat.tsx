@@ -20,7 +20,7 @@ import type {WorkspaceSnapshot} from './workspace/types';
 import {Transcript} from './chat/Transcript';
 import {Composer} from './chat/Composer';
 import {JumpToLatest} from './chat/JumpToLatest';
-import {useTranscriptScroll} from './chat/useTranscriptScroll';
+import {isUnscaledViewport, useTranscriptScroll} from './chat/useTranscriptScroll';
 import {useAccountGate} from './chat/useAccountGate';
 import {ConversationMenu} from './chat/ConversationMenu';
 import {
@@ -251,9 +251,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     }, [initError]);
     const headingRef = React.useRef<HTMLHeadingElement>(null);
-    // Programmatic focus into the composer never scrolls: it sits in the pinned
-    // band, so it is always visible, and a scroll here would move the panel
-    // body by the band's height and race the history scroll (issue #483).
+    // Programmatic focus into the composer never scrolls: it sits under the
+    // transcript, always in view, and a scroll here would race the history
+    // scroll (issue #483).
     const focusComposer = () => composerRef.current?.focus({preventScroll: true});
     // After load the focus belongs in the chat. The sheet keeps the keyboard
     // down, so it lands on the Conversation heading instead of the composer.
@@ -290,10 +290,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
     const autoFocusRef = React.useRef(true);
     autoFocusRef.current = props.workspaceMode === undefined || !!props.autoFocusComposer;
-    // Shared floor for the measured card height; must stay in sync with the
-    // `20rem` inline minHeight below (16px rem * 20) so the two cannot drift.
-    const MIN_CARD_PX = 320;
-    const MIN_TRANSCRIPT_PX = 128;
     const MIN_STACK_PX = 96;
     const MIN_NOTICES_PX = 64;
     const loadAvailability = React.useCallback(async () => {
@@ -339,77 +335,38 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     }, [messages]);
 
     const cardRef = React.useRef<HTMLElement>(null);
-    const [panelScroll, setPanelScroll] = React.useState(false);
-    const captureAnchorRef = React.useRef<() => void>(() => undefined);
-    const [cardHeight, setCardHeight] = React.useState<number | null>(null);
     // Room between the header and the composer band: inline panels scroll
     // inside it instead of covering the composer.
     const [stackMax, setStackMax] = React.useState<number | null>(null);
+    // Footer notices never take more than 40% of the card (or of the panel
+    // body, where the card is taller than it), not of the viewport.
+    const [noticesMax, setNoticesMax] = React.useState<number | null>(null);
+    // How far the panel body reaches below the visual viewport: an on-screen
+    // keyboard that does not resize the layout viewport.
+    const [keyboardInset, setKeyboardInset] = React.useState(0);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
     // one measure per frame instead of thrashing layout on every event.
-    // Footer notices never take more than 40% of the card (or, when the panel
-    // scrolls, of the panel's visible height), not of the viewport.
-    const [noticesMax, setNoticesMax] = React.useState<number | null>(null);
     const rafIdRef = React.useRef<number | null>(null);
     const rafPendingRef = React.useRef(false);
 
-    // Measure the actual vertical space left after the page header, match panel,
-    // and margins so the chat card fits the viewport instead of assuming a fixed
-    // 7rem header offset. This keeps the composer visible and makes history the
-    // single intentional scroll region.
-    const measureCardHeight = React.useCallback(() => {
+    // The card takes its height from the panel's flex column and the
+    // transcript is its only scroller (issue #483); nothing here sets a
+    // height. The measure only publishes three lengths the stylesheet uses.
+    const measureCard = React.useCallback(() => {
         const card = cardRef.current;
         if (!card) return;
-        const viewport = window.visualViewport;
-        const viewportHeight = viewport ? viewport.height : window.innerHeight;
-        // Clamp so a negative offset when the page is scrolled cannot inflate the
-        // card past the viewport (which would bury the composer below the fold).
-        // Inside the assistant panel add back the panel's own scroll offset so the
-        // height does not depend on how far the reader has scrolled it (which would
-        // oversize the card and nest a second scrollbar, issue #483).
-        const panelBody = card.closest<HTMLElement>('.assistant-panel-body');
-        const top = Math.max(0, card.getBoundingClientRect().top + (panelBody ? panelBody.scrollTop : 0));
-        // Respect the device home-indicator inset (iPhone X+). env() is exposed as
-        // a CSS custom property (popup.css) since it isn't directly readable.
-        let safeAreaBottom = 0;
-        try {
-            const raw = getComputedStyle(document.documentElement)
-                .getPropertyValue('--safe-area-inset-bottom').trim();
-            const parsed = parseFloat(raw);
-            safeAreaBottom = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-        } catch {
-            safeAreaBottom = 0;
-        }
-        const bottomGap = safeAreaBottom || 16; // breathing room above the page bottom
-        const computed = viewportHeight - top - bottomGap;
-        // Inside the assistant panel, keep the transcript at least 8rem tall: the
-        // card grows and the panel scrolls rather than the composer painting over
-        // the history. On the page the history alone yields (no page scroll).
-        const log = historyRef.current;
-        const floor = log && card.closest('.assistant-panel-body') ? card.offsetHeight - log.offsetHeight + MIN_TRANSCRIPT_PX : 0;
-        // When the panel is too short to give the transcript a usable height the
-        // panel body becomes the one scroller and the transcript grows to its
-        // content, instead of nesting two scrollbars (issue #483).
         const headerBottom = card.querySelector('.card-header')?.getBoundingClientRect().bottom ?? 0;
         const formTop = card.querySelector('form')?.getBoundingClientRect().top ?? 0;
         setStackMax(Math.max(MIN_STACK_PX, formTop - headerBottom - 12));
-        const scrollsPanel = floor > 0 && computed < floor;
-        // Record where the reader is before the scroll owner changes under them.
-        if (scrollsPanel !== (card.getAttribute('data-scroll-owner') === 'panel')) captureAnchorRef.current();
-        setPanelScroll(scrollsPanel);
-        // Keep scroll-into-view of transcript content clear of the pinned header
-        // and composer band while the panel body is the scroller. This is a
-        // scroll-margin on the content, not scroll-padding on the body: padding
-        // would also move the panel whenever focus lands inside a band.
-        // The footer is not rendered while the init error shows.
-        const headerHeight = card.querySelector('.card-header')?.getBoundingClientRect().height ?? 0;
-        const footerHeight = card.querySelector<HTMLElement>('.chat-footer')?.offsetHeight ?? 0;
-        card.style.setProperty('--chat-band-top', scrollsPanel ? `${Math.round(headerHeight)}px` : '0px');
-        card.style.setProperty('--chat-band-bottom', scrollsPanel ? `${footerHeight + 8}px` : '0px');
-        const resolvedHeight = Math.max(computed, MIN_CARD_PX, floor);
-        const noticesBase = scrollsPanel && panelBody && panelBody.clientHeight > 0 ? panelBody.clientHeight : resolvedHeight;
+        const panelBody = card.closest<HTMLElement>('.assistant-panel-body');
+        const noticesBase = panelBody && panelBody.clientHeight > 0
+            ? Math.min(card.offsetHeight, panelBody.clientHeight)
+            : card.offsetHeight;
         setNoticesMax(Math.max(MIN_NOTICES_PX, Math.round(noticesBase * 0.4)));
-        setCardHeight(resolvedHeight);
+        const viewport = window.visualViewport;
+        setKeyboardInset(viewport && isUnscaledViewport(viewport) && panelBody
+            ? Math.max(0, Math.round(panelBody.getBoundingClientRect().bottom - viewport.height))
+            : 0);
     }, []);
 
     // Coalesce high-frequency resize/viewport events (fired many times per second
@@ -422,47 +379,24 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         rafIdRef.current = window.requestAnimationFrame(() => {
             rafPendingRef.current = false;
             rafIdRef.current = null;
-            measureCardHeight();
+            measureCard();
         });
-    }, [measureCardHeight]);
+    }, [measureCard]);
 
     React.useEffect(() => {
         scheduleMeasure();
         window.addEventListener('resize', scheduleMeasure);
         window.visualViewport?.addEventListener('resize', scheduleMeasure);
-        // Watch the card's offset parent so a match-panel resize above the chat
-        // (e.g. empty -> results) re-measures the available height.
+        // The card's box follows the panel (and the priorities block above it);
+        // inline confirmations grow the header.
         let observer: ResizeObserver | null = null;
-        let mutationObserver: MutationObserver | null = null;
-        if (typeof ResizeObserver !== 'undefined' && cardRef.current?.parentElement) {
+        if (typeof ResizeObserver !== 'undefined' && cardRef.current) {
             observer = new ResizeObserver(scheduleMeasure);
-            observer.observe(cardRef.current.parentElement);
-            // Inline confirmations grow the header; re-measure so the
-            // transcript floor / single-scroller decision follows (issue #483).
+            observer.observe(cardRef.current);
             const header = cardRef.current.querySelector('.card-header');
             if (header) observer.observe(header);
-            // The priorities block above the chat (assistant panel) resizes as
-            // its steps change; the card height depends on its offset.
-            // The block can mount after the chat (it waits for sign-in
-            // confirmation), so keep looking until it appears.
-            const body = cardRef.current.closest('.assistant-panel-body');
-            let watched: Element | null = null;
-            const watch = () => {
-                const priorities = body?.querySelector('[data-testid="priorities-sidebar"]') ?? null;
-                if (priorities && priorities !== watched) {
-                    if (watched) observer?.unobserve(watched);
-                    watched = priorities;
-                    observer?.observe(priorities);
-                }
-            };
-            watch();
-            if (body && typeof MutationObserver !== 'undefined') {
-                mutationObserver = new MutationObserver(watch);
-                mutationObserver.observe(body, {childList: true, subtree: true});
-            }
         }
         return () => {
-            mutationObserver?.disconnect();
             if (rafIdRef.current !== null) {
                 window.cancelAnimationFrame(rafIdRef.current);
             }
@@ -484,25 +418,23 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     }, [initError, scheduleMeasure]);
 
     const chatCardStyle = React.useMemo<React.CSSProperties>(() => {
-        const vars = {
+        return {
             ...(stackMax === null ? {} : {'--chat-stack-max': `${stackMax}px`}),
             ...(noticesMax === null ? {} : {'--chat-notices-max': `${noticesMax}px`}),
+            '--chat-keyboard-inset': `${keyboardInset}px`,
         } as React.CSSProperties;
-        if (panelScroll) return {...vars, height: 'auto'};
-        if (cardHeight !== null) {
-            return {...vars, height: `${cardHeight}px`, minHeight: '20rem'};
-        }
-        return {...vars, minHeight: '20rem'};
-    }, [cardHeight, panelScroll, stackMax, noticesMax]);
+    }, [stackMax, noticesMax, keyboardInset]);
 
-    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend, captureAnchor} = useTranscriptScroll({
+    const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: messages.length,
         assistantCount: messages.filter((m) => m.role === 'assistant').length,
-        scrollOwner: panelScroll ? 'panel' : 'transcript',
         pending,
         loading,
+        // What can arrive under the last message after it has been followed.
+        contentKey: [availability?.state ?? '', newestActionsId ?? '', lastMessage?.delivery_state ?? '', retryKey ?? ''].join('|'),
+        footerKey: initError,
     });
-    captureAnchorRef.current = captureAnchor;
 
     // Advisory availability check (issue #457). Runs on mount and is re-run
     // before each send and from the notice's retry affordance. A failed check
@@ -1560,7 +1492,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         <section className="card bg-dark d-flex flex-column" data-testid="job-search-chat"
                  aria-labelledby="job-search-chat-title"
                  ref={cardRef}
-                 data-scroll-owner={panelScroll ? 'panel' : 'transcript'}
                  style={chatCardStyle}>
             <div className="card-header d-flex flex-wrap align-items-center">
                 <ConversationMenu
@@ -1703,7 +1634,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     loading={loading}
                     authenticated={effectiveAuthenticated}
                     workspaceMode={props.workspaceMode}
-                    scrollOwner={panelScroll ? 'panel' : 'transcript'}
                     onAskFirstQuestion={focusComposer}
                     onCheckResponse={(m) => void handleCheckResponse(m)}
                     onRetryMessage={(m) => handleRetryMessage(m)}
