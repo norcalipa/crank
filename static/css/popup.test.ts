@@ -430,11 +430,16 @@ describe('one transcript scroller in the assistant panel (issue #483)', () => {
             .toMatch(/min-height:\s*4\.5rem;/);
     });
 
-    it('pins nothing in the chat: no rule that names the chat is sticky', () => {
-        const sticky = rules.filter((r) => /#job-search-chat|\.chat-footer|\.chat-transcript|\.chat-jump-row/.test(r.selector)
+    it('pins nothing in the chat: no rule that names the chat, the panel body or the priorities block is sticky, bar four known ones', () => {
+        const sticky = rules.filter((r) => /#job-search-chat|\.chat-|\.assistant-panel-body|\.priorities-sidebar/.test(r.selector)
             && /position:\s*sticky/.test(r.declarations));
-        expect(sticky.map((r) => r.selector)).toEqual([]);
-        expect(declared('.priorities-sidebar')).not.toMatch(/position:\s*sticky/);
+        // Only the confirmation's dismiss control and the priorities editor's own bars pin; no bar of the chat does.
+        expect(sticky.map((r) => r.selector)).toEqual([
+            '.chat-confirm-dismiss',
+            '.priorities-sidebar .priorities-applied > .chat-actions, .priorities-sidebar .priorities-confirm > .chat-actions',
+            '.priorities-review > .chat-actions',
+            '.priorities-sidebar .priorities-review-compact > .pref-change-error',
+        ]);
     });
 
     it('has no trace of the panel-scroll mode or the priorities pin', () => {
@@ -453,8 +458,14 @@ describe('one transcript scroller in the assistant panel (issue #483)', () => {
         expect(all).toMatch(new RegExp(`\\.priorities-summary-toggle\\[aria-expanded='false'\\] \\.priorities-summary\\s*\\{[^}]*${clipped.source}`));
         // The one-line row keeps its Edit button off the divider under it.
         expect(all).toMatch(/\.assistant-panel-body > \.priorities-sidebar\s*\{\s*padding-block:\s*0 \.25rem;/);
-        // More opens over its button and scrolls inside itself, so Delete is reachable with the body at rest.
-        expect(all).toMatch(/\.chat-more-menu\s*\{\s*top:\s*0;[^}]*max-height:\s*calc\(100dvh - 11rem\);[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;/);
+        // More opens beside its button, so a second press on the button closes it, and scrolls inside itself, so Delete is reachable with the body at rest.
+        expect(all).toMatch(/\.chat-more-menu\s*\{\s*top:\s*0;\s*right:\s*calc\(100% \+ \.25rem\);[^}]*max-width:\s*calc\(100cqw - 7\.5rem\);[^}]*max-height:\s*calc\(100dvh - 11rem\);[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;/);
+        // The 300px drawer has no room beside the button; its menu opens below it, clear of the button.
+        expect(all).toMatch(/\.assistant-panel--drawer \.chat-more-menu\s*\{\s*top:\s*calc\(100% \+ \.25rem\);\s*right:\s*0;[^}]*max-height:\s*calc\(100dvh - 14rem\);/);
+        // The unread pill sits on the footer's top edge, so its centre stays clear of the header above a short transcript.
+        expect(all).toMatch(/#job-search-chat \.chat-footer > \.chat-jump-row\s*\{\s*bottom:\s*100%;\s*\}/);
+        expect(declared('#job-search-chat .chat-footer > .chat-jump-row'))
+            .toMatch(/bottom:\s*calc\(100% \+ 1\.5rem - min\(1\.5rem, var\(--chat-keyboard-inset, 0px\)\)\);/);
         expect(all).toMatch(/#job-search-chat \.empty-history-lead\s*\{[^}]*font-size:\s*\.875rem;[^}]*line-height:\s*1\.3;/);
         expect(all).not.toMatch(/display:\s*none|visibility:\s*hidden/);
         // Above 480px the disclaimer is laid out normally.
