@@ -6,7 +6,6 @@ import AssistantActions from './AssistantActions';
 import type {TurnActions} from './AssistantActions';
 import {AvailabilityNotice} from './notices';
 import {hasResults, ResultCards} from './ResultCards';
-import type {ScrollOwner} from './useTranscriptScroll';
 import type {AvailabilityPayload, ChatMessage} from './types';
 
 export interface TranscriptProps {
@@ -22,7 +21,6 @@ export interface TranscriptProps {
     loading: boolean;
     authenticated: boolean;
     workspaceMode: 'docked' | 'drawer' | 'sheet' | undefined;
-    scrollOwner: ScrollOwner;
     onAskFirstQuestion: () => void;
     onCheckResponse: (message: ChatMessage) => void;
     onRetryMessage: (message: ChatMessage) => void;
@@ -31,13 +29,12 @@ export interface TranscriptProps {
 
 export function Transcript({
     historyRef, messages, staleNotes, turnActions, newestActionsId, lastAssistantId, availability, retryKey, pending, loading,
-    authenticated, workspaceMode, scrollOwner, onAskFirstQuestion,
+    authenticated, workspaceMode, onAskFirstQuestion,
     onCheckResponse, onRetryMessage, onEditAsNew,
 }: TranscriptProps) {
     return (
         <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
-            <div className="bg-dark chat-transcript rounded p-3 mb-3 flex-grow-1" style={scrollOwner === 'panel' ? {minHeight: '8rem', overflowY: 'visible'} : {minHeight: 0, overflowY: 'auto'}}
-                 data-scroll-owner={scrollOwner}
+            <div className="bg-dark chat-transcript rounded p-3"
                  ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
                 {authenticated && loading && (
                     <div className="text-muted chat-loading-status" role="status" aria-live="polite"

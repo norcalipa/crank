@@ -13,6 +13,13 @@ import {
 } from './workspace/store';
 import {accountDigest} from './workspace/persistence';
 import JobSearchChat, {AssistantState, AssistantStatus, ChatMessage} from './JobSearchChat';
+import {useTranscriptScroll} from './chat/useTranscriptScroll';
+
+// The real hook, watched: the wiring tests read what the chat passes it.
+jest.mock('./chat/useTranscriptScroll', () => {
+    const actual = jest.requireActual('./chat/useTranscriptScroll');
+    return {...actual, useTranscriptScroll: jest.fn(actual.useTranscriptScroll)};
+});
 
 // The conversation controls live in the More menu (issue #483).
 const openMore = () => {
@@ -185,19 +192,52 @@ describe('JobSearchChat', () => {
         });
     }
 
-    describe('viewport-reactive height measurement', () => {
-        beforeEach(() => {
-            // Pin the jsdom default explicitly (768) rather than relying on it, so
-            // the expected pixel heights below are self-explanatory (NIT-3).
-            window.innerHeight = 768;
+    describe('measured custom properties (issue #483: the card takes its height from the panel)', () => {
+        // Mounts the chat inside panel markup, the only place production mounts it.
+        async function renderInPanel(panelHeight = 0) {
+            const panelBody = document.createElement('div');
+            panelBody.className = 'assistant-panel-body';
+            if (panelHeight) Object.defineProperty(panelBody, 'clientHeight', {configurable: true, value: panelHeight});
+            const container = document.createElement('div');
+            panelBody.append(container);
+            document.body.appendChild(panelBody);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            const view = render(<JobSearchChat/>, {container});
+            await within(container).findByLabelText('Message');
+            await waitFor(() => expect(within(container).queryByTestId('chat-loading')).not.toBeInTheDocument());
+            return {panelBody, chat: within(container).getByTestId('job-search-chat'), ...view};
+        }
+        const remeasure = async () => {
+            await act(async () => {
+                fireEvent(window, new Event('resize'));
+                await flushRaf();
+            });
+        };
+        const stubVisualViewport = (height: number) => {
+            const viewport = {height, addEventListener: jest.fn(), removeEventListener: jest.fn()};
+            Object.defineProperty(window, 'visualViewport', {configurable: true, writable: true, value: viewport});
+            return viewport;
+        };
+        afterEach(() => {
+            delete (window as {visualViewport?: unknown}).visualViewport;
+            document.querySelectorAll('.assistant-panel-body').forEach((el) => el.remove());
         });
 
-        test('sets a computed pixel height instead of a fixed 7rem offset', async () => {
+        test('writes three custom properties and no height, and marks no scroll owner', async () => {
             await renderChat();
             await act(async () => { await flushRaf(); });
             const chat = screen.getByTestId('job-search-chat');
-            // innerHeight 768 - card top 0 - bottom gap 16 -> 752px.
-            expect(chat).toHaveStyle({height: '752px', minHeight: '20rem'});
+            const log = screen.getByRole('log');
+            expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('96px');
+            expect(chat.style.getPropertyValue('--chat-notices-max')).toBe('64px');
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
+            expect(chat.style.height).toBe('');
+            expect(chat.style.minHeight).toBe('');
+            expect(chat.style.length).toBe(3);
+            // The transcript is always the scroller: its sizing lives in the stylesheet.
+            expect(log.getAttribute('style')).toBeNull();
+            expect(document.querySelector('[data-scroll-owner]')).toBeNull();
         });
 
         test('caps the inline panel stack to the room between header and composer', async () => {
@@ -211,45 +251,90 @@ describe('JobSearchChat', () => {
             const form = chat.querySelector('form') as HTMLElement;
             jest.spyOn(header, 'getBoundingClientRect').mockReturnValue({bottom: 100} as DOMRect);
             jest.spyOn(form, 'getBoundingClientRect').mockReturnValue({top: 400} as DOMRect);
-            await act(async () => {
-                fireEvent(window, new Event('resize'));
-                await flushRaf();
-            });
+            await remeasure();
             expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('288px');
         });
 
-        test('caps footer notices at 40% of the card, or of the panel body when the panel scrolls', async () => {
+        test('caps footer notices at 40% of the card', async () => {
             await renderChat();
             const chat = screen.getByTestId('job-search-chat');
-            await act(async () => { await flushRaf(); });
-            // 752px card -> 301px.
+            Object.defineProperty(chat, 'offsetHeight', {configurable: true, value: 752});
+            await remeasure();
             expect(chat.style.getPropertyValue('--chat-notices-max')).toBe('301px');
         });
 
-        test('caps footer notices at 40% of the panel body when the panel scrolls', async () => {
-            const panelBody = document.createElement('div');
-            panelBody.className = 'assistant-panel-body';
-            Object.defineProperty(panelBody, 'clientHeight', {configurable: true, value: 250});
-            const container = document.createElement('div');
-            panelBody.append(container);
-            document.body.appendChild(panelBody);
-            window.innerHeight = 100;
-            try {
-                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
-                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
-                render(<JobSearchChat/>, {container});
-                await within(container).findByLabelText('Message');
-                const inPanel = within(container).getByTestId('job-search-chat');
-                await act(async () => {
-                    fireEvent(window, new Event('resize'));
-                    await flushRaf();
-                });
-                // Small viewport inside a panel: the card floor forces the panel to scroll, so the
-                // cap follows the panel's 250px, not the viewport.
-                expect(inPanel.style.getPropertyValue('--chat-notices-max')).toBe('100px');
-            } finally {
-                panelBody.remove();
-            }
+        test('caps footer notices at 40% of the panel body where the card is taller than it', async () => {
+            const {chat} = await renderInPanel(250);
+            Object.defineProperty(chat, 'offsetHeight', {configurable: true, value: 900});
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-notices-max')).toBe('100px');
+            // A card that fits in the panel is the base again.
+            Object.defineProperty(chat, 'offsetHeight', {configurable: true, value: 200});
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-notices-max')).toBe('80px');
+        });
+
+        test('uses the card alone while the panel body has no height yet', async () => {
+            const {chat} = await renderInPanel();
+            Object.defineProperty(chat, 'offsetHeight', {configurable: true, value: 500});
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-notices-max')).toBe('200px');
+        });
+
+        test('the keyboard inset is how far the panel body reaches below the visual viewport', async () => {
+            const viewport = stubVisualViewport(500);
+            const {panelBody, chat} = await renderInPanel(700);
+            jest.spyOn(panelBody, 'getBoundingClientRect').mockReturnValue({bottom: 800.4} as DOMRect);
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('300px');
+            // The keyboard closes: the visual viewport reaches past the panel again.
+            viewport.height = 844;
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
+        });
+
+        test('a pinch zoom is not a keyboard: a scaled visual viewport leaves the inset at 0px', async () => {
+            const viewport = stubVisualViewport(333) as {height: number; scale?: number};
+            viewport.scale = 2;
+            const {panelBody, chat} = await renderInPanel(700);
+            jest.spyOn(panelBody, 'getBoundingClientRect').mockReturnValue({bottom: 667} as DOMRect);
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
+            // Zoomed back to 1x, the same height is a keyboard again.
+            viewport.scale = 1;
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('334px');
+        });
+
+        test('measures again when the visual viewport resizes, on that listener alone', async () => {
+            const handlers: Array<() => void> = [];
+            const viewport = stubVisualViewport(700);
+            viewport.addEventListener.mockImplementation((type: string, handler: () => void) => {
+                if (type === 'resize') handlers.push(handler);
+            });
+            const {panelBody, chat} = await renderInPanel(700);
+            jest.spyOn(panelBody, 'getBoundingClientRect').mockReturnValue({bottom: 700} as DOMRect);
+            await act(async () => { await flushRaf(); });
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
+            viewport.height = 400;
+            await act(async () => {
+                handlers.forEach((handler) => handler());
+                await flushRaf();
+            });
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('300px');
+        });
+
+        test('the keyboard inset is 0px without a visualViewport, and outside the assistant panel', async () => {
+            const {panelBody, chat, unmount} = await renderInPanel(700);
+            jest.spyOn(panelBody, 'getBoundingClientRect').mockReturnValue({bottom: 800} as DOMRect);
+            await remeasure();
+            expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
+            unmount();
+
+            stubVisualViewport(100);
+            await renderChat();
+            await remeasure();
+            expect(screen.getByTestId('job-search-chat').style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
         });
 
         test('measures the stack cap without a composer (init error state)', async () => {
@@ -298,64 +383,15 @@ describe('JobSearchChat', () => {
                 expect(observed).toContain(footer);
             } finally {
                 window.removeEventListener('error', onError);
-                panelBody.remove();
             }
         });
 
-        test.each([
-            ['inside the assistant panel', true, 'auto', 'panel'],
-            ['on the page', false, '752px', 'transcript'],
-        ])('transcript floor %s', async (_name, inPanel, expected, owner) => {
-            await renderChat();
-            const chat = screen.getByTestId('job-search-chat');
-            const log = screen.getByRole('log');
-            if (inPanel) {
-                chat.parentElement!.classList.add('assistant-panel-body');
-            }
-            Object.defineProperty(chat, 'offsetHeight', {configurable: true, value: 900});
-            Object.defineProperty(log, 'offsetHeight', {configurable: true, value: 100});
-            await act(async () => {
-                fireEvent(window, new Event('resize'));
-                await flushRaf();
-            });
-            // In the panel: chrome 800 + 128px floor beats the 752px fit, so the panel
-            // body becomes the single scroller and the card keeps its natural height
-            // (issue #483); on the page the history yields.
-            expect(chat).toHaveStyle({height: expected});
-            expect(chat).toHaveAttribute('data-scroll-owner', owner);
-            expect(log).toHaveAttribute('data-scroll-owner', owner);
-            expect(log).toHaveStyle({overflowY: inPanel ? 'visible' : 'auto'});
-            // Panel-scroll mode keeps scroll-into-view of the transcript clear of the pinned
-            // bars with a margin on the content; the panel body itself gets no scroll-padding,
-            // which would scroll it whenever focus lands inside a band.
-            expect(chat.style.getPropertyValue('--chat-band-bottom')).toBe(inPanel ? '8px' : '0px');
-            expect(chat.style.getPropertyValue('--chat-band-top')).toBe('0px');
-            expect(chat.parentElement!.style.scrollPaddingBottom).toBe('');
-            expect(chat.parentElement!.style.scrollPaddingTop).toBe('');
-        });
-
-        test('observes the parent for match-panel resizes when ResizeObserver is available', async () => {
+        test('observes its own card, header and footer, and nothing outside the chat', async () => {
             const observe = jest.fn();
             const disconnect = jest.fn();
             class MockResizeObserver {
                 observe = observe;
                 disconnect = disconnect;
-            }
-            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
-            await renderChat();
-            // afterEach restores the original ResizeObserver, so there is no
-            // manual leave-behind to leak into later tests.
-            expect(observe).toHaveBeenCalled();
-            // The pinned footer changes height (error alert, status notice), which can
-            // flip the transcript floor, so it is observed too.
-            expect(observe.mock.calls.some(([el]) => (el as Element).classList?.contains('chat-footer'))).toBe(true);
-        });
-
-        test('also observes the priorities block above the chat in the assistant panel', async () => {
-            const observe = jest.fn();
-            class MockResizeObserver {
-                observe = observe;
-                disconnect = jest.fn();
             }
             (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
             const panelBody = document.createElement('div');
@@ -367,49 +403,31 @@ describe('JobSearchChat', () => {
             document.body.appendChild(panelBody);
             (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
-            render(<JobSearchChat/>, {container});
+            const {unmount} = render(<JobSearchChat/>, {container});
             await screen.findByLabelText('Message');
-            expect(observe).toHaveBeenCalledWith(priorities);
-            panelBody.remove();
-        });
-
-        test('observes the priorities block when it appears after the first paint (slow whoami)', async () => {
-            const observe = jest.fn();
-            class MockResizeObserver {
-                observe = observe;
-                disconnect = jest.fn();
-            }
-            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
-            const panelBody = document.createElement('div');
-            panelBody.className = 'assistant-panel-body';
-            const container = document.createElement('div');
-            panelBody.append(container);
-            document.body.appendChild(panelBody);
-            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
-            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
-            render(<JobSearchChat/>, {container});
-            await screen.findByLabelText('Message');
-            const priorities = document.createElement('section');
-            priorities.setAttribute('data-testid', 'priorities-sidebar');
-            panelBody.prepend(priorities);
-            await waitFor(() => expect(observe).toHaveBeenCalledWith(priorities));
-            panelBody.remove();
-        });
-
-        test('re-measures the card height when the viewport resizes', async () => {
-            await renderChat();
             const chat = screen.getByTestId('job-search-chat');
-            await act(async () => { await flushRaf(); });
-            expect(chat).toHaveStyle({height: '752px'});
+            const observed = observe.mock.calls.map(([el]) => el as Element);
+            // The card's box follows the panel and the block above it; the header
+            // grows with inline confirmations; the footer with notices and drafts.
+            expect(observed).toContain(chat);
+            expect(observed).toContain(chat.querySelector('.card-header'));
+            expect(observed).toContain(chat.querySelector('.chat-footer'));
+            expect(observed.every((el) => chat.contains(el))).toBe(true);
+            unmount();
+            expect(disconnect).toHaveBeenCalled();
+        });
 
-            // Shrink the viewport; the card must re-measure to the new height.
-            window.innerHeight = 600;
-            await act(async () => {
-                fireEvent(window, new Event('resize'));
-                await flushRaf();
-            });
-            // 600 - 0 - 16 = 584px (> MIN_CARD_PX 320).
-            expect(chat).toHaveStyle({height: '584px'});
+        test('removes its window and visualViewport listeners on unmount', async () => {
+            const viewport = stubVisualViewport(600);
+            const added = jest.spyOn(window, 'addEventListener');
+            const removed = jest.spyOn(window, 'removeEventListener');
+            const {unmount} = await renderInPanel(700);
+            const resizeHandlers = (spy: jest.SpyInstance | jest.Mock) => spy.mock.calls.filter(([type]) => type === 'resize').map(([, fn]) => fn);
+            expect(resizeHandlers(added).length).toBeGreaterThan(0);
+            expect(resizeHandlers(viewport.addEventListener).length).toBeGreaterThan(0);
+            unmount();
+            expect(resizeHandlers(removed)).toEqual(expect.arrayContaining(resizeHandlers(added)));
+            expect(resizeHandlers(viewport.removeEventListener)).toEqual(expect.arrayContaining(resizeHandlers(viewport.addEventListener)));
         });
 
         test('coalesces a resize burst into a single queued measure', async () => {
@@ -425,39 +443,6 @@ describe('JobSearchChat', () => {
             expect(rafSpy).toHaveBeenCalledTimes(1);
             await act(async () => { await flushRaf(); }); // drain the pending frame
         });
-
-        test('clamps a negative (scrolled) card offset so the card never exceeds the viewport', async () => {
-            await renderChat();
-            const chat = screen.getByTestId('job-search-chat');
-            // Simulate the page scrolled so the card's viewport offset is negative.
-            jest.spyOn(chat, 'getBoundingClientRect').mockReturnValue({
-                top: -200, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: -200,
-                toJSON: () => ({}),
-            } as DOMRect);
-            await act(async () => {
-                fireEvent(window, new Event('resize'));
-                await flushRaf();
-            });
-            // Un-clamped, -200 would compute 768 - (-200) - 16 = 952px. Clamping the
-            // offset to 0 keeps the card within the viewport at 752px.
-            expect(chat).toHaveStyle({height: '752px'});
-            expect(chat).not.toHaveStyle({height: '952px'});
-        });
-
-        test('falls back to the default bottom gap when the safe-area inset cannot be read', async () => {
-            await renderChat();
-            const chat = screen.getByTestId('job-search-chat');
-            await act(async () => { await flushRaf(); });
-            jest.spyOn(window, 'getComputedStyle').mockImplementationOnce(() => {
-                throw new Error('getComputedStyle unavailable');
-            });
-            await act(async () => {
-                fireEvent(window, new Event('resize'));
-                await flushRaf();
-            });
-            // Non-fatal: measurement still completes with the 16px fallback.
-            expect(chat).toHaveStyle({height: '752px'});
-        });
     });
 
     describe('rendering & accessibility semantics', () => {
@@ -467,9 +452,9 @@ describe('JobSearchChat', () => {
             const history = screen.getByLabelText('Message history');
             const composer = document.querySelector('form')!.parentElement!;
             expect(chat).toHaveClass('d-flex', 'flex-column');
-            expect(chat).toHaveStyle({minHeight: '20rem'});
-            expect(history).toHaveClass('flex-grow-1');
-            expect(history).toHaveStyle({overflowY: 'auto'});
+            // The card's height comes from the panel's flex column, not from the script.
+            expect(chat.style.minHeight).toBe('');
+            expect(history).toHaveClass('chat-transcript');
             expect(composer).toHaveClass('flex-shrink-0');
         });
 
@@ -4962,5 +4947,73 @@ describe('validated page context and assistant actions (issue #484)', () => {
         act_();
         await waitFor(() => expect(screen.queryByText('Hi')).not.toBeInTheDocument());
         expect([...snapshotMaps].every((m) => m.size === 0)).toBe(true);
+    });
+});
+
+describe('what the chat tells the transcript scroll (issue #483)', () => {
+    const passed = () => {
+        const calls = (useTranscriptScroll as jest.Mock).mock.calls;
+        return calls[calls.length - 1][0] as {contentKey: string; footerKey: unknown};
+    };
+
+    beforeEach(() => {
+        global.fetch = statusAwareFetch();
+        window.localStorage.clear();
+    });
+
+    afterEach(() => {
+        resetWorkspaceForTests();
+        jest.restoreAllMocks();
+    });
+
+    test('content that arrives under the last message changes the key, one part at a time', async () => {
+        // The availability state: an empty reply loads the notice.
+        const mock = global.fetch as jest.Mock;
+        const route = mock.getMockImplementation()!;
+        mock.mockImplementation((url: string, init?: RequestInit) => (String(url).includes('/api/job-matches/status/')
+            ? Promise.resolve(jsonResponse({state: 'no_matches', title: 'No matches', message: 'None yet.'}))
+            : route(url, init)));
+        await renderChat([assistantMessage(1, 'Nothing came back.')]);
+        await screen.findByTestId('availability-notice');
+        expect(passed().contentKey).toBe('no_matches|||');
+    });
+
+    test('a failed turn, its retry and a reply with actions each show in the key', async () => {
+        const key = '123e4567-e89b-42d3-a456-426614174000';
+        await renderChat([assistantMessage(1, 'older'), userTurn('saved question', key, 'failed', 2)]);
+        expect(passed().contentKey).toBe('||failed|');
+        // A retry in flight carries the turn's key.
+        const settle = holdNextFetch(global.fetch as jest.Mock);
+        fireEvent.click(await screen.findByTestId('retry-response-button'));
+        await screen.findByTestId('retrying-turn');
+        expect(passed().contentKey).toBe(`||failed|${key}`);
+    });
+
+    test('the id of the newest reply with actions leads the key', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+        const mock = global.fetch as jest.Mock;
+        const settle = holdNextFetch(mock);
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'open acme'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await postedKeyAfterSend(mock);
+        settle(jsonResponse({
+            message: assistantMessage(94, 'Found it', false, {organizations: [{id: 8, name: 'Acme', url: '/?company=8'}]}),
+            preferences_changed: false, context: {revision: getWorkspaceSnapshot().contextRevision},
+            actions: [{type: 'open_company', organization_id: 8}],
+        }));
+        await screen.findByRole('button', {name: 'Open Acme'});
+        expect(passed().contentKey).toBe('|94||');
+    });
+
+    test('the footer key is the init error, so a footer that mounts again is found again', async () => {
+        const mock = global.fetch as jest.Mock;
+        const route = mock.getMockImplementation()!;
+        mock.mockImplementation((url: string, init?: RequestInit) => (String(url).includes('/api/agent/conversations/')
+            ? Promise.resolve(jsonResponse({}, 500))
+            : route(url, init)));
+        render(<JobSearchChat/>);
+        await waitFor(() => expect(typeof passed().footerKey).toBe('string'));
+        expect(passed().footerKey).toMatch(/conversation/);
     });
 });

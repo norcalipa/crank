@@ -3,7 +3,7 @@
 import '@testing-library/jest-dom';
 import * as React from 'react';
 import {act, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
-import PrioritiesSection, {CHAT_BARS_FALLBACK_PX, PIN_TRANSCRIPT_PX, SidebarPriorities} from './PrioritiesSection';
+import PrioritiesSection, {SidebarPriorities} from './PrioritiesSection';
 import {prioritiesSurface, subscribeDesktop} from './surface';
 import {
     getWorkspaceSnapshot, resetWorkspaceForTests, setPrioritiesEditorOpen, setPrioritiesRevision,
@@ -1035,6 +1035,17 @@ describe('PrioritiesSection', () => {
             expect(document.querySelector('.priorities-title')).toBeNull();
         });
 
+        test('keeps the class names the chat reads: the block is .priorities-sidebar, and holds .priorities-scroll only while open', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const toggle = await screen.findByTestId('priorities-summary-toggle');
+            const block = toggle.closest('.priorities-sidebar')!;
+            expect(block).toBe(screen.getByTestId('priorities-sidebar'));
+            expect(block.querySelector('.priorities-scroll')).toBeNull();
+            fireEvent.click(toggle);
+            expect(block.querySelector('.priorities-scroll')).not.toBeNull();
+        });
+
         test('the toggle expands to every chip, the legend and Reset, then collapses; focus stays on it', async () => {
             serve();
             render(<PrioritiesSection variant="sidebar" authenticated/>);
@@ -1204,276 +1215,6 @@ describe('PrioritiesSection', () => {
             '/api/agent/preferences/': () => json(snapshotBody(2, chips)),
         });
 
-        describe('pinning the open block', () => {
-            // jsdom lays nothing out: the heights are given, and the observer is driven by hand.
-            const heights = {section: 0, body: 0, header: 0, footer: 0, pill: 0};
-            const observers: Array<{run: () => void; observed: Element[]; disconnected: boolean}> = [];
-            const realOffset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
-            const realClient = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
-            const offsetOf = (el: HTMLElement) => (el.matches('.priorities-sidebar') ? heights.section
-                : el.matches('.card-header') ? heights.header
-                    : el.matches('.chat-footer') ? heights.footer
-                        : el.matches('.chat-jump-row') ? heights.pill : 0);
-
-            beforeEach(() => {
-                observers.length = 0;
-                Object.assign(heights, {section: 0, body: 0, header: 0, footer: 0, pill: 0});
-                (global as any).ResizeObserver = class {
-                    private entry: {run: () => void; observed: Element[]; disconnected: boolean};
-                    constructor(run: () => void) { this.entry = {run, observed: [], disconnected: false}; observers.push(this.entry); }
-                    observe(el: Element) { this.entry.observed.push(el); }
-                    unobserve(el: Element) { this.entry.observed = this.entry.observed.filter((seen) => seen !== el); }
-                    disconnect() { this.entry.disconnected = true; }
-                };
-                Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
-                    configurable: true, get() { return offsetOf(this as HTMLElement); },
-                });
-                Object.defineProperty(Element.prototype, 'clientHeight', {
-                    configurable: true, get() { return (this as Element).matches('.assistant-panel-body') ? heights.body : 0; },
-                });
-            });
-            afterEach(() => {
-                delete (global as any).ResizeObserver;
-                Object.defineProperty(HTMLElement.prototype, 'offsetHeight', realOffset!);
-                Object.defineProperty(Element.prototype, 'clientHeight', realClient!);
-            });
-            const live = () => observers.filter((o) => !o.disconnected);
-            const panel = (node: React.ReactNode, chat: React.ReactNode = null) => (
-                <div className="assistant-panel-body">{node}<div id="job-search-chat">{chat}</div></div>
-            );
-            const chatCard = (footerKey: string, pill: 'static' | 'absolute' | null = null) => (
-                <section data-testid="job-search-chat">
-                    <div className="card-header"></div>
-                    <div className="chat-footer" key={footerKey}>
-                        <textarea aria-label="Message" defaultValue=""/>
-                        {pill && <div className="chat-jump-row" style={{position: pill}}></div>}
-                    </div>
-                </section>
-            );
-
-            test('the open block is pinned only while the chat keeps its room under it, and says how tall it is', async () => {
-                serve([chip, pref(1)]);
-                heights.section = 61;
-                heights.body = 800;
-                const {unmount} = render(panel(<PrioritiesSection variant="sidebar" authenticated/>));
-                const section = await screen.findByTestId('priorities-sidebar');
-                const body = section.parentElement!;
-                const toggle = await screen.findByTestId('priorities-summary-toggle');
-                // Collapsed and without the focus: nothing is pinned and the chat's header keeps its own offset.
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('0px');
-                expect(live()).toHaveLength(1);
-                expect(live()[0].observed).toEqual([section, body]);
-
-                // Expanded with room to spare: pinned, and the panel knows the height to offset the chat header by.
-                heights.section = 400;
-                fireEvent.click(toggle);
-                expect(section).toHaveAttribute('data-pinned');
-                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('400px');
-
-                // Before the chat has mounted its bars are assumed. Exactly the room: still pinned.
-                // One pixel short (the panel shrank): it scrolls with the panel instead.
-                heights.body = 400 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX;
-                act(() => live()[0].run());
-                expect(section).toHaveAttribute('data-pinned');
-                heights.body -= 1;
-                act(() => live()[0].run());
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('400px');
-
-                // The editor is an open step too. Cancel returns the focus to Edit, and the row that holds it stays pinned.
-                heights.body = 800;
-                await openEditor('sidebar');
-                expect(section).toHaveAttribute('data-pinned');
-                fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
-                const edit = await screen.findByRole('button', {name: 'Edit priorities'});
-                await waitFor(() => expect(edit).toHaveFocus());
-                heights.section = 61;
-                fireEvent.click(screen.getByTestId('priorities-summary-toggle'));
-                expect(screen.queryByTestId('priority-chip')).not.toBeInTheDocument();
-                expect(section).toHaveAttribute('data-pinned');
-                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('61px');
-                // Focus moving to the row's other button never lets go of it; focus leaving the row does.
-                act(() => screen.getByTestId('priorities-summary-toggle').focus());
-                expect(section).toHaveAttribute('data-pinned');
-                fireEvent.focusOut(screen.getByTestId('priorities-summary-toggle'), {relatedTarget: edit});
-                expect(section).toHaveAttribute('data-pinned');
-                act(() => screen.getByTestId('priorities-summary-toggle').blur());
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('0px');
-                // A row that holds the focus is not pinned where even it leaves the chat no room.
-                heights.body = 61 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX - 1;
-                act(() => edit.focus());
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('61px');
-
-                unmount();
-                expect(live()).toHaveLength(0);
-                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('');
-            });
-
-            test('a pinned block that grows past its room is brought back on screen; one the composer pushed out is left alone', async () => {
-                serve([chip, pref(1)]);
-                heights.section = 0;
-                heights.body = 241 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX;
-                const node = <PrioritiesSection variant="sidebar" authenticated/>;
-                const {rerender} = render(panel(node));
-                const section = await screen.findByTestId('priorities-sidebar');
-                const body = section.parentElement!;
-                const at = {section: 0, body: 0};
-                jest.spyOn(section, 'getBoundingClientRect').mockImplementation(() => ({top: at.section}) as DOMRect);
-                jest.spyOn(body, 'getBoundingClientRect').mockImplementation(() => ({top: at.body}) as DOMRect);
-                const grow = (height: number) => { heights.section = height; act(() => live()[0].run()); };
-                const toggle = await screen.findByTestId('priorities-summary-toggle');
-
-                // A block not yet laid out (no height) has nothing to have grown from.
-                fireEvent.click(toggle);
-                expect(section).toHaveAttribute('data-pinned');
-                body.scrollTop = 2500;
-                at.section = -2439;
-                grow(299);
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.scrollTop).toBe(2500);
-
-                // Pinned at 241px with the reader at the end. An error makes it 299px: it no longer fits pinned and
-                // is back at the top of the panel's content, 2,439px above the reader. It is brought to them.
-                grow(241);
-                expect(section).toHaveAttribute('data-pinned');
-                grow(299);
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.scrollTop).toBe(61);
-
-                // Already let go: growing again moves nothing.
-                body.scrollTop = 2500;
-                grow(320);
-                expect(body.scrollTop).toBe(2500);
-
-                // It grew, but its top is still on screen: nothing to bring back.
-                grow(241);
-                at.section = 12;
-                grow(299);
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.scrollTop).toBe(2500);
-
-                // The composer grew instead (a draft): the block lets go, and a reader who is typing is not pulled away.
-                heights.header = 0;
-                heights.footer = CHAT_BARS_FALLBACK_PX;
-                rerender(panel(node, chatCard('composer')));
-                await waitFor(() => expect(live()[0].observed).toHaveLength(4));
-                // Set after the wait: a frame of the toggle's own loop may run during it and would bring the block back.
-                at.section = -2439;
-                grow(241);
-                expect(section).toHaveAttribute('data-pinned');
-                heights.footer += 40;
-                act(() => live()[0].run());
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.scrollTop).toBe(2500);
-                // Nor by a panel 40px shorter, with the composer holding the focus (a soft keyboard, a split screen):
-                // the block stays where it is and the reader stays at the end, with the composer on screen.
-                heights.footer -= 40;
-                grow(241);
-                expect(section).toHaveAttribute('data-pinned');
-                const draft = screen.getByRole('textbox', {name: 'Message'});
-                act(() => draft.focus());
-                heights.body -= 40;
-                act(() => live()[0].run());
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.scrollTop).toBe(2500);
-                heights.body += 40;
-                heights.footer += 40;
-                act(() => draft.blur());
-
-                // Nor is the collapsed row, pinned only because it holds the focus.
-                heights.footer -= 40;
-                heights.section = 61;
-                fireEvent.click(toggle);
-                act(() => toggle.focus());
-                expect(screen.queryByTestId('priority-chip')).not.toBeInTheDocument();
-                expect(section).toHaveAttribute('data-pinned');
-                grow(400);
-                expect(section).not.toHaveAttribute('data-pinned');
-                expect(body.scrollTop).toBe(2500);
-            });
-
-            test('the room is measured from the chat\'s own header and composer band, whenever they mount or change', async () => {
-                serve([chip, pref(1)]);
-                heights.section = 400;
-                heights.body = 400 + 50 + 100 + PIN_TRANSCRIPT_PX;
-                const node = <PrioritiesSection variant="sidebar" authenticated/>;
-                const {rerender} = render(panel(node));
-                const section = await screen.findByTestId('priorities-sidebar');
-                const body = section.parentElement!;
-                fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
-                // No chat yet: the assumed bars are taller than this panel leaves room for.
-                expect(section).not.toHaveAttribute('data-pinned');
-
-                // The chat mounts after the block: its header (50) and composer band (100) are what must fit.
-                heights.header = 50;
-                heights.footer = 100;
-                rerender(panel(node, chatCard('first')));
-                await waitFor(() => expect(section).toHaveAttribute('data-pinned'));
-                const card = screen.getByTestId('job-search-chat');
-                const footer = card.querySelector('.chat-footer')!;
-                expect(live()[0].observed).toEqual([section, body, card, footer]);
-
-                // The band grows by a line (a draft, a notice): one pixel short, so the block lets go.
-                heights.footer = 101;
-                act(() => live()[0].run());
-                expect(section).not.toHaveAttribute('data-pinned');
-
-                // The chat replaces its footer (a new conversation): the new one is observed, the old one dropped.
-                heights.footer = 100;
-                rerender(panel(node, chatCard('second')));
-                await waitFor(() => expect(section).toHaveAttribute('data-pinned'));
-                const next = card.querySelector('.chat-footer')!;
-                expect(next).not.toBe(footer);
-                expect(live()[0].observed).toEqual([section, body, card, next]);
-
-                // The jump pill takes a row of the band while the panel scrolls; it comes and goes with the
-                // reader's scrolling, so it does not unpin the block. Floating over the transcript it takes none.
-                heights.footer = 144;
-                heights.pill = 44;
-                rerender(panel(node, chatCard('second', 'static')));
-                await waitFor(() => expect(card.querySelector('.chat-jump-row')).not.toBeNull());
-                act(() => live()[0].run());
-                expect(section).toHaveAttribute('data-pinned');
-                rerender(panel(node, chatCard('second', 'absolute')));
-                await waitFor(() => expect(card.querySelector<HTMLElement>('.chat-jump-row')!.style.position).toBe('absolute'));
-                act(() => live()[0].run());
-                expect(section).not.toHaveAttribute('data-pinned');
-
-                // The chat goes away (signed out mid-session): back to the assumed bars, nothing left observed of it.
-                rerender(panel(node));
-                await waitFor(() => expect(live()[0].observed).toEqual([section, body]));
-                expect(section).not.toHaveAttribute('data-pinned');
-            });
-
-            test('nothing is observed outside the panel, in the main block, or signed out', async () => {
-                serve([chip]);
-                heights.section = 400;
-                heights.body = 800;
-                const first = render(<PrioritiesSection variant="sidebar" authenticated/>);
-                fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
-                expect(screen.getByTestId('priorities-sidebar')).not.toHaveAttribute('data-pinned');
-                first.unmount();
-                const second = render(panel(<PrioritiesSection variant="main" authenticated/>));
-                await openEditor('main');
-                expect(screen.getByTestId('priorities-main')).not.toHaveAttribute('data-pinned');
-                second.unmount();
-                const {container} = render(panel(<PrioritiesSection variant="sidebar" authenticated={false}/>));
-                expect(container.querySelector('.priorities-section')).toBeNull();
-                expect(observers).toHaveLength(0);
-            });
-        });
-
-        test('without ResizeObserver the open block is simply not pinned', async () => {
-            serve([chip]);
-            render(<div className="assistant-panel-body"><PrioritiesSection variant="sidebar" authenticated/></div>);
-            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
-            expect(screen.getByTestId('priorities-sidebar')).not.toHaveAttribute('data-pinned');
-            expect(screen.getByTestId('priorities-sidebar').parentElement!.style.getPropertyValue('--priorities-open-h')).toBe('');
-        });
-
         test('the summary is laid out as a lead that may truncate and counts that never do; the text is one string', async () => {
             serve([hard(1), hard(2), hard(3), pref(1), pref(2)]);
             const {unmount} = render(<PrioritiesSection variant="sidebar" authenticated/>);
@@ -1584,324 +1325,74 @@ describe('PrioritiesSection', () => {
             '/api/agent/preferences/': () => json(snapshotBody(2, [chip, pref(1)])),
         });
 
-        describe('keeping the reader\'s place when a step changes', () => {
-            // jsdom lays nothing out and never scrolls: positions are given and frames are run by hand.
-            let queued = new Map<number, FrameRequestCallback>();
-            let nextId = 0;
-            const tops = {section: 100, body: 100};
-            const frame = () => act(() => {
-                const run = Array.from(queued.values());
-                queued = new Map();
-                run.forEach((callback) => callback(0));
-            });
-            const settle = async () => { for (let i = 0; i < 6; i += 1) await frame(); };
+        describe('one scroller (issue #483): the block never pins and never moves the panel', () => {
+            const steps = async (check: () => void) => {
+                check();
+                fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+                check();
+                await openEditor('sidebar');
+                check();
+                fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+                await waitFor(() => expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveFocus());
+                check();
+            };
 
-            beforeEach(() => {
-                queued = new Map();
-                Object.assign(tops, {section: 100, body: 100});
-                jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
-                    nextId += 1;
-                    queued.set(nextId, callback);
-                    return nextId;
-                });
-                jest.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { queued.delete(id); });
-            });
-            afterEach(() => jest.restoreAllMocks());
-
-            const Chat = ({owner, pill}: {owner: 'panel' | 'transcript'; pill: boolean}) => (
-                <div id="job-search-chat">
-                    <section data-testid="job-search-chat" data-scroll-owner={owner}>
-                        <div role="log"></div>
-                        <div className="chat-footer">{pill && <button type="button" data-testid="jump-to-latest">Jump</button>}</div>
-                    </section>
-                </div>
-            );
-            async function mount(owner: 'panel' | 'transcript', pill = false) {
+            test('no step sets data-pinned, writes a style on the panel body, or scrolls it', async () => {
                 serve();
-                const ui = (shown: boolean) => (
-                    <div className="assistant-panel-body">
+                render(
+                    <div className="assistant-panel-body" data-testid="panel-body">
                         <PrioritiesSection variant="sidebar" authenticated/>
-                        <Chat owner={owner} pill={shown}/>
-                    </div>
+                        <section data-testid="job-search-chat">
+                            <div className="card-header"/>
+                            <div role="log"/>
+                            <div className="chat-footer"><button data-testid="jump-to-latest">Jump</button></div>
+                        </section>
+                    </div>,
                 );
-                const view = render(ui(pill));
-                const section = await screen.findByTestId('priorities-sidebar');
-                const panel = section.parentElement!;
-                const log = panel.querySelector<HTMLElement>('[role="log"]')!;
-                jest.spyOn(section, 'getBoundingClientRect').mockImplementation(() => ({top: tops.section}) as DOMRect);
-                jest.spyOn(panel, 'getBoundingClientRect').mockImplementation(() => ({top: tops.body}) as DOMRect);
-                Object.defineProperty(panel, 'scrollHeight', {configurable: true, value: 2000});
-                Object.defineProperty(log, 'scrollHeight', {configurable: true, value: 3000});
-                const toggle = await screen.findByTestId('priorities-summary-toggle');
-                await settle();
-                return {section, panel, log, toggle, showPill: (shown: boolean) => view.rerender(ui(shown)), unmount: view.unmount};
-            }
+                const body = screen.getByTestId('panel-body');
+                const scrolled = jest.fn();
+                Object.defineProperty(body, 'scrollTop', {configurable: true, get: () => 0, set: scrolled});
+                await screen.findByTestId('priorities-summary-toggle');
+                await steps(() => {
+                    expect(screen.getByTestId('priorities-sidebar')).not.toHaveAttribute('data-pinned');
+                    expect(body.getAttribute('style')).toBeNull();
+                    expect(scrolled).not.toHaveBeenCalled();
+                });
+            });
 
-            test('a row held by the focus that opens past its room is brought back at once, and its reader still returns to the end', async () => {
-                const sizes = {section: 61, body: 61 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX};
-                const runs: Array<() => void> = [];
-                (global as any).ResizeObserver = class {
-                    constructor(run: () => void) { runs.push(run); }
-                    observe() { /* driven by hand */ }
-                    unobserve() { /* driven by hand */ }
-                    disconnect() { /* driven by hand */ }
-                };
+            test('adds no press or focus listener to the document and observes nothing', async () => {
+                const observed = jest.fn();
+                (global as any).ResizeObserver = class { observe = observed; unobserve = jest.fn(); disconnect = jest.fn(); };
+                const documentListeners = jest.spyOn(document, 'addEventListener');
+                const frames = jest.spyOn(window, 'requestAnimationFrame');
                 try {
-                    const {section, panel, toggle} = await mount('panel');
-                    Object.defineProperty(section, 'offsetHeight', {configurable: true, get: () => sizes.section});
-                    Object.defineProperty(panel, 'clientHeight', {configurable: true, get: () => sizes.body});
-                    // At the end of the conversation (no jump pill), with the focus on the row: the row is pinned.
-                    panel.scrollTop = 900;
-                    act(() => toggle.focus());
-                    expect(section).toHaveAttribute('data-pinned');
-
-                    // Enter opens the list: 176px no longer fits pinned, and the block's top is 800px above the panel's.
-                    sizes.section = 176;
-                    tops.section = -700;
-                    fireEvent.click(toggle);
-                    expect(section).not.toHaveAttribute('data-pinned');
-                    expect(panel.scrollTop).toBe(100);
-                    tops.section = 100;
-                    await settle();
-                    expect(panel.scrollTop).toBe(100);
-
-                    // Enter again closes it; the row pins again and the reader is back at the end.
-                    sizes.section = 61;
-                    fireEvent.click(toggle);
-                    expect(section).toHaveAttribute('data-pinned');
-                    await frame();
-                    expect(panel.scrollTop).toBe(2000);
-                    await settle();
-                    expect(runs.length).toBeGreaterThan(0);
+                    serve();
+                    render(<div className="assistant-panel-body"><PrioritiesSection variant="sidebar" authenticated/></div>);
+                    await screen.findByTestId('priorities-summary-toggle');
+                    await steps(() => {
+                        // The purge listener (privacy) is the only one: no press or focus tracking.
+                        expect(documentListeners.mock.calls.map(([type]) => type)).toEqual(['crank:private-state-purged']);
+                        expect(observed).not.toHaveBeenCalled();
+                        expect(frames).not.toHaveBeenCalled();
+                    });
                 } finally {
                     delete (global as any).ResizeObserver;
                 }
             });
 
-            test('an open block that does not pin is brought back on screen, and the reader returns to the end when it closes', async () => {
-                const {section, panel, toggle, showPill} = await mount('panel');
-                panel.scrollTop = 900;
-                act(() => toggle.focus());
-                fireEvent.click(toggle);
-                // The chat followed the conversation: the block's top is 400px above the panel's.
-                tops.section = -300;
-                await frame();
-                expect(panel.scrollTop).toBe(500);
-                tops.section = 100;
-                // The reader is no longer at the end, so the chat shows its pill; nothing else moves.
-                showPill(true);
-                await settle();
-                expect(panel.scrollTop).toBe(500);
-                expect(queued.size).toBe(0);
-
-                // Closed again with the row pinned (it holds the focus): back to the end of the conversation.
-                fireEvent.click(toggle);
-                section.setAttribute('data-pinned', '');
-                await frame();
-                expect(panel.scrollTop).toBe(2000);
-                showPill(false);
-                await settle();
-                expect(queued.size).toBe(0);
-            });
-
-            test('a reader who was reading older messages is left where they are', async () => {
-                const {section, panel, toggle} = await mount('panel', true);
-                panel.scrollTop = 300;
-                fireEvent.click(toggle);
-                section.setAttribute('data-pinned', '');
-                await settle();
-                expect(panel.scrollTop).toBe(300);
-                // Opened where it does not pin and scrolled away by the reader: brought back, but not sent to the end on closing.
-                section.removeAttribute('data-pinned');
-                await openEditor('sidebar');
-                tops.section = 40;
-                await frame();
-                expect(panel.scrollTop).toBe(240);
-                tops.section = 100;
-                await settle();
-                act(() => screen.getByRole('button', {name: 'Cancel'}).click());
-                section.setAttribute('data-pinned', '');
-                await settle();
-                expect(panel.scrollTop).toBe(240);
-            });
-
-            test('while the chat scrolls its own transcript a reader at the end stays there; a pinned block keeps them there in the panel', async () => {
-                const first = await mount('transcript');
-                fireEvent.click(first.toggle);
-                await frame();
-                expect(first.log.scrollTop).toBe(3000);
-                expect(first.panel.scrollTop).toBe(0);
-                first.unmount();
-                act(() => resetWorkspaceForTests());
-
-                const second = await mount('panel');
-                fireEvent.click(second.toggle);
-                // Not pinned and still on screen: nothing to do.
-                await frame();
-                expect(second.panel.scrollTop).toBe(0);
-                second.section.setAttribute('data-pinned', '');
-                await frame();
-                expect(second.panel.scrollTop).toBe(2000);
-                expect(second.log.scrollTop).toBe(0);
-            });
-
-            test('the row that took the focus is brought on screen where it cannot pin, and a pending frame is dropped on unmount', async () => {
-                const {panel, unmount} = await mount('panel', true);
-                panel.scrollTop = 700;
-                await openEditor('sidebar');
-                await settle();
-                // Cancel returns the focus to Edit without scrolling; the row is 150px above the panel's top.
-                fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
-                await waitFor(() => expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveFocus());
-                tops.section = -50;
-                await frame();
-                expect(panel.scrollTop).toBe(550);
-                expect(queued.size).toBe(1);
-                unmount();
-                expect(queued.size).toBe(0);
-            });
-
-            // The resize observer is driven by hand here; the block and the panel are given their heights.
-            async function mountSized(pill = false) {
-                const sizes = {section: 61, body: 800};
-                const observers: Array<{run: () => void; disconnected: boolean}> = [];
-                (global as any).ResizeObserver = class {
-                    private entry: {run: () => void; disconnected: boolean};
-                    constructor(run: () => void) { this.entry = {run, disconnected: false}; observers.push(this.entry); }
-                    observe() { /* driven by hand */ }
-                    unobserve() { /* driven by hand */ }
-                    disconnect() { this.entry.disconnected = true; }
-                };
-                const view = await mount('panel', pill);
-                Object.defineProperty(view.section, 'offsetHeight', {configurable: true, get: () => sizes.section});
-                Object.defineProperty(view.panel, 'clientHeight', {configurable: true, get: () => sizes.body});
-                const run = () => act(() => observers.filter((o) => !o.disconnected).forEach((o) => o.run()));
-                return {...view, sizes, observers, run};
-            }
-
-            test('a panel that got shorter (a resize) brings back an open block that no longer fits pinned', async () => {
-                try {
-                    // Reading older messages (the jump pill shows): the reader is not sent to the end of the conversation.
-                    const {section, panel, toggle, sizes, run} = await mountSized(true);
-                    sizes.section = 400;
-                    fireEvent.click(toggle);
-                    // The reader is in a field of the block (here its row's own button).
-                    act(() => toggle.focus());
-                    expect(section).toHaveAttribute('data-pinned');
-                    // The reader is deep in the panel, the block's top 1,444px above the panel's.
-                    panel.scrollTop = 1452;
-                    await settle();
-                    expect(panel.scrollTop).toBe(1452);
-                    // Nothing changed in size: nothing moves, however often the observer fires.
-                    tops.section = -1344;
-                    run();
-                    expect(section).toHaveAttribute('data-pinned');
-                    expect(panel.scrollTop).toBe(1452);
-                    // The panel got shorter: the block stops fitting, and comes back to the panel's top.
-                    sizes.body = 400;
-                    run();
-                    expect(section).not.toHaveAttribute('data-pinned');
-                    expect(panel.scrollTop).toBe(1452 - 1444);
-                } finally {
-                    delete (global as any).ResizeObserver;
-                }
-            });
-
-            test('a panel that got shorter leaves a reader who is typing in the composer where they are', async () => {
-                try {
-                    const {section, panel, toggle, sizes, run} = await mountSized(true);
-                    sizes.section = 400;
-                    fireEvent.click(toggle);
-                    expect(section).toHaveAttribute('data-pinned');
-                    // The composer holds the focus; the block does not.
-                    const composer = document.createElement('textarea');
-                    panel.appendChild(composer);
-                    act(() => composer.focus());
-                    panel.scrollTop = 2000;
-                    tops.section = -1900;
-                    sizes.body = 400;
-                    run();
-                    expect(section).not.toHaveAttribute('data-pinned');
-                    expect(panel.scrollTop).toBe(2000);
-                    expect(composer).toHaveFocus();
-                } finally {
-                    delete (global as any).ResizeObserver;
-                }
-            });
-
-            test('a block that is not open is left where it is when the panel gets shorter', async () => {
-                try {
-                    const {section, panel, toggle, sizes, run} = await mountSized();
-                    act(() => toggle.focus());
-                    expect(section).toHaveAttribute('data-pinned');
-                    panel.scrollTop = 900;
-                    tops.section = -700;
-                    sizes.body = 150;
-                    run();
-                    expect(section).not.toHaveAttribute('data-pinned');
-                    expect(panel.scrollTop).toBe(900);
-                } finally {
-                    delete (global as any).ResizeObserver;
-                }
-            });
-
-            test('a block brought back is a move of this block: a reader who was at the end returns there when it closes', async () => {
-                try {
-                    // The jump pill showed at mount and has gone since; only opening through the focused row notes that.
-                    const {section, panel, toggle, sizes, showPill} = await mountSized(true);
-                    showPill(false);
-                    sizes.body = 61 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX;
-                    panel.scrollTop = 900;
-                    act(() => toggle.focus());
-                    expect(section).toHaveAttribute('data-pinned');
-                    sizes.section = 176;
-                    tops.section = -700;
-                    fireEvent.click(toggle);
-                    expect(panel.scrollTop).toBe(100);
-                    tops.section = 100;
-                    await settle();
-                    sizes.section = 61;
-                    fireEvent.click(toggle);
-                    await frame();
-                    expect(panel.scrollTop).toBe(2000);
-                } finally {
-                    delete (global as any).ResizeObserver;
-                }
-            });
-
-            test('a row brought on screen is not a move for good: a reader who scrolls away afterwards is left there', async () => {
-                const {panel, showPill, section} = await mount('panel');
-                panel.scrollTop = 700;
-                await openEditor('sidebar');
-                await settle();
-                fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
-                await waitFor(() => expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveFocus());
-                tops.section = -50;
-                await frame();
-                expect(panel.scrollTop).toBe(550);
-                tops.section = 100;
-                await settle();
-                // The reader scrolls away (the chat shows its pill) and opens the list: nothing sends them to the end.
-                showPill(true);
-                fireEvent.click(screen.getByTestId('priorities-summary-toggle'));
-                section.setAttribute('data-pinned', '');
-                await settle();
-                expect(panel.scrollTop).toBe(550);
-            });
-
-            test('the block stops observing and listening when it goes', async () => {
-                try {
-                    const {section, unmount, observers} = await mountSized();
-                    const removed = jest.spyOn(section, 'removeEventListener');
-                    const disconnected = jest.spyOn(MutationObserver.prototype, 'disconnect');
-                    unmount();
-                    expect(observers.every((o) => o.disconnected)).toBe(true);
-                    expect(disconnected).toHaveBeenCalled();
-                    expect(removed).toHaveBeenCalledWith('focusin', expect.any(Function));
-                    expect(removed).toHaveBeenCalledWith('focusout', expect.any(Function));
-                } finally {
-                    delete (global as any).ResizeObserver;
-                }
+            test('nothing under static/js/priorities names a hook of the chat\'s DOM', () => {
+                // The block used to read the chat's markup to decide when to pin; a renamed hook failed nothing loudly.
+                const fs = jest.requireActual('fs') as typeof import('fs');
+                const path = jest.requireActual('path') as typeof import('path');
+                const sources = fs.readdirSync(__dirname).filter((name) => /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name));
+                expect(sources).toContain('PrioritiesSection.tsx');
+                const hooks = ['job-search-chat', 'card-header', 'chat-footer', 'chat-jump-row', 'jump-to-latest', 'role="log"',
+                    "role='log'", 'data-scroll-owner', 'data-pinned', '--priorities-open-h', 'assistant-panel-body'];
+                const found = sources.flatMap((name) => {
+                    const text = fs.readFileSync(path.join(__dirname, name), 'utf8');
+                    return hooks.filter((hook) => text.includes(hook)).map((hook) => `${name}: ${hook}`);
+                });
+                expect(found).toEqual([]);
             });
         });
 
