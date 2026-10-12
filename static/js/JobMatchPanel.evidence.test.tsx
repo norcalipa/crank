@@ -873,11 +873,13 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
             const staleJob = () => ({...settledJob(), revision: {stale: true, generated_at: '2026-09-22T08:00:00Z'}});
             const reads = (calls: {url: string; method: string}[]) => calls.filter((call) => call.method === 'GET');
             const idle = () => waitFor(() => expect(document.querySelector('[aria-busy]')).toBeNull());
+            /** What the server answers; a null `ranked` is a failed read. */
+            type Served = {status: unknown; ranked: unknown | null; matches: unknown};
 
             /** The evidence notice shows; "Refresh matches" is pressed and its POST held;
              * then a priorities change reads the `next` view while the POST is still out. */
-            async function recheckOutThenRead(next: {status: unknown; ranked: unknown; matches: unknown}) {
-                let current: {status: unknown; ranked: unknown; matches: unknown} = {
+            async function recheckOutThenRead(next: Served) {
+                let current: Served = {
                     status: {state: 'ok', title: 'Matches', message: '', actions: []},
                     ranked: {job_matches: [changedJob()], organization_matches: []},
                     matches: {count: 1, next: null, previous: null, results: []},
@@ -888,7 +890,9 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
                     calls.push({url, method: init.method || 'GET'});
                     if (url.includes('/api/job-matches/refresh/')) return held.gate.then(() => json({status: 'published'}));
                     if (url.includes('/api/job-matches/status/')) return Promise.resolve(json(current.status));
-                    if (url.includes('/api/job-matches/ranked/')) return Promise.resolve(json(current.ranked));
+                    if (url.includes('/api/job-matches/ranked/')) {
+                        return Promise.resolve(current.ranked === null ? new Response('', {status: 503}) : json(current.ranked));
+                    }
                     return Promise.resolve(json(current.matches));
                 }) as unknown as typeof fetch;
                 render(<JobMatchPanel/>);
@@ -899,7 +903,7 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
                 act(() => setPrioritiesRevision(5));
                 await waitFor(() => expect(screen.queryByTestId('evidence-changed-notice')).toBeNull());
                 await idle();
-                return {calls, held};
+                return {calls, held, serve: (served: Served) => { current = served; }};
             }
 
             /** A press on each control sends nothing while the POST is out. */
@@ -940,12 +944,25 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
             });
 
             test('after a priorities read brings an empty state, its Refresh and the header refresh stay disabled until the answer', async () => {
-                const {calls, held} = await recheckOutThenRead({
+                const {calls, held, serve} = await recheckOutThenRead({
                     status: {state: 'crawl_running', title: 'Jobs are being gathered', message: 'A crawl is in progress.', actions: ['retry']},
                     ranked: {job_matches: [], organization_matches: []},
                     matches: {count: 0, next: null, previous: null, results: []},
                 });
                 pressAll(calls, ['job-match-refresh', 'action-retry']);
+                // A later priorities read fails: the notice's own "Try again" is disabled too.
+                serve({status: {state: 'crawl_running', title: 'Jobs are being gathered', message: 'A crawl is in progress.', actions: ['retry']},
+                    ranked: null, matches: {count: 0, next: null, previous: null, results: []}});
+                act(() => setPrioritiesRevision(6));
+                const tryAgain = await within(await screen.findByTestId('refresh-failed-notice')).findByRole('button', {name: 'Try again'});
+                await idle();
+                pressAll(calls, ['job-match-refresh', 'action-retry']);
+                const failedBefore = calls.length;
+                expect(tryAgain).toHaveAttribute('aria-disabled', 'true');
+                fireEvent.click(tryAgain);
+                expect(calls.length).toBe(failedBefore);
+                serve({status: {state: 'crawl_running', title: 'Jobs are being gathered', message: 'A crawl is in progress.', actions: ['retry']},
+                    ranked: {job_matches: [], organization_matches: []}, matches: {count: 0, next: null, previous: null, results: []}});
                 await enabledAgain(calls, held, 'action-retry');
                 expect(screen.getByTestId('action-retry')).not.toHaveAttribute('aria-disabled');
             });
