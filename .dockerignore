@@ -1,0 +1,8 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+#
+# An env file must never reach the image: manage.py and the settings call
+# load_dotenv(), which would let it set any variable the ConfigMaps do not
+# (issue #538). crank/tests/test_client_address.py asserts these two rules.
+.env
+**/.env

@@ -3,7 +3,7 @@
 
 # Threat model: agentic job-search features
 
-Review date: 2026-09-14 (updated by #487; previous review 2026-08-12)
+Review date: 2026-10-10 (updated by #538; previous reviews 2026-09-14 for #487, 2026-08-12)
 Scope: authenticated chat, preferences, score/source ingestion, listing
 resolution, deterministic matching, owner-scoped match presentation, and the
 assistant-surface boundaries added by epic UX (typed page context, allowlisted
@@ -54,6 +54,7 @@ are stated per boundary below and owners are named.
 | Listing/match records -> presentation | Cross-user match access, guessed IDs, inactive/dismissed listing exposure, stored markup | `user=request.user` filters, active-listing filters, dismissed filtering, bounded JSON projection, text-only rendering | `crank/tests/views/test_job_matches.py`, `test_match_persist.py`, phase-4 owner tests | Staff/admin access is intentionally separate; owner: matching/API maintainers |
 | User records -> export/reset/delete/retention | Exporting another tenant, stale data after deletion, excessive history, preference audit leakage | Owner-scoped preference/conversation operations, cascade delete, contents-free audits, configured message export cap, reset archives chat, inactive/dismissed matches excluded | `crank/tests/services/test_preferences.py`, `crank/tests/views/test_job_search.py`, `test_job_matches.py`, phase-4 retention tests | Preference/match retention is policy-driven rather than a background purge in this phase; owner: privacy/product maintainers |
 | Runtime -> logs/events | Prompt/message/source secrets or sensitive content in logs/New Relic | Correlation/status/counters only, sanitized bounded error summaries, no prompt/message logging, auth never in transport errors | `crank/tests/test_agent_runs.py`, `test_llm.py`, transport redaction tests, phase-4 negative log/event assertions | Downstream infrastructure must preserve field filtering; owner: platform/observability maintainers |
+| HTTP client -> company correction submissions | Throwaway accounts multiplying the hourly limits, probing with rejected attempts, a burst overshooting a cap, a forged client-address header, one shared bucket locking every user out | Django authentication/CSRF, bounded JSON body, per-account caps reserved before the work, optional per-address caps from a production-only trusted client address (off by default), keyed digest instead of the address in cache keys | `crank/tests/views/test_company_corrections.py`, `crank/tests/test_client_address.py` | Per-address caps are meant to stay off until the operator gate passes (only the procedure ties the switch to the gate), and rest on network state the app cannot see (see "Abuse limits and client address"); owner: web/API maintainers and the operator |
 
 ## Assistant-surface boundaries (epic UX, #487)
 
@@ -424,6 +425,165 @@ python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlC
 - **Residual risk:** these variants require operator-provisioned MySQL and
   are not run in CI; lock behavior under real load is asserted only by these
   opt-in runs; owner: platform maintainers.
+
+## Abuse limits and client address (#538)
+
+Sign-up is open, so a limit that is only per account can be multiplied by
+creating accounts. Company corrections therefore have two layers.
+
+- **Per account (always on):** 10 stored corrections and 60 rejected attempts
+  an hour. Every allowance is reserved before the work and released
+  afterwards, so a burst cannot grant more than the limit. The stored hour
+  starts at the first request and the rejected hour at the first rejected
+  attempt, both as before #538.
+- **Per client address (off by default):** 20 stored and 120 rejected an hour
+  per IPv4 address or IPv6 /64, across all accounts. The per-account caps are
+  checked first; this layer can only add refusals. A refusal says which layer
+  refused (`limit_scope`: `account` or `network`).
+- **Where the address comes from:** only `crank/client_address.py` derives it,
+  only when `ENV=prod` and `CLIENT_IP_SOURCE=cloudflare`, and only from
+  `CF-Connecting-IP`, which must hold exactly one IP literal.
+  `X-Forwarded-For`, `X-Real-IP`, `True-Client-IP`, `Forwarded` and
+  `REMOTE_ADDR` are never read as a client address: the first four are
+  client-controlled and the last is a node address for every request.
+- **Unidentified requests** (header missing, duplicated or malformed, or an
+  address no visitor can have: unspecified, loopback, private, shared
+  `100.64.0.0/10`, link-local, multicast, reserved, and `::/8`) get the
+  per-account caps only. They are not refused and not pooled: a shared
+  "unknown" bucket, or one bucket for every request that arrived with a
+  loopback or private address, would let a few accounts lock every user out.
+  Refusing special-purpose addresses does not stop a forger, who would send a
+  public address; it keeps a misrouted or misconfigured path visible (warning
+  reason `special`, `on, not identified` on the staff page).
+- **Requests in flight (shared-address risk):** a request holds its place
+  against each cap until it finishes, so each cap also bounds concurrent
+  requests: 10 per account as before, and now 20 per address. More than 20
+  simultaneous submissions from one address (a large office or carrier NAT)
+  can therefore be refused with `limit_scope: network` although fewer than 20
+  end up stored, and that `429` carries the rest of the stored hour as
+  `Retry-After`, because the stored counter cannot tell a held place from a
+  spent one. Against the rejected-attempt caps the two are counted apart and
+  such a refusal carries `Retry-After: 1`. Unlikely at this site's volume;
+  the remedy if it is seen is to raise `COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR`.
+- **A hold nobody releases:** the in-flight count for the rejected caps is
+  kept per minute of arrival and each minute's key expires on its own, two
+  minutes after it is created; no later request renews it. A cache error or
+  a stopped worker mid-request therefore lowers a rejected cap by one for at
+  most two minutes, with the switch off as well as on. The price is that a
+  request running for more than a minute can drop out of the count early.
+  A request counts the holds in its own minute and in the minutes on either
+  side, so two requests that start either side of a minute boundary still see
+  each other. If releasing a hold fails after a correction was stored, the
+  response stays the `201` it is on `main`; the failure is logged once as a
+  warning with no address or user content, and the hold stops counting within
+  two minutes. After a rejected attempt the same failure is still an error.
+- **At rest:** the limiter's cache keys carry a keyed digest of the address
+  for up to one hour. No address is written to the database, logs or
+  telemetry. The staff diagnostics page shows the viewing staff member their
+  own resolved address and does not store it.
+- **Job search:** its per-account message limit no longer includes
+  `REMOTE_ADDR` in the key, and deliberately does not include the client
+  address: a per-(account, address) key would let one account multiply its
+  budget by changing address.
+
+**Dependency on the operator gate.** Anyone who can open a connection to the
+pod can send `CF-Connecting-IP`, and the app cannot tell a tunnel request from
+a direct one. The header is trustworthy only while Cloudflare is the only way
+in. `docs/runbook-client-address.md` is the gate that confirms this. A test
+(`crank/tests/test_client_address.py`) fails when the switch is set in the
+ConfigMap `crank-config` without a passing record in
+`docs/client-address-verification.yaml`. It also walks every tracked file and
+fails when the switch is set in another ConfigMap, a container `env:` entry or
+a Secret in any YAML or JSON manifest in the repository (including inside a
+`kind: List`), when any other file than the code, tests and documents that read
+it names it (so a workflow, a composite action, a script, a Dockerfile or
+`docker-compose.yml`), when a `.env` file is tracked, or when `.dockerignore`
+stops keeping `.env` out of the image, since the app calls `load_dotenv()`.
+
+That is a test, not a merge control. It fails only when it runs, and nothing
+makes it run or makes a failure stop a merge: "Tests With Coverage"
+(`.github/workflows/tests-with-coverage.yml`) is the only workflow that runs
+pytest on a push and it skips a push that changes only files under `k8s/` or
+`.github/`, so a ConfigMap-only change starts no test; `main` requires one
+approving review and no status check; and the deploy workflow ("Update
+Deployment (prod)") runs on a push to `main` that changes
+`k8s/crank-configmap.yml` without waiting for any test. The honest two-file
+enabling change (ConfigMap and record) starts the run when both files are in
+the same push, because GitHub compares only that push's files with the
+ignore list; a ConfigMap line pushed alone starts none. The runbook has
+the operator confirm that `Tests With Coverage` ran on the last commit and
+passed before merging. Closing these two gaps is an owner decision tracked in
+issue #566, section 5.
+
+The gate covers what is written out in tracked text files and nothing else.
+It does not see: whether the test ran at all, or whether a failing run stops
+the merge or the deploy (the two limits above, open, #566 section 5); anything applied to the cluster by hand; the contents of
+Secrets the operator creates; the contents of secrets-named files and of
+`.env-prod`, which it never opens; a secrets file copied to another name and
+applied under it; a name assembled at run time (by the shell, `envsubst`, a
+YAML escape inside a command, or a Dockerfile `ENV` named by a build
+argument); a command written inside a test or document that may name the
+switch; files that are not UTF-8 text or not tracked; and environment set
+outside the repository at run time. It is also known to pass a second,
+non-ConfigMap document in `k8s/crank-configmap.yml` and a secrets-named file
+given to `kubectl create -f` or `kubectl replace -f`; those are tracked in
+issue #566. The runbook lists all of these under "What CI cannot see". Its V1
+step reads the environment of a running pod, which does not show a value that
+`load_dotenv()` reads from a `.env` file in the container; the staff page's
+"Client address source" row (V2) shows the value the serving process has and
+is the check for that route. `.env-prod` is inside the image and read by the
+build job, but nothing loads it at run time, which a test pins. The record is
+an attestation, not proof.
+
+**Tests:** `crank/tests/test_client_address.py` (parsing, the single header,
+production-only, the warning, the underscore-header twin through Django's WSGI
+request handler, the switch gate), `crank/tests/views/test_company_corrections.py`
+(two clients behind one peer, accounting for every outcome, the rejected hour
+compared with `main`, requests in flight, concurrency against real Redis), `crank/tests/test_checks.py` (`crank.W003`, `crank.W004`).
+
+**Residual risks; owner: web/API maintainers and the operator.**
+
+1. **More addresses still mean more budget.** VPNs, proxy pools, anonymity
+   networks, mobile networks that rotate addresses, cloud hosts, and IPv6
+   delegations larger than a /64 (a /56 is 256 buckets) each bring a fresh
+   per-address allowance. The cost of multiplying the limit rises from "create
+   an account" to "obtain another address". It is not a hard stop.
+2. **Sign-up is still open, and allauth's per-address limits are not yet
+   effective.** They key on the leftmost `X-Forwarded-For`, which a client
+   behind Cloudflare controls. Throwaway accounts still multiply every other
+   per-account limit: job-search messages, company suggestions and match
+   refreshes.
+3. **There is no global ceiling and no alert.** One account can queue 240
+   corrections a day and one address 480. Nothing notifies staff. A hard
+   global cap would recreate a site-wide lockout; an alert would not.
+4. **Shared addresses share a budget, and one sender can lock the others
+   out.** People behind one carrier NAT, office, campus or VPN exit share the
+   per-address caps. Two accounts are enough: each is refused after 60
+   rejected attempts, and together they fill the address's 120. Once the
+   address is full, valid submissions from uninvolved accounts at that
+   address are refused too, until the hour's window passes. The 120 requests
+   cost the sender nothing (no stored row, no staff review), and the sender
+   can repeat it every hour for as long as they continue. The reach is
+   limited: the sender must share the address with the people affected, and
+   only the correction form is affected. Whether an address's rejected count
+   should refuse an account with no rejected attempt of its own is a
+   behaviour decision for the owner before enablement, recorded in issue
+   #566, section 6; this document does not change it.
+5. **The trust rests on network state the app cannot see.** If a path to the
+   pod other than the tunnel appears later, anyone on it can forge the header:
+   they avoid the per-address layer and can lock a chosen address out of
+   corrections by filling its 120 rejected attempts, and can repeat it every
+   hour for as long as they continue. The runbook lists when to repeat the gate;
+   nothing detects it automatically.
+6. **Processes on the node and pods in the cluster can always reach the app
+   directly**, and so can LAN and tailnet devices if that part of the gate is
+   waived.
+7. **A compromised Cloudflare account, or a Worker on the `crank.fyi` zone,
+   can set any client address.** Out of scope. Workers in other Cloudflare
+   accounts all arrive as one fixed Cloudflare address, so they share a single
+   bucket.
+8. Staff still review every stored correction, and the content checks on
+   corrections are unchanged.
 
 ## Retention and deletion policy covered by this phase
 

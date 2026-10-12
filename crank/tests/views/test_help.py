@@ -87,6 +87,19 @@ class PrivacyPageTests(TestCase):
         self.assertContains(response, "Data We Store")
         self.assertContains(response, "Export Your Data")
 
+    def test_privacy_page_describes_the_network_address_code(self):
+        """Issue #538: the correction limiter keeps a code derived from the
+        network address for up to an hour, and the notice says so."""
+        response = self.client.get(reverse("privacy"))
+        self.assertContains(
+            response,
+            "A code derived from your network address when you submit a fact correction",
+        )
+        self.assertContains(response, "Limiting abuse of the correction form")
+        self.assertContains(
+            response, "Up to one hour; it is not saved with your account or your suggestion"
+        )
+
     def test_privacy_page_lists_export_reset_delete(self):
         response = self.client.get(reverse("privacy"))
         self.assertContains(response, "export")
