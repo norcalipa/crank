@@ -142,9 +142,11 @@ def _safe_job_search_provider() -> str:
 def config_modes() -> dict:
     """Return non-secret feature modes. Secrets are reduced to booleans or omitted."""
     from crank.capability import capability_report
+    from crank.client_address import effective_source
 
     report = capability_report()
     return {
+        "client_ip_source": effective_source() or "none",
         "job_search_provider": _safe_job_search_provider(),
         "llm_configured": bool(getattr(settings, "LLM_PROVIDER", "")),
         "llm_model": _safe_token(getattr(settings, "LLM_MODEL", "")),

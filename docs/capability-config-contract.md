@@ -105,6 +105,13 @@ function in `crank/release.py` report:
 - `capability_config_version`: string
 - `capability_all_ok`: bool
 - `capability_issues`: list of non-secret issue strings
+- `client_ip_source`: `cloudflare` or `none` — the trusted client address
+  source in force. The page also shows the address bucket resolved for the
+  viewing request (never stored), `off (no address is read)` while the source
+  is `none`, or `on, not identified` when the source is on and the request
+  carried no usable address. See
+  [the client address runbook](./runbook-client-address.md) before setting
+  `CLIENT_IP_SOURCE`.
 
 ## Rollback and Kill-Switch
 

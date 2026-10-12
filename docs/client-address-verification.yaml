@@ -1,0 +1,32 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+#
+# Operator verification records for the trusted client address (issue #538).
+# How to fill one in: docs/runbook-client-address.md ("Record, then enable").
+#
+# Rule: a record holds dates and pass/fail values only. Never write an
+# address, a hostname, a tunnel id or any other detail of the network here.
+#
+# crank/tests/test_client_address.py fails if CLIENT_IP_SOURCE: "cloudflare" is
+# set in k8s/crank-configmap.yml and the LAST record below does not pass. That
+# happens only when the test runs: "Tests With Coverage" skips a push that
+# changes only files under k8s/ or .github/, `main` requires no status check,
+# and the deploy workflow does not wait for it (issue #566, section 5). Before
+# merging the enabling pull request, confirm that run happened and passed. A
+# record is the operator's attestation; the test cannot check that it is true.
+#
+# The same test fails for the switch in any other tracked file: another
+# manifest, a workflow, a script, an image file, a tracked .env. It cannot see
+# what is applied to the cluster by hand, the contents of Secrets the operator
+# creates or of secrets files (it never opens them), a name assembled at run
+# time, or environment set outside the repository. The runbook's "What CI
+# cannot see" is the whole list; its V1 step checks the running pod.
+#
+# Fields of one record:
+#   date: "YYYY-MM-DD"            the day the checks were run; not in the future
+#   verified_by: "<name>"         a name or handle
+#   g1_public_path: pass | fail
+#   g2_private_path: pass | waived | fail
+#   g2_method: nodeport-addresses | clusterip | firewall | waived
+#   edge_header_checks: pass | fail
+verifications: []

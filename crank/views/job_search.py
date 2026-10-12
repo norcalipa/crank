@@ -267,16 +267,14 @@ def _body(request, request_id):
 
 
 def _check_rate_limit(request):
-    """Return True when the user/IP has exceeded the per-hour message budget.
+    """Return True when the user has exceeded the per-hour message budget.
 
     Uses ``cache.add`` + ``cache.incr`` for atomic counting to avoid the
     TOCTOU race inherent in ``cache.get`` → check → ``cache.set``.
     """
     if not request.user.is_authenticated:
         return False
-    bucket_key = "job_search_rl:{}:{}:{}".format(
-        request.user.pk, request.META.get("REMOTE_ADDR", "?"), _hour_key()
-    )
+    bucket_key = "job_search_rl:{}:{}".format(request.user.pk, _hour_key())
     limit = getattr(settings, "JOB_SEARCH_RATE_LIMIT_PER_HOUR", 120)
     # Initialise the key atomically if it doesn't exist yet.
     cache.add(bucket_key, 0, timeout=3600)
