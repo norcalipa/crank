@@ -714,8 +714,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         // screen, so it is dropped with the marker; the rest of the state stays.
         const {[POSITION_STATE_KEY]: _position, [VIEW_ENTRY_KEY]: _marker, ...kept} = window.history.state ?? {};
         window.history.replaceState(
-            window.history.state ? kept : null, '',
-            `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+            kept, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
         this.showResults(false);
     };
 
@@ -738,8 +737,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 }
                 // The row the view was opened from; after a switch to a
                 // company that is gone it is still the one to come back to.
-                const row = (openedRowId === null ? null : this.findOrganizationAnchor(String(openedRowId)))
-                    ?? (id === undefined ? null : this.findOrganizationAnchor(String(id)));
+                // (`String(null)` is not an id, so a missing one finds no row.)
+                const row = this.findOrganizationAnchor(String(openedRowId))
+                    ?? this.findOrganizationAnchor(String(id));
                 if (row) {
                     this.bringRowIntoView(row, throughHistory);
                 } else if (!throughHistory) {

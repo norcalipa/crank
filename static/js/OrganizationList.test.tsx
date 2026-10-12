@@ -1508,6 +1508,17 @@ describe('OrganizationList', () => {
                 expect(window.history.state).toEqual({elsewhere: 'stays'});
             });
 
+            test('leaving a direct link that has no history state at all leaves an empty state, not an error', async () => {
+                window.history.replaceState(null, '', '/?company=1');
+                render(<OrganizationList organizations={organizations} />);
+                await screen.findByTestId('company-view');
+
+                await backToResults();
+
+                expect(window.history.state).toEqual({});
+                expect(window.location.search).toBe('');
+            });
+
             test('with a view open the scroll tracker has no anchor, so the position it saves names none', async () => {
                 window.history.replaceState({}, '', '/?company=1');
                 layOutLikeABrowser();
