@@ -3432,6 +3432,29 @@ body.assistant-open .app-content .table-responsive,
     display: none;
 }
 
+/* A list of chips (never one text run) carries the arrow on its first chip, which
+   leaves room for it, so the arrow wraps with that chip. */
+#job-search-chat .chat-transcript-notice .pref-change-new:has(> .pref-change-token)::before {
+    display: none;
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-new > .pref-change-token:first-child {
+    position: relative;
+    margin-left: 1.25rem;
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-new > .pref-change-token:first-child::before {
+    content: "\f061";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    font-size: .75rem;
+    color: #7d948a;
+    position: absolute;
+    left: -1rem;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
 #job-search-chat .chat-transcript-notice .pref-change-new::before {
     content: "\f061";
     font-family: "Font Awesome 6 Free";

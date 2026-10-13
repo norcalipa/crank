@@ -661,6 +661,9 @@ describe('notices in the transcript and collapsing footer notices (issue #483)',
         expect(declared('#job-search-chat .chat-transcript-notice .alert.chat-pref-alert')).toMatch(/min-height:\s*44px;/);
         expect(declared('#job-search-chat .chat-transcript-notice .pref-change-arrow')).toMatch(/display:\s*none;/);
         expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new::before')).toMatch(/content:/);
+        // A list of chips carries the arrow on its first chip, so the arrow wraps with it.
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new > .pref-change-token:first-child::before')).toMatch(/position:\s*absolute;/);
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new:has(> .pref-change-token)::before')).toMatch(/display:\s*none;/);
     });
 
     it('keeps the toggle a 44px target, the last row of the area, right-aligned while the error is expanded', () => {
