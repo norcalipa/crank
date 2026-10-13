@@ -3380,7 +3380,9 @@ body.assistant-open .app-content .table-responsive,
    diff rows stack (name above values) whatever the width, so a value is never
    squeezed into a sliver beside the name. */
 #job-search-chat .chat-transcript-notice {
-    margin: .25rem 0 .5rem;
+    /* The notice sits with the reply that produced it (8px, from the reply's own
+       margin) and clears the next message by more (1rem). */
+    margin: 0 0 1rem;
 }
 
 #job-search-chat .chat-transcript-notice .alert {
@@ -3392,6 +3394,26 @@ body.assistant-open .app-content .table-responsive,
 #job-search-chat .chat-transcript-notice .alert.chat-pref-alert {
     min-height: 44px;
     padding: 0 0 0 .75rem;
+}
+
+/* Docked, the log has a 16px gap between turns: the notice takes it back above
+   (the reply's own 8px stays) and keeps it below. */
+@media (min-width: 1280px) {
+    body.assistant-docked #job-search-chat [role='log'] > .chat-transcript-notice {
+        margin: -1rem 0 0;
+    }
+}
+
+/* On the narrowest sheets the text column takes the room an even, smaller
+   padding gives it; the border stays. */
+@media (max-width: 340px) {
+    #job-search-chat .chat-transcript-notice .alert {
+        padding: .75rem .5rem;
+    }
+
+    #job-search-chat .chat-transcript-notice .pref-change-header {
+        column-gap: 4px;
+    }
 }
 
 #job-search-chat .chat-transcript-notice .pref-change-item {

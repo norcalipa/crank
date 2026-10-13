@@ -824,7 +824,7 @@ test.describe('footer notices collapse to one line (issue #483)', () => {
         expect(problems).toEqual([]);
     });
 
-    test('after a failed send at 320x640 the transcript is at least 230px tall, and the one-line notice keeps Retry', async ({page}) => {
+    test('after a failed send at 320x640 the transcript is at least 230px tall (less the disclaimer\'s extra lines), and the compact row keeps Retry', async ({page}) => {
         test.setTimeout(180_000);
         await page.setViewportSize({width: 320, height: 640});
         await page.goto('/');
@@ -837,13 +837,28 @@ test.describe('footer notices collapse to one line (issue #483)', () => {
         await page.getByRole('button', {name: 'Send message'}).click();
         await expect(page.getByTestId('retry-button')).toBeVisible();
         const failed = await settledLayout(page);
-        expect(await noticesHeight(page), 'the notice is one line').toBeLessThanOrEqual(56);
-        // 230px is the gate where the composer's disclaimer takes one line; with the wider fallback font (the CI image)
-        // it takes two, which is the same case as the 0.47 share gate above, and the notice may take no more than its line.
-        const disclaimerLines = await page.locator('#job-search-chat .chat-disclaimer').evaluate((el) => (
-            Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))));
-        const floor = disclaimerLines > 1 ? quiet.transcript - 56 : 230;
+        const area = await noticesHeight(page);
+        expect(area, 'the notice area is one compact row').toBeLessThanOrEqual(56);
+        // 230px is the gate where the composer's disclaimer takes one line. Where the font makes it take more (the CI
+        // image's fallback font), the composer is that much taller and the gate falls by the same amount; it is not
+        // relaxed by the notice's room. The same font case has the 0.47 share gate above.
+        const bars = await page.evaluate(() => {
+            const height = (selector: string) => document.querySelector(selector)?.getBoundingClientRect().height ?? null;
+            const disclaimer = document.querySelector('#job-search-chat .chat-disclaimer') as HTMLElement;
+            const line = parseFloat(getComputedStyle(disclaimer).lineHeight);
+            return {
+                disclaimerHeight: disclaimer.getBoundingClientRect().height, line,
+                chatHeader: height('#job-search-chat .card-header'), priorities: height('.priorities-sidebar'), composer: height('#job-search-chat form'),
+            };
+        });
+        const disclaimerLines = Math.round(bars.disclaimerHeight / bars.line);
+        const extra = Math.max(0, bars.disclaimerHeight - bars.line);
+        const floor = 230 - extra;
+        // eslint-disable-next-line no-console
+        console.log(`483b-2 AC12 gate: transcript ${quiet.transcript} -> ${failed.transcript}px, notice area ${area}px, disclaimer ${disclaimerLines} line(s) `
+            + `${bars.disclaimerHeight}px (extra ${extra}px), floor ${floor}px, chat header ${bars.chatHeader}px, priorities ${bars.priorities}px, composer ${bars.composer}px`);
         expect(failed.transcript, `the transcript was ${quiet.transcript}px before the send`).toBeGreaterThanOrEqual(floor);
+        expect(quiet.transcript - failed.transcript, 'the failed send costs the transcript at most the notice row').toBeLessThanOrEqual(56);
         expect(scrollerProblems('failed send', failed)).toEqual([]);
     });
 });

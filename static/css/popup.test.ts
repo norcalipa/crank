@@ -641,6 +641,14 @@ describe('notices in the transcript and collapsing footer notices (issue #483)',
         expect(declared(`${folded} [data-testid='assistant-status-notice']`)).not.toMatch(/display:\s*none/);
     });
 
+    it('sits a notice closer to the reply that produced it than to the next message', () => {
+        expect(declared('#job-search-chat .chat-transcript-notice')).toMatch(/margin:\s*0 0 1rem;/);
+    });
+
+    it('takes the docked log\'s 16px turn gap back above a notice', () => {
+        expect(declared('body.assistant-docked #job-search-chat [role=\'log\'] > .chat-transcript-notice')).toMatch(/margin:\s*-1rem 0 0;/);
+    });
+
     it('scrolls a control reached with Tab clear of the jump pill', () => {
         expect(declared('#job-search-chat .chat-transcript')).toMatch(/scroll-padding-bottom:\s*4\.5rem;/);
     });
