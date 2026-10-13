@@ -53,8 +53,9 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
-from crank.models.preference import SCHEMA_VERSION, default_preferences
-from crank.services.company_evidence import resolve_field_evidence
+from crank.models.preference import SCHEMA_VERSION, UserPreference, default_preferences
+from crank.services.company_evidence import field_evidence_payload, resolve_field_evidence
+from crank.services.preferences import to_markdown
 from crank.settings.base import DEFAULT_ALGORITHM_ID
 
 #: Revision of this fixture set. Emitted by ``readiness_baseline`` as the
@@ -108,6 +109,25 @@ MATCH_PREFERENCES = {
 }
 
 
+#: The fixture's evidence fields, in the order the end-of-run reading lists them.
+FIXTURE_FIELDS = (
+    CompanyFieldEvidence.FieldKey.PUBLIC_STATUS,
+    CompanyFieldEvidence.FieldKey.FUNDING_ROUND,
+    CompanyFieldEvidence.FieldKey.RTO_POLICY,
+    CompanyFieldEvidence.FieldKey.ACCELERATED_VESTING,
+)
+
+
+def fixture_preferences() -> dict:
+    """The preference document the ordinary match is evaluated against."""
+    preferences = default_preferences()
+    preferences["compensation"].update(MATCH_PREFERENCES["compensation"])
+    preferences["work_location"].update(MATCH_PREFERENCES["work_location"])
+    preferences["vesting"].update(MATCH_PREFERENCES["vesting"])
+    preferences["funding_stage"] = list(MATCH_PREFERENCES["funding_stage"])
+    return preferences
+
+
 class Command(BaseCommand):
     help = (
         "Create the staging readiness-baseline fixture set (scores, company "
@@ -117,8 +137,13 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--password",
-            default=DEFAULT_ORDINARY_PASSWORD,
-            help="Throwaway password for the ordinary staging test account.",
+            default=None,
+            help=(
+                "Throwaway password for the ordinary staging test account. "
+                "Without this flag the account gets the documented default "
+                "when it is created, and an existing account keeps its "
+                "password."
+            ),
         )
         parser.add_argument(
             "--staff-password",
@@ -139,19 +164,29 @@ class Command(BaseCommand):
                 "seed_staging_baseline refuses to run with ENV=prod; "
                 "staging fixtures must never enter production."
             )
-        created = self._load(
+        notes: list[str] = []
+        created, readings = self._load(
             password=options["password"],
             staff_password=options["staff_password"],
+            notes=notes,
         )
+        for note in notes:
+            self.stdout.write(note)
         self.stdout.write(
             self.style.SUCCESS(
                 "Staging baseline fixtures ready: "
                 + ", ".join(f"{key}={value}" for key, value in created.items())
             )
         )
+        self.stdout.write(
+            "Fixture fields read now: "
+            + ", ".join(f"{key}={reading}" for key, reading in readings.items())
+        )
 
     @transaction.atomic
-    def _load(self, *, password: str, staff_password: str | None) -> dict:
+    def _load(
+        self, *, password: str | None, staff_password: str | None, notes: list[str]
+    ) -> tuple[dict, dict]:
         now = timezone.now()
         created: dict[str, int] = {}
 
@@ -293,22 +328,45 @@ class Command(BaseCommand):
             ),
         )
         for label, key, state, value, observation, observed_at, verified_at in evidence_rows:
-            _, created[label] = CompanyFieldEvidence.objects.get_or_create(
+            # The lookup has no ``state``: a fixture row that a review moved to
+            # another state is still the fixture row, and a field that already
+            # holds an accepted fact from another writer keeps that one fact.
+            # The review flow keeps one accepted row per field; nothing here
+            # may add a second or undo a decision.
+            field_rows = CompanyFieldEvidence.objects.filter(
+                organization=target_org, field_key=key
+            )
+            own = field_rows.filter(validation_version=EVIDENCE_VERSION).first()
+            if own is not None:
+                created[label] = False
+                if own.state != state:
+                    notes.append(
+                        f"Kept the existing {key} evidence row (now {own.state}); "
+                        "the fixture state was not restored."
+                    )
+                continue
+            if field_rows.filter(state=evidence_state.ACCEPTED).exists():
+                created[label] = False
+                notes.append(
+                    f"Kept the existing accepted {key} evidence row; "
+                    "no fixture row was added."
+                )
+                continue
+            CompanyFieldEvidence.objects.create(
                 organization=target_org,
                 field_key=key,
                 state=state,
                 validation_version=EVIDENCE_VERSION,
-                defaults={
-                    "value_text": value,
-                    "source_url": evidence_url,
-                    "source_domain": "jobs.example.test",
-                    "observation": observation,
-                    "observed_at": observed_at,
-                    "extractor_version": EVIDENCE_VERSION,
-                    "last_checked_at": observed_at,
-                    "last_verified_at": verified_at,
-                },
+                value_text=value,
+                source_url=evidence_url,
+                source_domain="jobs.example.test",
+                observation=observation,
+                observed_at=observed_at,
+                extractor_version=EVIDENCE_VERSION,
+                last_checked_at=observed_at,
+                last_verified_at=verified_at,
             )
+            created[label] = True
 
         # ── Approved+enabled fixture source with active/expired listings ──
         usajobs = next(
@@ -338,6 +396,9 @@ class Command(BaseCommand):
             canonical_url="https://www.usajobs.gov/Job/staging-baseline-active",
             defaults={
                 "external_id": "staging-active-1",
+                # Linked, so the real matcher considers the listing for the
+                # example company (a listing with no organization is excluded).
+                "organization": target_org,
                 "employer_name": TARGET_ORG_NAME,
                 "employer_domain": "jobs.example.test",
                 "title": "Staging Baseline Active Role",
@@ -352,6 +413,11 @@ class Command(BaseCommand):
                 "status": JobListing.Status.ACTIVE,
             },
         )
+        # Link an earlier fixture listing that has no organization; a listing
+        # that points at another organization is never relinked.
+        if active_listing.organization_id is None:
+            active_listing.organization = target_org
+            active_listing.save(update_fields=["organization", "modified"])
         _, created["listing_expired"] = JobListing.all_objects.get_or_create(
             source=fixture_source,
             canonical_url="https://www.usajobs.gov/Job/staging-baseline-expired",
@@ -374,39 +440,63 @@ class Command(BaseCommand):
             username=ORDINARY_USERNAME,
             defaults={"email": "staging_user@example.test", "first_name": "Staging"},
         )
-        ordinary.set_password(password)
+        # The password is set when the account is created or when the operator
+        # passes --password on this run; a rerun never signs the participant
+        # out or replaces a password the operator chose.
+        if created["user_ordinary"] or password is not None:
+            ordinary.set_password(password or DEFAULT_ORDINARY_PASSWORD)
         ordinary.is_staff = False
         ordinary.save()
         # The staff account is privileged (StaffOnlyAdminMixin grants broad
-        # admin access from is_staff alone), so it never gets a repo-known
-        # default password: it is created with an unusable password and only
-        # ever receives one through the explicit --staff-password flag.
-        # Re-running without the flag never resets an already-provisioned
-        # password.
+        # admin access from is_staff alone), so it never keeps a repo-known
+        # password: it is created with an unusable password and only ever
+        # receives one through the explicit --staff-password flag. A rerun
+        # without the flag leaves an unusable or operator-set password alone
+        # and replaces one the repository knows (empty or the ordinary
+        # default) with an unusable value.
         staff, created["user_staff"] = user_model.objects.get_or_create(
             username=STAFF_USERNAME,
             defaults={"email": "staging_staff@example.test", "first_name": "Staging"},
         )
         if staff_password is not None:
             staff.set_password(staff_password)
-        elif not staff.password or not staff.has_usable_password():
+        elif (
+            not staff.password
+            or staff.has_usable_password()
+            and staff.check_password(DEFAULT_ORDINARY_PASSWORD)
+        ):
             # Newly created accounts carry an empty password string, which
-            # Django still calls "usable"; make it explicitly unusable. An
-            # already-provisioned usable password is never reset.
+            # Django still calls "usable"; make it explicitly unusable.
             staff.set_unusable_password()
         staff.is_staff = True
         staff.save()
+
+        # ── Saved priorities for the ordinary account ──
+        # Without a saved preference document the product serves no match to
+        # this account and a refresh publishes none. Created only when the
+        # account has none: a participant's or moderator's saved priorities
+        # are never overwritten.
+        preferences = fixture_preferences()
+        preference, created["preference_ordinary"] = UserPreference.objects.get_or_create(
+            user=ordinary,
+            defaults={
+                "preferences": preferences,
+                "preferences_markdown": to_markdown(preferences),
+                "schema_version": SCHEMA_VERSION,
+            },
+        )
+        if preference.preferences != preferences:
+            notes.append(
+                f"Kept the saved priorities of {ORDINARY_USERNAME}; they differ "
+                "from the fixture's, so the stored match no longer matches what a "
+                "refresh would publish."
+            )
 
         # ── Ordinary + unknown-requirement match cases ──
         # The ordinary match stores the requirements the real evaluator
         # reports for this listing and company, so it carries a requirement
         # confirmed by the fresh evidence row, one resting on stale evidence,
         # and the unknown / profile-backed cases.
-        preferences = default_preferences()
-        preferences["compensation"].update(MATCH_PREFERENCES["compensation"])
-        preferences["work_location"].update(MATCH_PREFERENCES["work_location"])
-        preferences["vesting"].update(MATCH_PREFERENCES["vesting"])
-        preferences["funding_stage"] = list(MATCH_PREFERENCES["funding_stage"])
         evidence = resolve_field_evidence(target_org)
         outcomes = evaluate_requirements(
             active_listing,
@@ -451,7 +541,14 @@ class Command(BaseCommand):
         ):
             match_ordinary.requirements = requirements
             match_ordinary.evidence_ids = evidence_ids
-            match_ordinary.save(update_fields=["requirements", "evidence_ids"])
+            match_ordinary.save(
+                update_fields=["requirements", "evidence_ids", "modified"]
+            )
+            notes.append(
+                "Rewrote the stored requirements of the ordinary match "
+                f"({ORDINARY_USERNAME}, preference_version 1) to what the evidence "
+                "reads now."
+            )
         _, created["match_unknown_requirement"] = JobMatch.objects.get_or_create(
             user=ordinary,
             listing=active_listing,
@@ -474,4 +571,23 @@ class Command(BaseCommand):
                 "last_matched_at": now,
             },
         )
-        return created
+
+        readings = self._readings(target_org)
+        return created, readings
+
+    @staticmethod
+    def _readings(organization) -> dict[str, str]:
+        """What each fixture field reads at this moment, by the product's rules."""
+        payload = field_evidence_payload(organization)
+        fields = {row["field_key"]: row for row in payload["fields"]}
+        readings = {}
+        for key in FIXTURE_FIELDS:
+            row = fields.get(key)
+            if row is not None:
+                reading = row["status"]
+            elif payload["review_by_field"].get(key) == "conflicted":
+                reading = "conflicted"
+            else:
+                reading = "unknown"
+            readings[key] = reading
+        return readings
