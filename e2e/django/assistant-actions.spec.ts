@@ -244,6 +244,46 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.getByTestId('company-view')).toBeVisible();
     });
 
+    test('an assistant company card has "View company": it opens the view on the rankings and navigates from the chat page', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        const alphaId = await page.locator('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')
+            .locator('visible=true').first().getAttribute('data-organization-id');
+        expect(alphaId).not.toBeNull();
+        // The reply is the real one; only its stored results gain a company card.
+        await page.route('**/api/agent/conversations/*/', async (route) => {
+            if (route.request().method() !== 'POST') {
+                await route.continue();
+                return;
+            }
+            const response = await route.fetch();
+            const body = await response.json();
+            body.message.results = {jobs: [], organizations: [{
+                id: Number(alphaId), name: 'E2E Alpha Corp', url: 'https://e2e.example.test/', funding_round: 'P', rto_policy: 'H',
+            }]};
+            await route.fulfill({response, json: body});
+        });
+        await openAssistant(page);
+        await ask(page, 'Which companies fit?');
+        const card = page.getByRole('article', {name: 'Organization: E2E Alpha Corp'});
+        await expect(card).toBeVisible();
+        await expect(card.getByRole('link', {name: /Website of E2E Alpha Corp/})).toHaveAttribute('href', 'https://e2e.example.test/');
+        await card.getByTestId(`view-company-${alphaId}`).click();
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        await expect(page.locator('#organization-details-title')).toHaveText('E2E Alpha Corp');
+        await expect.poll(() => new URL(page.url()).searchParams.get('company')).toBe(alphaId);
+        expect(new URL(page.url()).pathname).toBe('/');
+
+        // Where no list is mounted the same link navigates to the rankings page.
+        await page.goto('/chat/');
+        await ask(page, 'Which companies fit?');
+        const chatCard = page.getByRole('article', {name: 'Organization: E2E Alpha Corp'});
+        await expect(chatCard).toBeVisible();
+        await chatCard.getByTestId(`view-company-${alphaId}`).click();
+        await page.waitForURL((url) => url.pathname === '/' && url.searchParams.get('company') === alphaId);
+        await expect(page.getByTestId('company-view')).toBeVisible();
+    });
+
     test('signing in as another account leaves no actions behind', async ({page}) => {
         await login(page);
         await openAssistant(page);

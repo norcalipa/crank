@@ -456,6 +456,46 @@ describe('company view visual review round 3 (issue #486)', () => {
     });
 });
 
+describe('company view fit and open jobs (issue #486c)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
+    const rule = (selector: string): string => {
+        const start = section.indexOf(`${selector} {`);
+        expect(start).toBeGreaterThanOrEqual(0);
+        return section.slice(start, section.indexOf('}', start));
+    };
+
+    test('the new rules live inside the #486 section and use no raw z-index', () => {
+        expect(section).toContain('.company-fit-figures');
+        expect(section).toContain('.company-job-row');
+        expect(section.slice(section.indexOf('Fit and open jobs'))).not.toMatch(/z-index/);
+    });
+
+    test('the three figures stack as label / value rows when the view is narrow', () => {
+        expect(rule('.company-fit-figures')).toContain('repeat(3, minmax(0, 1fr))');
+        const narrow = section.slice(section.indexOf('@container company-view (max-width: 28rem) {\n    .company-fit-figures'));
+        expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)');
+    });
+
+    test('rows wrap and long text breaks, so nothing overflows sideways', () => {
+        expect(rule('.company-fit-row,\n.company-job-row')).toContain('flex-wrap: wrap');
+        for (const selector of ['.company-fit-label', '.company-fit-value', '.company-job-meta']) {
+            expect(rule(selector)).toContain('min-width: 0');
+            expect(rule(selector)).toContain('overflow-wrap: anywhere');
+        }
+    });
+
+    test('a stand-alone link in the sections is at least 44px high', () => {
+        const link = section.slice(section.indexOf('.company-job-link,'));
+        expect(link).toContain('min-height: 44px');
+        expect(link).toContain("[data-testid='fit-sign-in']");
+    });
+
+    test('the action row wraps so View jobs sits beside Ask or under it', () => {
+        expect(rule('.company-view .popup-company-actions')).toContain('flex-wrap: wrap');
+    });
+});
+
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const containerBlock = popupCss.match(/@container organization-results \(max-width: 56rem\) \{[\s\S]*?\n\}\n/)![0];

@@ -5030,4 +5030,127 @@ span.priority-chip-button { cursor: default; }
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+/* Fit and open jobs (issue #486, part c). Both sections sit in the view's
+   flow; nothing in them is positioned or layered. Rows wrap instead of
+   clipping, so a long value or a wider fallback font never overflows. */
+.company-view .popup-company-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+}
+
+.company-fit,
+.company-jobs {
+    min-width: 0;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.company-fit-skeleton,
+.company-jobs-skeleton {
+    height: 4rem;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Fit, company score and coverage: three numbers, each with its own label. */
+.company-fit-figures {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .5rem .75rem;
+    max-width: 32rem;
+}
+
+.company-fit-figures .job-match-figure {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.company-fit-figures .job-match-figure-label {
+    font-size: .75rem;
+    line-height: 1rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: rgba(248, 249, 250, 0.75);
+    overflow-wrap: anywhere;
+}
+
+.company-fit-figures .job-match-figure-value {
+    font-size: 1rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: #f8f9fa;
+}
+
+@container company-view (max-width: 28rem) {
+    .company-fit-figures {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .company-fit-figures .job-match-figure {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: .75rem;
+    }
+}
+
+.company-fit-list,
+.company-jobs-list {
+    padding: 0;
+}
+
+.company-fit-row,
+.company-job-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .125rem .75rem;
+    padding: .5rem 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.company-fit-label {
+    flex: 1 1 10rem;
+    min-width: 0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.company-fit-value {
+    flex: 1 1 8rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.company-fit-meta,
+.company-fit-out-of-scope {
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.company-fit-out-of-scope {
+    color: #f5c26b;
+}
+
+.company-job-title {
+    flex: 1 1 100%;
+    min-width: 0;
+}
+
+.company-job-meta {
+    flex: 1 1 14rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* Links that stand alone in the new sections are controls: 44px high. */
+.company-job-link,
+:is([data-testid='fit-sign-in'], [data-testid='jobs-sign-in']) a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
 /* end issue #486 company view */

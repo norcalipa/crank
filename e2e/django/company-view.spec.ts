@@ -1147,3 +1147,270 @@ test.describe('company view (issue #486b)', () => {
         });
     }
 });
+
+// Fit, open jobs and scope in words (issue #486c). The seeded reader's saved
+// priorities are one work-mode requirement, so the real fit has one row; the
+// other states are stubbed answers of the two endpoints, never stored data.
+test.describe('company view fit, jobs and scope (issue #486c)', () => {
+    test.beforeEach(() => {
+        requireDjangoTier();
+    });
+
+    const BETA = 'E2E Beta Labs';
+    const openCompanyNamed = async (page: Page, name: string) => {
+        await page.locator(`tr[aria-label="View details for ${name}"], article[aria-label="View details for ${name}"]`)
+            .locator('visible=true').first().click();
+        await expect(view(page)).toBeVisible();
+    };
+    const fitBody = (overrides: Record<string, unknown> = {}) => ({
+        organization_id: 1, has_preferences: true, fit_score: 72.5, company_score: 4.2, coverage: 0.5,
+        unsupported: [], revision: {preference_revision: 1, ranking_version: '1.0.0', data_revision: 1},
+        requirements: [
+            {path: 'funding_stage', status: 'match', hard: false, observed: 'B', scope_ok: true, scope: null,
+                evidence_status: {state: 'verified', last_verified_at: null}},
+            {path: 'work_location.max_in_office_days', status: 'mismatch', hard: true, observed: 'O', scope_ok: true,
+                scope: null, evidence_status: {state: 'profile'}},
+            {path: 'compensation.require_public_company', status: 'mismatch', hard: false, observed: false,
+                scope_ok: true, scope: null, evidence_status: {state: 'sourced'}},
+            {path: 'industry', status: 'unknown', hard: false, observed: null, scope_ok: false,
+                scope: {countries: ['US'], role_families: ['Engineering']}, evidence_status: {state: 'stale'}},
+        ],
+        ...overrides,
+    });
+    const stub = (page: Page, kind: 'fit' | 'jobs', respond: Parameters<Page['route']>[1]) =>
+        page.route(`**/api/organizations/*/${kind}/`, respond);
+    const json = (body: unknown, status = 200) => ({status, contentType: 'application/json', body: JSON.stringify(body)});
+
+    test('the real fit and jobs answers render in the view, private and uncached', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/');
+        const fit = page.waitForResponse((r) => /\/api\/organizations\/\d+\/fit\/$/.test(r.url()));
+        const jobs = page.waitForResponse((r) => /\/api\/organizations\/\d+\/jobs\/$/.test(r.url()));
+        await opener(page).click();
+        const [fitResponse, jobsResponse] = await Promise.all([fit, jobs]);
+        for (const response of [fitResponse, jobsResponse]) {
+            expect(response.status()).toBe(200);
+            expect(response.headers()['cache-control']).toBe('private, no-store');
+        }
+        await expect(page.getByTestId('fit-ready')).toBeVisible();
+        for (const id of ['fit-score', 'fit-company-score', 'fit-coverage']) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+        await expect(page.getByTestId('fit-row-work_location.modes')).toBeVisible();
+        await expect(page.getByTestId('fit-scope-work_location.modes')).toHaveText(/Company-wide/);
+        const jobRow = page.locator('[data-testid^="job-row-"]').first();
+        await expect(jobRow).toContainText('E2E Seed Software Engineer');
+        await expect(jobRow).toContainText('Pay');
+        const link = jobRow.getByRole('link', {name: /View posting/});
+        await expect(link).toHaveAttribute('target', '_blank');
+        await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+        await expect(link).toHaveAttribute('href', /^https?:\/\//);
+        // Headings: the view's h2, then its sections.
+        const levels = await view(page).evaluate((section) => [...section.querySelectorAll('h2, h3')]
+            .map((h) => `${h.tagName}:${h.textContent}`));
+        expect(levels.indexOf('H2:E2E Alpha Corp')).toBe(0);
+        expect(levels.indexOf('H3:Fit with your priorities')).toBeLessThan(levels.indexOf('H3:Open jobs'));
+        expect(levels.indexOf('H3:Open jobs')).toBeLessThan(levels.indexOf('H3:Data Freshness & Sources'));
+    });
+
+    test('a company with no listings says "No open roles listed."', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        await openCompanyNamed(page, BETA);
+        await expect(page.getByTestId('jobs-empty')).toHaveText('No open roles listed.');
+    });
+
+    test('View jobs moves focus to the Jobs heading and puts it on screen', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 500});
+        await login(page);
+        await page.goto('/');
+        await openCompanyNamed(page, BETA);
+        await expect(page.getByTestId('jobs-empty')).toBeVisible();
+        await page.getByTestId('company-view-jobs').click();
+        await expect(page.getByRole('heading', {name: 'Open jobs'})).toBeFocused();
+        await expect.poll(() => page.getByRole('heading', {name: 'Open jobs'}).evaluate((h) => {
+            const box = h.getBoundingClientRect();
+            return box.top >= 0 && box.bottom <= window.innerHeight;
+        })).toBe(true);
+    });
+
+    test('scope is named in words: a scoped fact says where it applies, a company-wide one says so', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('field-evidence')).toBeVisible();
+        await expect(page.getByTestId('field-scope-funding_round')).toHaveText(/Location: US/);
+        await expect(page.getByTestId('field-scope-rto_policy')).toHaveText(/Company-wide/);
+        const text = await view(page).innerText();
+        expect(text).not.toMatch(/countries|role_families/);
+    });
+
+    test('the four groups, a fact that does not cover the reader, and the three numbers', async ({page}) => {
+        await login(page);
+        await stub(page, 'fit', (route) => route.fulfill(json(fitBody())));
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-ready')).toBeVisible();
+        await expect(page.getByTestId('fit-group-meets')).toContainText('Funding stage');
+        await expect(page.getByTestId('fit-group-does-not-meet')).toContainText('In-office days');
+        await expect(page.getByTestId('fit-group-tradeoffs')).toContainText('Public company');
+        const unknown = page.getByTestId('fit-group-unknown');
+        await expect(unknown).toContainText('Industry');
+        await expect(page.getByTestId('fit-scope-industry')).toHaveText(/Location: US; Roles: Engineering/);
+        await expect(page.getByTestId('fit-out-of-scope-industry')).toContainText('Not counted');
+        await expect(page.getByTestId('fit-score')).toHaveText('72.5 / 100');
+        await expect(page.getByTestId('fit-company-score')).toHaveText('4.2 / 5');
+        await expect(page.getByTestId('fit-coverage')).toHaveText('50%');
+        expect(await view(page).innerText()).not.toMatch(/countries|role_families/);
+    });
+
+    test('empty groups, no saved priorities, and the control that opens the editor', async ({page}) => {
+        await login(page);
+        await stub(page, 'fit', (route) => route.fulfill(json(fitBody({requirements: [fitBody().requirements[0]]}))));
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-empty-tradeoffs')).toBeVisible();
+        await expect(page.getByTestId('fit-empty-does-not-meet')).toBeVisible();
+        await expect(page.getByTestId('fit-empty-unknown')).toBeVisible();
+        await page.unroute('**/api/organizations/*/fit/');
+        await stub(page, 'fit', (route) => route.fulfill(json(fitBody({has_preferences: false, requirements: []}))));
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await opener(page).click();
+        await expect(page.getByTestId('fit-no-priorities')).toContainText('Set your priorities to see how E2E Alpha Corp fits.');
+        await page.getByTestId('fit-set-priorities').click();
+        await expect(page.getByTestId('assistant-panel')).toBeVisible();
+        await expect(page.getByTestId('priorities-sidebar')).toBeVisible();
+        await expect(view(page)).toBeVisible();
+    });
+
+    test('a failing fit shows a fixed sentence and Retry; the rest of the view is unaffected', async ({page}) => {
+        await login(page);
+        let calls = 0;
+        await stub(page, 'fit', (route) => {
+            calls += 1;
+            return calls === 1 ? route.fulfill(json({detail: 'internal secret'}, 500)) : route.fulfill(json(fitBody()));
+        });
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-error')).toHaveText(/Fit could not be loaded\./);
+        expect(await view(page).innerText()).not.toContain('internal secret');
+        await expect(page.getByTestId('popup-details-grid')).toBeVisible();
+        await page.getByTestId('fit-retry').click();
+        await expect(page.getByTestId('fit-ready')).toBeVisible();
+    });
+
+    test('an expired session (redirect or 401) is the sign-in prompt, never an error that cannot clear', async ({page}) => {
+        await login(page);
+        await stub(page, 'fit', (route) => route.fulfill(json({}, 401)));
+        await stub(page, 'jobs', (route) => route.fulfill({status: 302, headers: {location: '/accounts/login/?next=/'}}));
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-sign-in')).toBeVisible();
+        await expect(page.getByTestId('jobs-sign-in')).toBeVisible();
+        await expect(page.getByTestId('fit-error')).toHaveCount(0);
+        await expect(page.getByTestId('jobs-error')).toHaveCount(0);
+    });
+
+    test('signed out: sign-in prompts in both sections and no request to either endpoint', async ({page}) => {
+        const asked: string[] = [];
+        page.on('request', (request) => {
+            if (/\/api\/organizations\/\d+\/(fit|jobs)\//.test(request.url())) asked.push(request.url());
+        });
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-sign-in')).toBeVisible();
+        await expect(page.getByTestId('jobs-sign-in')).toBeVisible();
+        await expect(page.getByTestId('fit-sign-in').getByRole('link')).toHaveAttribute('href', /\/accounts\/login\//);
+        await page.getByTestId('company-view-jobs').click();
+        await expect(page.getByRole('heading', {name: 'Open jobs'})).toBeFocused();
+        await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+        expect(asked).toEqual([]);
+    });
+
+    test('jobs: inventory unavailable is worded apart from empty; an error has Retry; a javascript: address has no link', async ({page}) => {
+        await login(page);
+        await stub(page, 'jobs', (route) => route.fulfill(json({organization_id: 1, inventory: 'unavailable', count: 0, results: []})));
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('jobs-unavailable')).toContainText('Job listings are not available yet');
+        await expect(page.getByTestId('jobs-empty')).toHaveCount(0);
+        await page.unroute('**/api/organizations/*/jobs/');
+        let calls = 0;
+        await stub(page, 'jobs', (route) => {
+            calls += 1;
+            if (calls === 1) return route.fulfill(json({}, 500));
+            return route.fulfill(json({organization_id: 1, inventory: 'available', count: 2, results: [
+                {id: 1, title: 'Risky link', location_text: '', is_remote: false, compensation_min: null, compensation_max: null,
+                    compensation_currency: '', compensation_interval: '', canonical_url: 'javascript:alert(1)', status: 'active'},
+                {id: 2, title: 'Fine link', location_text: 'Remote', is_remote: true, compensation_min: '100000.00',
+                    compensation_max: '120000.00', compensation_currency: 'USD', compensation_interval: 'year',
+                    canonical_url: 'https://jobs.example.test/2', status: 'active'},
+            ]}));
+        });
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await opener(page).click();
+        await expect(page.getByTestId('jobs-error')).toContainText('Open jobs could not be loaded.');
+        await page.getByTestId('jobs-retry').click();
+        await expect(page.getByTestId('job-row-1')).toContainText('Risky link');
+        await expect(page.getByTestId('job-link-1')).toHaveCount(0);
+        await expect(page.getByTestId('job-link-2')).toHaveAttribute('href', 'https://jobs.example.test/2');
+        await expect(page.getByTestId('job-row-2')).toContainText('USD 100,000–120,000 per year');
+    });
+
+    test('opening another company shows the next company\'s sections, never the previous one\'s', async ({page}) => {
+        await login(page);
+        await stub(page, 'jobs', async (route) => {
+            const id = /organizations\/(\d+)\/jobs/.exec(route.request().url())![1];
+            if (id !== (await page.evaluate(() => new URLSearchParams(window.location.search).get('company')))) {
+                await new Promise((resolve) => setTimeout(resolve, 600));
+            }
+            return route.fulfill(json({organization_id: Number(id), inventory: 'available', count: 1, results: [
+                {id: Number(id), title: `Job of ${id}`, location_text: '', is_remote: false, compensation_min: null,
+                    compensation_max: null, compensation_currency: '', compensation_interval: '',
+                    canonical_url: 'https://jobs.example.test/x', status: 'active'}]}));
+        });
+        await page.goto('/');
+        await opener(page).click();
+        const first = await companyParam(page);
+        await expect(page.getByTestId(`job-row-${first}`)).toBeVisible();
+        await page.evaluate(() => window.dispatchEvent(new CustomEvent('crank:company-open', {detail: {organizationId: 999999}})));
+        await expect(page.getByTestId('company-not-found')).toBeVisible();
+        await expect(page.locator('[data-testid^="job-row-"]')).toHaveCount(0);
+    });
+
+    for (const size of [
+        {width: 1280, height: 900, assistant: false},
+        {width: 1280, height: 900, assistant: true},
+        {width: 1024, height: 800, assistant: true},
+        {width: 768, height: 1024, assistant: false},
+        {width: 375, height: 667, assistant: false},
+        {width: 320, height: 640, assistant: false},
+    ]) {
+        test(`the new sections fit at ${size.width}x${size.height}${size.assistant ? ' with the assistant open' : ''}: no sideways scroll, 44px controls on phones`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page);
+            await stub(page, 'fit', (route) => route.fulfill(json(fitBody())));
+            await stub(page, 'jobs', (route) => route.fulfill(json({organization_id: 1, inventory: 'available', count: 1, results: [
+                {id: 1, title: 'A very long job title that keeps going to test wrapping inside the narrow column',
+                    location_text: 'Remote (United States and Canada only, with some overlap hours)', is_remote: true,
+                    compensation_min: '100000.00', compensation_max: '120000.00', compensation_currency: 'USD',
+                    compensation_interval: 'year', canonical_url: 'https://jobs.example.test/1', status: 'active'}]})));
+            await page.goto('/');
+            if (size.assistant) await page.locator('[data-testid="assistant-launcher"]').click();
+            await opener(page).click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await expect(page.getByTestId('job-row-1')).toBeVisible();
+            await expectNoHorizontalOverflow(page);
+            const wide = await view(page).evaluate((section) => section.scrollWidth > section.clientWidth + 1);
+            expect(wide).toBe(false);
+            if (size.width <= 768) {
+                const small = await view(page).evaluate((section) => [...section.querySelectorAll(
+                    '.company-fit :is(button, a), .company-jobs :is(button, a), [data-testid="company-view-jobs"]')]
+                    .map((el) => ({name: el.textContent?.trim(), height: el.getBoundingClientRect().height}))
+                    .filter((box) => box.height < 44));
+                expect(small).toEqual([]);
+            }
+        });
+    }
+});
