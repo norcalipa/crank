@@ -58,6 +58,17 @@ export function fitGroupOf(requirement: FitRequirement): FitGroupKey {
     return 'unknown';
 }
 
+// What the matching engine sends as `observed`, per requirement path (see the
+// table in the PR body). The engine's own vocabulary is not a reader's: a
+// funding stage is one lower-case letter, a work mode is "remote" / "hybrid" /
+// "in-office", the in-office requirement is a number of days. A value this does
+// not know is printed unchanged.
+const MODE_WORDS: Record<string, string> = {remote: 'Remote', hybrid: 'Hybrid', 'in-office': 'In-Office'};
+const FUNDING_CODE = /^[a-z]$/i;
+
+const countText = (count: number, unit: string, suffix = ''): string =>
+    `${count} ${unit}${count === 1 ? '' : 's'}${suffix}`;
+
 export function observedText(requirement: FitRequirement): string {
     const {observed, path} = requirement;
     if (observed === null || observed === undefined || observed === '') return 'Unknown';
@@ -65,8 +76,22 @@ export function observedText(requirement: FitRequirement): string {
     if (Array.isArray(observed)) return observed.length > 0 ? observed.map(String).join(', ') : 'Unknown';
     if (typeof observed === 'object') return 'Unknown';
     const text = String(observed);
-    if (path === 'funding_stage') return fundingRoundLabel(text);
-    if (path.startsWith('work_location.')) return rtoPolicyLabel(text);
+    const numeric = typeof observed === 'number';
+    if ((path === 'funding_stage' || path === 'compensation.require_public_company') && FUNDING_CODE.test(text)) {
+        return fundingRoundLabel(text.toUpperCase());
+    }
+    if (path === 'work_location.modes') {
+        const key = text.trim().toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(MODE_WORDS, key)) return MODE_WORDS[key];
+        return rtoPolicyLabel(text);
+    }
+    if (path === 'work_location.max_in_office_days' && numeric) {
+        return countText(observed as number, 'day', ' a week in the office');
+    }
+    if ((path === 'vesting.max_cliff_months' || path === 'vesting.max_vesting_months') && numeric) {
+        return countText(observed as number, 'month');
+    }
+    if (path === 'compensation.equity_minimum_percent' && numeric) return `${observed}%`;
     return text;
 }
 

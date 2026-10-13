@@ -9,7 +9,7 @@ import FitSection, {CompanyFit, FitRequirement, fitGroupOf, observedText} from '
 import {useOwnCompanyRead} from './useOwnCompanyRead';
 
 const req = (overrides: Partial<FitRequirement> = {}): FitRequirement => ({
-    path: 'funding_stage', status: 'match', hard: false, observed: 'A', scope_ok: true, scope: null,
+    path: 'funding_stage', status: 'match', hard: false, observed: 'a', scope_ok: true, scope: null,
     evidence_status: {state: 'verified', last_verified_at: '2026-01-01T00:00:00Z'}, ...overrides,
 });
 
@@ -17,7 +17,7 @@ const fit = (overrides: Partial<CompanyFit> = {}): CompanyFit => ({
     organization_id: 4, has_preferences: true, fit_score: 71.25, company_score: 4.2, coverage: 0.6,
     requirements: [
         req(),
-        req({path: 'work_location.max_in_office_days', status: 'mismatch', hard: true, observed: 'O'}),
+        req({path: 'work_location.max_in_office_days', status: 'mismatch', hard: true, observed: 5}),
         req({path: 'compensation.require_public_company', status: 'mismatch', hard: false, observed: false,
             evidence_status: {state: 'profile'}}),
         req({path: 'industry', status: 'unknown', observed: null, evidence_status: null}),
@@ -82,7 +82,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
     test('a row shows its label, observed value, evidence status and scope in words', async () => {
         global.fetch = jest.fn().mockResolvedValue(answer(fit({requirements: [
             req({scope: {countries: ['US'], role_families: ['Engineering']}}),
-            req({path: 'work_location.modes', observed: 'H', evidence_status: {state: 'sourced'}}),
+            req({path: 'work_location.modes', observed: 'hybrid', evidence_status: {state: 'sourced'}}),
             req({path: 'industry', status: 'unknown', observed: null, evidence_status: {state: 'superseded'}}),
         ]})));
         renderFit();
@@ -316,9 +316,36 @@ describe('fitGroupOf and observedText', () => {
         expect(observedText(req({observed: ['US', 'CA']}))).toBe('US, CA');
         expect(observedText(req({observed: []}))).toBe('Unknown');
         expect(observedText(req({observed: {a: 1}}))).toBe('Unknown');
-        expect(observedText(req({observed: 'P'}))).toBe('Public');
-        expect(observedText(req({path: 'work_location.max_in_office_days', observed: 'H'}))).toBe('Hybrid');
+        expect(observedText(req({observed: 'p'}))).toBe('Public');
         expect(observedText(req({path: 'industry', observed: 'Software'}))).toBe('Software');
         expect(observedText(req({path: 'compensation.minimum_salary', observed: 120000}))).toBe('120000');
+    });
+
+    // The values the matching engine sends (crank/agents/jobs/matching.py), per path.
+    test.each([
+        ['funding_stage', 'b', 'Series B'],
+        ['funding_stage', 's', 'Seed'],
+        ['funding_stage', 'x', 'Series G or Later'],
+        ['funding_stage', 'o', 'Other Private'],
+        ['funding_stage', 'p', 'Public'],
+        ['funding_stage', 'series h', 'series h'],
+        ['compensation.require_public_company', 'P', 'Public'],
+        ['compensation.require_public_company', 'B', 'Series B'],
+        ['compensation.require_public_company', 'Private company', 'Private company'],
+        ['work_location.modes', 'remote', 'Remote'],
+        ['work_location.modes', 'hybrid', 'Hybrid'],
+        ['work_location.modes', 'in-office', 'In-Office'],
+        ['work_location.modes', 'R', 'Remote'],
+        ['work_location.modes', 'flexible', 'flexible'],
+        ['work_location.max_in_office_days', 0, '0 days a week in the office'],
+        ['work_location.max_in_office_days', 1, '1 day a week in the office'],
+        ['work_location.max_in_office_days', 3, '3 days a week in the office'],
+        ['vesting.max_cliff_months', 12, '12 months'],
+        ['vesting.max_vesting_months', 1, '1 month'],
+        ['compensation.equity_minimum_percent', 0.5, '0.5%'],
+        ['work_location.countries', 'United States', 'United States'],
+        ['industry', 'software', 'software'],
+    ])('%s: %p reads %p', (path, observed, words) => {
+        expect(observedText(req({path, observed}))).toBe(words);
     });
 });

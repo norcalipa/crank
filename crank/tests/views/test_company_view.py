@@ -130,6 +130,40 @@ class FitEndpointTests(CompanyViewTestBase):
         self.assertIn("coverage", body)
         self.assertIn("company_score", body)
 
+    def test_the_observed_values_the_engine_sends_under_six_priorities(self):
+        # The client turns these into words in static/js/company/FitSection.tsx
+        # (`observedText`). If the engine's vocabulary changes, this fails first:
+        # update that formatter and its table in FitSection.test.tsx with it.
+        self.org.accelerated_vesting = True
+        self.org.save()
+        evidence(self.org, "funding_round", "Series B")
+        evidence(self.org, "rto_policy", "Remote")
+        evidence(self.org, "public_status", "Private company")
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=prefs(
+                work_location={"modes": ["remote"], "max_in_office_days": 2},
+                funding_stage=["public"],
+                compensation={"require_public_company": True},
+                industry=["Software"],
+                vesting={"prefer_accelerated": True},
+            ),
+            schema_version=3,
+        )
+        by_path = {r["path"]: r["observed"] for r in self.fit().json()["requirements"]}
+        self.assertEqual(
+            by_path,
+            {
+                "work_location.modes": "remote",
+                "work_location.max_in_office_days": 0,
+                "funding_stage": "b",
+                "compensation.require_public_company": "Private company",
+                # An organization carries no industry of its own: nothing to show.
+                "industry": None,
+                "vesting.prefer_accelerated": True,
+            },
+        )
+
     def test_an_excluded_company_still_explains_itself(self):
         evidence(self.org, "funding_round", "Series A")
         evidence(self.org, "rto_policy", "Hybrid")
