@@ -274,6 +274,142 @@ describe('FitSection (issue #486, AC 15-16)', () => {
     });
 });
 
+describe('the fit follows a saved priorities change (issue #486, F4)', () => {
+    const second = () => fit({fit_score: 33.5, requirements: [
+        req({path: 'industry', status: 'match', observed: 'software'})]});
+    const calls = () => (global.fetch as jest.Mock).mock.calls.length;
+    beforeEach(() => {
+        store.resetWorkspaceForTests();
+        global.fetch = jest.fn().mockResolvedValue(answer(fit()));
+    });
+    afterEach(cleanup);
+
+    test('a new revision reads the fit again, keeps what is shown meanwhile and then replaces it', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        let release: (value: unknown) => void = () => {};
+        (global.fetch as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
+            release = resolve;
+        }));
+        act(() => store.setPrioritiesRevision(7));
+        expect(calls()).toBe(2);
+        expect(screen.getByTestId('fit-ready')).toHaveAttribute('aria-busy', 'true');
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3 / 100');
+        expect(screen.queryByTestId('fit-loading')).toBeNull();
+        await act(async () => {
+            release(answer(second()));
+        });
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5 / 100');
+        expect(screen.getByTestId('fit-ready')).not.toHaveAttribute('aria-busy');
+        expect(calls()).toBe(2);
+    });
+
+    test('the same revision again, and a revision of null, read nothing', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        act(() => store.setPrioritiesRevision(7));
+        await waitFor(() => expect(screen.getByTestId('fit-ready')).not.toHaveAttribute('aria-busy'));
+        expect(calls()).toBe(2);
+        act(() => store.resetPriorities());
+        expect(calls()).toBe(2);
+        act(() => store.setPrioritiesRevision(7));
+        await waitFor(() => expect(calls()).toBe(3));
+    });
+
+    test('a revision that was already set when the section mounted is not a change', async () => {
+        act(() => store.setPrioritiesRevision(4));
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(calls()).toBe(1);
+    });
+
+    test('an answer started before a change is never shown after it', async () => {
+        const waiting: ((value: unknown) => void)[] = [];
+        global.fetch = jest.fn().mockImplementation(() => new Promise(resolve => waiting.push(resolve)));
+        renderFit();
+        act(() => store.setPrioritiesRevision(8));
+        expect(waiting).toHaveLength(2);
+        await act(async () => {
+            waiting[0](answer(fit()));
+        });
+        expect(screen.queryByTestId('fit-ready')).toBeNull();
+        await act(async () => {
+            waiting[1](answer(second()));
+        });
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5 / 100');
+    });
+
+    test('a second change while one read is out keeps only the last answer', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        const waiting: ((value: unknown) => void)[] = [];
+        (global.fetch as jest.Mock).mockImplementation(() => new Promise(resolve => waiting.push(resolve)));
+        act(() => store.setPrioritiesRevision(8));
+        act(() => store.setPrioritiesRevision(9));
+        await act(async () => {
+            waiting[0](answer(fit({fit_score: 1})));
+        });
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3 / 100');
+        await act(async () => {
+            waiting[1](answer(second()));
+        });
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5 / 100');
+    });
+
+    test('a purge during a re-read leaves nothing, and its late answer is dropped', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        let late: (value: unknown) => void = () => {};
+        (global.fetch as jest.Mock).mockImplementationOnce(() => new Promise(resolve => {
+            late = resolve;
+        }));
+        act(() => store.setPrioritiesRevision(8));
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+        });
+        expect(screen.queryByTestId('fit-row-funding_stage')).toBeNull();
+        await act(async () => {
+            late(answer(second()));
+        });
+        expect(screen.queryByTestId('fit-ready')).toBeNull();
+        expect(screen.getByTestId('fit-sign-in')).toBeInTheDocument();
+        // A number after the purge reads nothing for an account that is gone.
+        act(() => store.setPrioritiesRevision(9));
+        expect(calls()).toBe(2);
+    });
+
+    test('a failed re-read shows the error with Retry, never the old numbers', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(answer({}, {ok: false, status: 500}));
+        act(() => store.setPrioritiesRevision(8));
+        await screen.findByTestId('fit-error');
+        expect(screen.queryByTestId('fit-score')).toBeNull();
+        fireEvent.click(screen.getByTestId('fit-retry'));
+        await screen.findByTestId('fit-ready');
+    });
+
+    test('a change while the first read is out starts it again', async () => {
+        const waiting: ((value: unknown) => void)[] = [];
+        global.fetch = jest.fn().mockImplementation(() => new Promise(resolve => waiting.push(resolve)));
+        renderFit();
+        act(() => store.setPrioritiesRevision(3));
+        expect(screen.getByTestId('fit-loading')).toBeInTheDocument();
+        expect(waiting).toHaveLength(2);
+    });
+
+    test('the "Set your priorities" prompt becomes the numbers after a first save', async () => {
+        global.fetch = jest.fn().mockResolvedValueOnce(answer(fit({has_preferences: false, requirements: []})))
+            .mockResolvedValue(answer(fit()));
+        renderFit();
+        await screen.findByTestId('fit-no-priorities');
+        act(() => store.setPrioritiesRevision(1));
+        expect(screen.getByTestId('fit-no-priorities')).toHaveAttribute('aria-busy', 'true');
+        await screen.findByTestId('fit-ready');
+        expect(screen.queryByTestId('fit-no-priorities')).toBeNull();
+    });
+});
+
 describe('useOwnCompanyRead tags what it holds with the company (issue #486, rule 4)', () => {
     beforeEach(() => {
         store.resetWorkspaceForTests();

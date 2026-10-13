@@ -177,7 +177,7 @@ export interface FitSectionProps {
 const FitSection: React.FC<FitSectionProps> = ({
     organizationId, name, isAuthenticated, signInUrl, onEditPriorities,
 }) => {
-    const {state, retry} = useOwnCompanyRead<CompanyFit>('fit', organizationId, isAuthenticated, isCompanyFit);
+    const {state, retry, refreshing} = useOwnCompanyRead<CompanyFit>('fit', organizationId, isAuthenticated, isCompanyFit, true);
     const target = name.length > 40 ? 'this company' : name;
     const titleId = 'company-fit-title';
 
@@ -206,7 +206,7 @@ const FitSection: React.FC<FitSectionProps> = ({
         );
     } else if (!state.data.has_preferences) {
         body = (
-            <div data-testid="fit-no-priorities">
+            <div data-testid="fit-no-priorities" aria-busy={refreshing || undefined}>
                 <p className="mb-2">Set your priorities to see how {target} fits.</p>
                 <button type="button" className="btn btn-outline-light" data-testid="fit-set-priorities"
                         onClick={onEditPriorities}>
@@ -217,7 +217,7 @@ const FitSection: React.FC<FitSectionProps> = ({
     } else {
         const fit = state.data;
         body = (
-            <div data-testid="fit-ready">
+            <div data-testid="fit-ready" aria-busy={refreshing || undefined}>
                 <Figures fit={fit}/>
                 {FIT_GROUPS.map(group => {
                     const rows = fit.requirements.filter(item => fitGroupOf(item) === group.key);

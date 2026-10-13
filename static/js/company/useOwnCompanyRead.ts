@@ -31,16 +31,28 @@ const LOADING: OwnReadState<never> = {kind: 'loading'};
  * and an answer for another company is never returned (issue #486, rule 4).
  * Nothing is requested for an id that is not a company id, or when `enabled`
  * is false. The caller never sees a thrown error's text.
+ *
+ * With `followPriorities`, a saved change of the reader's priorities (the
+ * workspace store's `prioritiesRevision` becoming a number it was not) reads
+ * again. What is on screen stays, flagged `refreshing`, until the new answer
+ * replaces it; an answer started before the change is never shown after it. A
+ * revision of `null` (purge, account switch) never starts a read.
  */
 export function useOwnCompanyRead<T>(
     kind: OwnReadKind,
     requestedId: number | null,
     enabled: boolean,
     isValid: (data: unknown) => data is T,
-): {state: OwnReadState<T>; retry: () => void} {
+    followPriorities = false,
+): {state: OwnReadState<T>; retry: () => void; refreshing: boolean} {
     const organizationId = isCompanyId(requestedId) ? requestedId : null;
     const [held, setHeld] = React.useState<Held<T>>({id: null, state: LOADING});
     const [attempt, setAttempt] = React.useState(0);
+    const [refreshing, setRefreshing] = React.useState(false);
+    const heldRef = React.useRef(held);
+    heldRef.current = held;
+    // Set when the next run of the read is a re-read after a priorities change.
+    const quiet = React.useRef(false);
     // Counts account changes: an answer started before one is not shown after it.
     const epoch = React.useRef(0);
 
@@ -67,6 +79,26 @@ export function useOwnCompanyRead<T>(
     }, [organizationId]);
 
     React.useEffect(() => {
+        if (!followPriorities) return undefined;
+        let seen = getWorkspaceSnapshot().prioritiesRevision;
+        return subscribeWorkspace(() => {
+            const revision = getWorkspaceSnapshot().prioritiesRevision;
+            if (revision === null) {
+                seen = null;
+            } else if (revision !== seen) {
+                seen = revision;
+                const shown = heldRef.current;
+                // Nothing of an account that is gone is read again.
+                if (shown.state.kind === 'signed-out') return;
+                quiet.current = shown.state.kind === 'ready';
+                setAttempt(count => count + 1);
+            }
+        });
+    }, [followPriorities]);
+
+    React.useEffect(() => {
+        const keep = quiet.current;
+        quiet.current = false;
         if (organizationId === null || !enabled) {
             setHeld({id: organizationId, state: LOADING});
             return undefined;
@@ -74,7 +106,12 @@ export function useOwnCompanyRead<T>(
         let cancelled = false;
         const startedIn = epoch.current;
         const current = () => !cancelled && startedIn === epoch.current;
-        setHeld({id: organizationId, state: LOADING});
+        if (keep) {
+            setRefreshing(true);
+        } else {
+            setRefreshing(false);
+            setHeld({id: organizationId, state: LOADING});
+        }
         fetch(`/api/organizations/${organizationId}/${kind}/`, {
             credentials: 'same-origin',
             headers: {Accept: 'application/json'},
@@ -93,7 +130,10 @@ export function useOwnCompanyRead<T>(
             })
             .catch(() => ({kind: 'error'}) as OwnReadState<T>)
             .then(state => {
-                if (current()) setHeld({id: organizationId, state});
+                if (current()) {
+                    setRefreshing(false);
+                    setHeld({id: organizationId, state});
+                }
             });
         return () => {
             cancelled = true;
@@ -104,5 +144,5 @@ export function useOwnCompanyRead<T>(
     const retry = React.useCallback(() => setAttempt(count => count + 1), []);
     // Before the effect for a new id has run, its read is as good as started.
     const state = held.id === organizationId ? held.state : (LOADING as OwnReadState<T>);
-    return {state, retry};
+    return {state, retry, refreshing: refreshing && state.kind === 'ready'};
 }
