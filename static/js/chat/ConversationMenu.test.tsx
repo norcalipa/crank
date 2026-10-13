@@ -406,9 +406,21 @@ describe('ConversationMenu', () => {
             skewHandler(600);
             openConfirm(testId);
             advance(550);
-            skewHandler(-548);
+            // advance puts both clocks 550 ms on; the handler clock is then 2 ms past the opening's.
+            skewHandler(52);
             press();
             expectIgnored(props[called] as jest.Mock);
+        });
+
+        test.each(kinds)('%s: an opening click handled late, then a press 500 ms after it by both clocks, is honoured', async (testId, called) => {
+            const {props} = setup();
+            // The opening click, made at 0 ms, is handled 600 ms late; the press is made and handled 500 ms after it.
+            skewHandler(600);
+            openConfirm(testId);
+            advance(500);
+            skewHandler(600);
+            press();
+            await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
         });
 
         test.each(kinds)('%s: a press that went down early and was released elsewhere does not block a keyboard click', async (testId, called) => {
