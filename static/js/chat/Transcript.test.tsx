@@ -50,6 +50,11 @@ describe('notices in the transcript (issue #483)', () => {
         expect(screen.getByRole('log')).not.toHaveAttribute('data-notice-anchor');
     });
 
+    test('a notice without an anchor prop goes after the last article', () => {
+        renderTranscript({notice});
+        expect(childNames()[4]).toBe('transcript-notice');
+    });
+
     test('a notice whose anchor is no longer in the history goes after the last article', () => {
         renderTranscript({notice, noticeAfterId: 99});
         expect(childNames()[4]).toBe('transcript-notice');

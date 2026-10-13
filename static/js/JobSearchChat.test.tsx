@@ -5137,6 +5137,40 @@ describe('preference notices in the transcript (issue #483)', () => {
         expect(log()).toContainElement(await screen.findByTestId('preference-undo-error'));
     });
 
+    test('a reconcile that reports a change anchors the banner under the last reply', async () => {
+        await renderChat([assistantMessage(1, 'ready')]);
+        const mock = global.fetch as jest.Mock;
+        mock.mockResolvedValueOnce(statusResponse('ready'));
+        mock.mockResolvedValueOnce(new Response('plain text error', {status: 500}));
+        // The check that follows finds the turn on the server, with the change its reply made.
+        mock.mockImplementationOnce(async () => jsonResponse({
+            ...emptyConversation(42, [
+                assistantMessage(1, 'ready'),
+                {...userMessage('boom'), id: 2, idempotency_key: lastPostedKey(mock), delivery_state: 'completed'},
+                assistantMessage(3, 'Saved that.', true),
+            ]),
+            preferences_changed: true,
+        }));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'boom'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        const banner = await screen.findByRole('status', {name: 'Preference update'});
+        expect(log()).toContainElement(banner);
+        expect(beforeNotice()).toHaveTextContent('Saved that.');
+        expect(log()).toHaveAttribute('data-notice-anchor', '3');
+    });
+
+    test('dismissing the search-only confirmation removes it and its anchor', async () => {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+        }));
+        fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+        await screen.findByTestId('preference-search-applied');
+        fireEvent.click(screen.getByRole('button', {name: 'Dismiss search filter notice'}));
+        await waitFor(() => expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument());
+        expect(log()).not.toHaveAttribute('data-notice-anchor');
+    });
+
     test('the live announcement stays on the newest article, not on a notice after it', async () => {
         await withProposal();
         const articles = log().querySelectorAll(':scope > article');

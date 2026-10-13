@@ -442,7 +442,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         || revealingPrefChanges || revealingPrefs;
     // What a notice's arrival, or a change of its state, adds under the reply (issue #483).
     const prefNoticeKey = hasPrefNotice
-        ? [prefNoticeAnchorId ?? '', !!prefProposal, prefProposalState, prefSearchApplied !== null, prefChanges !== null, prefUndoState, revealingPrefs].join('.')
+        ? [prefNoticeAnchorId, !!prefProposal, prefProposalState, prefSearchApplied !== null, prefChanges !== null, prefUndoState, revealingPrefs].join('.')
         : '';
     const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
