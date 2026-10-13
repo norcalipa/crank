@@ -599,9 +599,7 @@ class Command(BaseCommand):
         this command records no change. One forced refresh, the product's own
         path, makes the published match cite the rows just written.
         """
-        user = get_user_model().objects.filter(username=ORDINARY_USERNAME).first()
-        if user is None:
-            return
+        user = get_user_model().objects.get(username=ORDINARY_USERNAME)
         cited = set()
         for ids in (
             JobMatch.objects.filter(user=user)
