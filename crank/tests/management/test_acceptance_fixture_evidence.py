@@ -11,25 +11,35 @@ re-implements it, and nothing pins a ``seed_e2e`` row count.
 """
 
 import io
+import uuid
+from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import TestCase
+from django.utils import timezone
+from django.test import TestCase, override_settings
 
 from crank.management.commands.seed_staging_baseline import (
+    DEFAULT_ORDINARY_PASSWORD,
     EVIDENCE_VERSION,
+    fixture_preferences,
     ORDINARY_USERNAME,
     TARGET_ORG_NAME,
 )
 from crank.agents.jobs.matching import project_criteria
-from crank.models.company_profile import CompanyFieldEvidence
+from crank.models.company_correction import CompanyCorrection
+from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
+from crank.models.job import JobListing
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
-from crank.models.preference import SCHEMA_VERSION, default_preferences
+from crank.models.preference import SCHEMA_VERSION, UserPreference, default_preferences
 from crank.services import company_evidence
 from crank.services.company_evidence import resolve_field_evidence_for_orgs
 from crank.services.job_matching import evaluate_org_requirements
+from crank.services.match_recompute import RecomputeStatus, recompute_user
 
+LOCMEM = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 FieldKey = CompanyFieldEvidence.FieldKey
 State = CompanyFieldEvidence.State
 
@@ -81,7 +91,7 @@ def _annotated_requirements(user):
     )
     return [
         (organization_id, requirement)
-        for organization_id, requirements in zip(organization_ids, annotated)
+        for organization_id, requirements in zip(organization_ids, annotated, strict=True)
         for requirement in requirements
     ]
 
@@ -111,7 +121,12 @@ class AcceptanceFixtureEvidenceTests(TestCase):
             )
         for organization_id, requirement in confirmed:
             self.assertEqual(requirement["source_kind"], "evidence", requirement)
-            row = CompanyFieldEvidence.objects.filter(pk=requirement["source_id"]).first()
+            # Resolve the cited row the way the product does: a superseded row
+            # re-accepted with the same value and scope reads as that accepted row.
+            _, accepted = company_evidence._evidence_rows_and_statuses(
+                [requirement["source_id"]], None
+            )
+            row = accepted.get(requirement["source_id"])
             self.assertIsNotNone(row, f"no evidence row for confirmed {requirement}")
             self.assertEqual(row.state, State.ACCEPTED, requirement)
             self.assertEqual(row.organization_id, organization_id, requirement)
@@ -121,15 +136,23 @@ class AcceptanceFixtureEvidenceTests(TestCase):
         user = get_user_model().objects.get(username=ORDINARY_USERNAME)
         self._assert_confirmed_requirements_are_backed(user)
 
+    @override_settings(CACHES=LOCMEM)
     def test_seed_e2e_confirmed_requirements_have_accepted_evidence(self):
         from crank.management.commands.seed_e2e import E2E_USERNAME
 
         _seed("seed_e2e")
         user = get_user_model().objects.get(username=E2E_USERNAME)
+        # The e2e user has saved preferences and no stored match: run the real
+        # matcher for that user and check the rows it stores, as the staging
+        # half does. The status rule is the product's, not re-implemented here.
+        outcome = recompute_user(user, reason="test", force=True)
+        self.assertEqual(outcome.status, RecomputeStatus.PUBLISHED)
+        self.assertTrue(JobMatch.objects.filter(user=user).exists())
         # seed_e2e's accepted evidence is prose ("Remote-first"), long past its
-        # window (beta) or off-domain, so today none of it is confirmed. The
-        # invariant holds for whatever it does confirm, now or after a later
-        # change to that seed; nothing pins its rows or that it stays empty.
+        # window (beta) or off-domain, so today none of it is confirmed, and this
+        # half cannot require a confirmed requirement until seed_e2e gets one
+        # fresh, accepted, company-wide row (issue #582). The invariant holds for
+        # whatever it does confirm; nothing pins its rows or that it stays empty.
         self._assert_confirmed_requirements_are_backed(user, require_confirmed=False)
 
 
@@ -175,11 +198,14 @@ class StagingBaselineEvidenceStatesTests(TestCase):
         statuses = self._statuses()
         self.assertEqual(statuses["compensation.require_public_company"], "verified")
         self.assertEqual(statuses["funding_stage"], "stale")
-        # Hybrid is stated only by a conflicted claim, which never verifies
-        # anything: the requirement rests on the company's own field, and the
-        # unknown field is never reported as sourced evidence.
-        self.assertNotIn(statuses["work_location.modes"], ("verified", "stale", "sourced"))
-        self.assertNotIn(statuses["vesting.prefer_accelerated"], ("verified", "stale", "sourced"))
+        # The work-mode requirement is a MISMATCH decided by the listing's own
+        # ``is_remote`` flag (no evidence state), and the vesting requirement a
+        # MISMATCH from the model default, shown as profile data. The conflicted
+        # claim and the unknown field are not in the match; they show in the
+        # company view's evidence.
+        self.assertIsNone(statuses["work_location.modes"])
+        self.assertEqual(statuses["vesting.prefer_accelerated"], "profile")
+        self.assertEqual(len(statuses), 4)
         payload = company_evidence.field_evidence_payload(org)
         self.assertIn(FieldKey.ACCELERATED_VESTING, payload["unverified_fields"])
 
@@ -228,3 +254,396 @@ class StagingBaselineEvidenceStatesTests(TestCase):
             for m in JobMatch.objects.all()
         )
         return {"evidence": evidence, "matches": matches}
+
+
+def _run(*, now=None, **options):
+    """Run the staging command; return its output lines."""
+    out = io.StringIO()
+    if now is None:
+        call_command("seed_staging_baseline", stdout=out, no_color=True, **options)
+    else:
+        with mock.patch("django.utils.timezone.now", return_value=now):
+            call_command("seed_staging_baseline", stdout=out, no_color=True, **options)
+    return out.getvalue().splitlines()
+
+
+def _org():
+    return Organization.objects.get(name=TARGET_ORG_NAME)
+
+
+def _staff():
+    return get_user_model().objects.get_or_create(username="reviewer", defaults={"is_staff": True})[0]
+
+
+def _rows(**filters):
+    return CompanyFieldEvidence.objects.filter(organization=_org(), **filters)
+
+
+def _ordinary_match():
+    return JobMatch.objects.get(
+        user__username=ORDINARY_USERNAME, preference_version=1, ranker_version="staging-baseline"
+    )
+
+
+class ReviewedDatabaseRerunTests(TestCase):
+    """A second run after a review action never adds a row or undoes a decision."""
+
+    def setUp(self):
+        _run()
+
+    def _second_run(self):
+        before = set(CompanyFieldEvidence.objects.values_list("pk", flat=True))
+        lines = _run()
+        self.assertEqual(
+            set(CompanyFieldEvidence.objects.values_list("pk", flat=True)), before
+        )
+        accepted = {}
+        for row in _rows(state=State.ACCEPTED):
+            accepted.setdefault(row.field_key, []).append(row.pk)
+        self.assertTrue(all(len(pks) == 1 for pks in accepted.values()), accepted)
+        return lines
+
+    def _match_reads(self):
+        match = _ordinary_match()
+        resolved = company_evidence.resolve_field_evidence(_org())
+        self.assertEqual(
+            match.evidence_ids,
+            sorted(
+                r["source_id"] for r in match.requirements if r["source_kind"] == "evidence"
+            ),
+        )
+        self.assertTrue(set(match.evidence_ids) <= {row.pk for row in resolved.values()})
+        return match, company_evidence.annotate_requirement_evidence([match.requirements])[0]
+
+    def _correct_public_status(self, value="Private company"):
+        current = _rows(field_key=FieldKey.PUBLIC_STATUS, state=State.ACCEPTED).get()
+        correction = CompanyCorrection.objects.create(
+            requester=get_user_model().objects.get(username=ORDINARY_USERNAME),
+            organization=_org(),
+            field_key=FieldKey.PUBLIC_STATUS,
+            current_value=current.value_text,
+            current_evidence=current,
+            proposed_value=value,
+            evidence_url="https://corrections.example.org/proof",
+            scope_level=CompanyCorrection.ScopeLevel.COMPANY,
+            idempotency_key=uuid.uuid4(),
+        )
+        return current, company_evidence.accept_correction(correction, reviewer=_staff())
+
+    def test_r1_accepted_correction_is_kept(self):
+        current, accepted = self._correct_public_status()
+        current.refresh_from_db()
+        self.assertEqual(current.state, State.SUPERSEDED)
+        lines = self._second_run()
+        self.assertEqual(
+            _rows(field_key=FieldKey.PUBLIC_STATUS, state=State.ACCEPTED).get().pk, accepted.pk
+        )
+        self.assertTrue(any("public_status" in line and "kept" in line.lower() for line in lines))
+        match, annotated = self._match_reads()
+        # The match cites the staff decision, not a new fixture row.
+        self.assertIn(accepted.pk, match.evidence_ids)
+        self.assertNotIn(current.pk, match.evidence_ids)
+        self.assertNotEqual(
+            {r["path"]: r["status"] for r in annotated}["compensation.require_public_company"],
+            "match",
+        )
+
+    def test_r1_correction_with_the_same_value_keeps_the_match_verified(self):
+        _, accepted = self._correct_public_status(value="Public company")
+        self._second_run()
+        _, annotated = self._match_reads()
+        statuses = {r["path"]: (r["evidence_status"] or {}).get("state") for r in annotated}
+        self.assertEqual(statuses["compensation.require_public_company"], "verified")
+        self.assertIn(accepted.pk, _ordinary_match().evidence_ids)
+
+    def test_r2_accepted_conflicted_claim_is_kept(self):
+        claim = _rows(field_key=FieldKey.RTO_POLICY, state=State.CONFLICTED).get()
+        accepted = company_evidence.accept_claim(claim, reviewer=_staff())
+        lines = self._second_run()
+        self.assertEqual(
+            _rows(field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED).get().pk, accepted.pk
+        )
+        self.assertTrue(any("rto_policy" in line for line in lines))
+        self._match_reads()
+
+    def test_r3_rejected_claim_stays_rejected_once_and_twice(self):
+        claim = _rows(field_key=FieldKey.RTO_POLICY, state=State.CONFLICTED).get()
+        company_evidence.reject_claim(claim, reviewer=_staff())
+        lines = self._second_run()
+        self.assertTrue(any("rto_policy" in line for line in lines))
+        self.assertFalse(_rows(field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED).exists())
+        self.assertEqual(_rows(field_key=FieldKey.RTO_POLICY).get().state, State.REJECTED)
+        self._second_run()
+        self._match_reads()
+
+    def test_r4_accepted_rows_of_another_validation_version_are_kept(self):
+        observation = CompanyProfileObservation.objects.get(fingerprint="staging-accepted")
+        _rows().delete()
+        now = timezone.now()
+        other = {}
+        for key, value in (
+            (FieldKey.PUBLIC_STATUS, "Public company"),
+            (FieldKey.FUNDING_ROUND, "Series C"),
+            (FieldKey.RTO_POLICY, "Remote"),
+        ):
+            other[key] = CompanyFieldEvidence.objects.create(
+                organization=_org(), field_key=key, state=State.ACCEPTED, value_text=value,
+                source_url="https://jobs.example.test/profile", source_domain="jobs.example.test",
+                observation=observation, observed_at=now, validation_version="company-profile.v3",
+                extractor_version="company-profile.v3", last_checked_at=now, last_verified_at=now,
+            )
+        lines = self._second_run()
+        self.assertEqual(
+            {row.field_key: row.pk for row in _rows(state=State.ACCEPTED)},
+            {key: row.pk for key, row in other.items()},
+        )
+        self.assertEqual(sum("Kept the existing accepted" in line for line in lines), 3)
+        match, _ = self._match_reads()
+        # The match reads the other writer's rows, never a fixture row.
+        self.assertTrue(match.evidence_ids)
+        self.assertLessEqual(set(match.evidence_ids), {row.pk for row in other.values()})
+        self.assertIn(other[FieldKey.PUBLIC_STATUS].pk, match.evidence_ids)
+
+    def test_r5_a_recheck_that_made_the_stale_row_fresh_is_not_touched(self):
+        company_evidence.record_check(_org(), FieldKey.FUNDING_ROUND, success=True, verified=True)
+        row = _rows(field_key=FieldKey.FUNDING_ROUND).get()
+        verified_at = row.last_verified_at
+        self.assertEqual(company_evidence.field_status(row), "verified")
+        self._second_run()
+        row.refresh_from_db()
+        self.assertEqual(row.last_verified_at, verified_at)
+        _, annotated = self._match_reads()
+        statuses = {r["path"]: (r["evidence_status"] or {}).get("state") for r in annotated}
+        self.assertEqual(statuses["funding_stage"], "verified")
+
+    def test_untouched_second_run_is_quiet(self):
+        lines = _run()
+        self.assertFalse([line for line in lines if "kept" in line.lower() or "Rewrote" in line])
+
+    def test_reset_procedure_gives_back_the_fresh_states(self):
+        fresh = sorted(
+            (row.field_key, row.state, row.value_text) for row in _rows()
+        )
+        fresh_reads = self._statuses()
+        self._correct_public_status()
+        company_evidence.accept_claim(
+            _rows(field_key=FieldKey.RTO_POLICY, state=State.CONFLICTED).get(), reviewer=_staff()
+        )
+        _run()
+        self.assertNotEqual(sorted((r.field_key, r.state, r.value_text) for r in _rows()), fresh)
+        _rows().delete()
+        _run()
+        self.assertEqual(sorted((r.field_key, r.state, r.value_text) for r in _rows()), fresh)
+        self.assertEqual(self._statuses(), fresh_reads)
+
+    def _statuses(self):
+        _, annotated = self._match_reads()
+        return {r["path"]: (r["evidence_status"] or {}).get("state") for r in annotated}
+
+
+class StagingAgingTests(TestCase):
+    def test_fixtures_that_aged_are_reported_and_the_remedy_works(self):
+        start = timezone.now()
+        first = _run()
+        self.assertIn(
+            "Fixture fields read now: public_status=verified, funding_round=stale, "
+            "rto_policy=conflicted, accelerated_vesting=unknown",
+            first,
+        )
+        later = start + timedelta(days=181)
+        before = set(CompanyFieldEvidence.objects.values_list("pk", flat=True))
+        lines = _run(now=later)
+        self.assertEqual(set(CompanyFieldEvidence.objects.values_list("pk", flat=True)), before)
+        reading = [line for line in lines if line.startswith("Fixture fields read now")][0]
+        self.assertIn("public_status=stale", reading)
+        annotated = company_evidence.annotate_requirement_evidence(
+            [_ordinary_match().requirements], now=later
+        )[0]
+        self.assertFalse(
+            [r for r in annotated if (r["evidence_status"] or {}).get("state") == "verified"]
+        )
+        # The documented remedy: delete the fixture row and run again.
+        _rows(field_key=FieldKey.PUBLIC_STATUS).delete()
+        lines = _run(now=later)
+        self.assertTrue(
+            any(line.startswith("Fixture fields read now: public_status=verified") for line in lines)
+        )
+        new = _rows(field_key=FieldKey.PUBLIC_STATUS, state=State.ACCEPTED).get()
+        self.assertIn(new.pk, _ordinary_match().evidence_ids)
+
+
+class EvidenceStatusRuleTests(TestCase):
+    def test_a_requirement_citing_a_non_accepted_row_never_reads_verified(self):
+        _run()
+        claim = _rows(field_key=FieldKey.RTO_POLICY).get()
+        requirement = {
+            "path": "work_location.modes", "status": "match", "scope_ok": True,
+            "source_kind": "evidence", "source_id": claim.pk, "observed": "In office",
+        }
+        for state in (State.CONFLICTED, State.REJECTED, State.SUPERSEDED):
+            CompanyFieldEvidence.objects.filter(pk=claim.pk).update(state=state)
+            states = company_evidence.annotate_requirement_evidence([[requirement]])[0]
+            self.assertNotIn(states[0]["evidence_status"]["state"], ("verified", "sourced"))
+
+    def test_a_superseded_row_re_accepted_with_the_same_value_reads_as_the_accepted_row(self):
+        _run()
+        old = _rows(field_key=FieldKey.PUBLIC_STATUS, state=State.ACCEPTED).get()
+        CompanyFieldEvidence.objects.filter(pk=old.pk).update(state=State.SUPERSEDED)
+        new = CompanyFieldEvidence.objects.create(
+            organization=_org(), field_key=old.field_key, state=State.ACCEPTED,
+            value_text=old.value_text, source_url=old.source_url, source_domain=old.source_domain,
+            observation=old.observation, observed_at=old.observed_at,
+            validation_version="company-profile.v3", extractor_version="company-profile.v3",
+            last_checked_at=old.last_checked_at, last_verified_at=old.last_verified_at,
+        )
+        self.assertEqual(_ordinary_match().evidence_ids.count(old.pk), 1)
+        pairs = _annotated_requirements(get_user_model().objects.get(username=ORDINARY_USERNAME))
+        confirmed = _confirmed(pairs)
+        self.assertTrue(confirmed)
+        _, accepted = company_evidence._evidence_rows_and_statuses([old.pk], None)
+        self.assertEqual(accepted[old.pk].pk, new.pk)
+        # The invariant helper treats the re-accepted row as the backing row.
+        AcceptanceFixtureEvidenceTests()._assert_confirmed_requirements_are_backed(
+            get_user_model().objects.get(username=ORDINARY_USERNAME)
+        )
+
+
+@override_settings(CACHES=LOCMEM)
+class StagingUserSeesTheMatchTests(TestCase):
+    """AC 18: what ``staging_user`` sees through the product after a seed."""
+
+    def setUp(self):
+        _run()
+        self.user = get_user_model().objects.get(username=ORDINARY_USERNAME)
+
+    def _signed_in_client(self):
+        self.assertTrue(self.client.login(username=ORDINARY_USERNAME, password=DEFAULT_ORDINARY_PASSWORD))
+        return self.client
+
+    def test_r7_the_list_and_the_detail_serve_the_ordinary_match(self):
+        match = _ordinary_match()
+        for flag in (False, True):
+            with self.subTest(match_results_read_enabled=flag), override_settings(
+                MATCH_RESULTS_READ_ENABLED=flag
+            ):
+                client = self._signed_in_client()
+                listing = client.get("/api/job-matches/").json()
+                self.assertIn(match.pk, [row["id"] for row in listing["results"]])
+                detail = client.get(f"/api/job-matches/{match.pk}/")
+                self.assertEqual(detail.status_code, 200)
+                paths = [r["path"] for r in detail.json()["requirements"]]
+                self.assertEqual(paths, [r["path"] for r in match.requirements])
+
+    def test_r8_one_real_refresh_publishes_the_stored_requirements(self):
+        stored = _ordinary_match()
+        outcome = recompute_user(self.user, reason="test", force=True)
+        self.assertEqual(outcome.status, RecomputeStatus.PUBLISHED)
+        published = JobMatch.objects.filter(
+            user=self.user, listing=stored.listing
+        ).exclude(ranker_version="staging-baseline").get()
+        self.assertEqual(published.requirements, stored.requirements)
+        cited = sorted(
+            r["source_id"] for r in stored.requirements if r["source_kind"] == "evidence"
+        )
+        self.assertEqual(cited, stored.evidence_ids)
+        # The persisted match stores every accepted row of the organization;
+        # the command stores only the cited ones. Both accepted rows are cited
+        # here, so the test requires the cited rows to be a subset of what a
+        # refresh stores and that subset to be all the accepted rows.
+        self.assertTrue(set(cited) <= set(published.evidence_ids))
+        self.assertEqual(
+            set(published.evidence_ids),
+            set(_rows(state=State.ACCEPTED).values_list("pk", flat=True)),
+        )
+
+    def test_r10_the_preference_is_created_equal_to_the_evaluated_document(self):
+        preference = UserPreference.objects.get(user=self.user)
+        self.assertEqual(preference.preferences, fixture_preferences())
+        self.assertEqual(preference.schema_version, SCHEMA_VERSION)
+
+    def test_r10_an_existing_document_is_kept_and_reported(self):
+        saved = default_preferences()
+        saved["compensation"]["require_public_company"] = False
+        UserPreference.objects.filter(user=self.user).update(preferences=saved)
+        lines = _run()
+        self.assertEqual(UserPreference.objects.get(user=self.user).preferences, saved)
+        self.assertEqual(sum("saved priorities" in line.lower() for line in lines), 1)
+        # The stored match is still evaluated against the fixture's document.
+        self.assertEqual(_ordinary_match().requirements[0]["path"], "compensation.require_public_company")
+
+    def test_r10_a_user_with_no_saved_preference_gets_one_on_a_later_run(self):
+        UserPreference.objects.filter(user=self.user).delete()
+        _run()
+        self.assertEqual(
+            UserPreference.objects.get(user=self.user).preferences, fixture_preferences()
+        )
+
+
+class StagingListingLinkTests(TestCase):
+    def _listing(self):
+        return JobListing.all_objects.get(external_id="staging-active-1")
+
+    def test_r9_a_fresh_seed_links_the_listing(self):
+        _run()
+        self.assertEqual(self._listing().organization, _org())
+
+    def test_r9_a_listing_without_an_organization_is_linked(self):
+        _run()
+        JobListing.all_objects.filter(pk=self._listing().pk).update(organization=None)
+        _run()
+        self.assertEqual(self._listing().organization, _org())
+
+    def test_r9_a_listing_linked_elsewhere_is_left_alone(self):
+        _run()
+        other = Organization.objects.get(name="Staging Rating Source")
+        JobListing.all_objects.filter(pk=self._listing().pk).update(organization=other)
+        _run()
+        self.assertEqual(self._listing().organization, other)
+
+
+@override_settings(CACHES=LOCMEM)
+class StagingAccountTests(TestCase):
+    def _columns(self, username):
+        user = get_user_model().objects.get(username=username)
+        return {f.attname: getattr(user, f.attname) for f in user._meta.concrete_fields}
+
+    def test_a_second_run_changes_no_column_of_either_account(self):
+        _run()
+        client = self.client
+        self.assertTrue(client.login(username=ORDINARY_USERNAME, password=DEFAULT_ORDINARY_PASSWORD))
+        before = {name: self._columns(name) for name in (ORDINARY_USERNAME, "staging_staff")}
+        _run()
+        self.assertEqual(
+            {name: self._columns(name) for name in (ORDINARY_USERNAME, "staging_staff")}, before
+        )
+        self.assertEqual(client.get("/api/job-matches/").status_code, 200)
+
+    def test_password_flag_sets_it_and_a_later_run_without_it_keeps_it(self):
+        _run()
+        _run(password="custom-throwaway")
+        user = get_user_model().objects.get(username=ORDINARY_USERNAME)
+        self.assertTrue(user.check_password("custom-throwaway"))
+        _run()
+        user.refresh_from_db()
+        self.assertTrue(user.check_password("custom-throwaway"))
+
+    def test_staff_account_keeps_an_operator_password_and_never_a_repository_known_one(self):
+        _run(staff_password="operator-chosen-value")
+        staff = get_user_model().objects.get(username="staging_staff")
+        self.assertTrue(staff.check_password("operator-chosen-value"))
+        _run()
+        staff.refresh_from_db()
+        self.assertTrue(staff.check_password("operator-chosen-value"))
+        staff.set_password(DEFAULT_ORDINARY_PASSWORD)
+        staff.save()
+        _run()
+        staff.refresh_from_db()
+        self.assertFalse(staff.has_usable_password())
+
+
+class StagingOutputTests(TestCase):
+    def test_the_output_says_the_ordinary_match_was_rewritten(self):
+        _run()
+        JobMatch.objects.update(requirements=[], evidence_ids=[])
+        lines = _run()
+        self.assertTrue(any(line.startswith("Rewrote the stored requirements") for line in lines))
