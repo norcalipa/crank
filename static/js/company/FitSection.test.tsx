@@ -5,9 +5,9 @@ import {act, cleanup, fireEvent, render, renderHook, screen, waitFor, within} fr
 import * as React from 'react';
 
 import * as store from '../workspace/store';
-import {MATCH_TERMS, REQUIREMENT_MARKS} from '../labels';
+import {EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS} from '../labels';
 import FitSection, {CompanyFit, FitRequirement, fitGroupOf, observedText} from './FitSection';
-import {useOwnCompanyRead} from './useOwnCompanyRead';
+import {retryFrom, useHoldReaderBelow, useOwnCompanyRead} from './useOwnCompanyRead';
 
 const req = (overrides: Partial<FitRequirement> = {}): FitRequirement => ({
     path: 'funding_stage', status: 'match', hard: false, observed: 'a', scope_ok: true, scope: null,
@@ -64,7 +64,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
     test('four groups, three separately labelled numbers, every requirement exactly once', async () => {
         renderFit();
         await screen.findByTestId('fit-ready');
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3 / 100');
+        expect(screen.getByTestId('fit-score')).toHaveTextContent(/^71\.3$/);
         expect(screen.getByTestId('fit-company-score')).toHaveTextContent('4.2 / 5');
         expect(screen.getByTestId('fit-coverage')).toHaveTextContent('60%');
         const labels = within(screen.getByRole('list', {name: 'Match figures'})).getAllByRole('listitem');
@@ -122,9 +122,9 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(row.getAttribute('data-group')).toBe('unknown');
         expect(screen.getByTestId('fit-group-meets')).not.toContainElement(row);
         expect(screen.getByTestId('fit-out-of-scope-funding_stage'))
-            .toHaveTextContent('Not counted for you: the fact on record covers Location: US only.');
+            .toHaveTextContent('Not counted: the fact on record covers Location: US only.');
         // One sentence: no value, no status word, and the scope is not said twice.
-        expect(row).toHaveTextContent(/^\S* ?Funding stageNot counted for you: the fact on record covers Location: US only\.$/);
+        expect(row).toHaveTextContent(/^\S* ?Funding stageNot counted: the fact on record covers Location: US only\.$/);
         expect(screen.queryByTestId('fit-scope-funding_stage')).toBeNull();
         expect(screen.queryByTestId('fit-evidence-funding_stage')).toBeNull();
         expect(row).not.toHaveTextContent('Unknown');
@@ -137,40 +137,66 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         renderFit();
         await screen.findByTestId('fit-ready');
         expect(screen.getByTestId('fit-out-of-scope-funding_stage'))
-            .toHaveTextContent('Not counted for you: the fact on record covers part of the company only.');
+            .toHaveTextContent('Not counted: the fact on record covers part of the company only.');
     });
 
-    test('a requirement with no fact behind it reads "No fact on record", not "Company-wide"', async () => {
+    test('a requirement with no fact behind it says what is true of it, in the evidence list\'s words', async () => {
         global.fetch = jest.fn().mockResolvedValue(answer(fit({requirements: [
             req({path: 'industry', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
             req({path: 'funding_stage', status: 'match', evidence_status: null, source_kind: 'field'}),
+            req({path: 'compensation.minimum_salary', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
+            req({path: 'geography.remote_friendly', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
+            req({path: 'geography.regions', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
         ]})));
         renderFit();
         await screen.findByTestId('fit-ready');
-        expect(screen.getByTestId('fit-scope-industry')).toHaveTextContent('No fact on record');
+        expect(screen.getByTestId('fit-scope-industry')).toHaveTextContent(/^No accepted evidence$/);
         expect(screen.getByTestId('fit-row-industry')).not.toHaveTextContent('Company-wide');
+        expect(document.body.textContent).not.toContain('No fact on record');
         // A field-sourced value is a fact on record, company-wide.
         expect(screen.getByTestId('fit-scope-funding_stage')).toHaveTextContent('Company-wide');
+        // Decided from a job's own pay, place and remote flag: never for a company, and the row says where it is.
+        for (const path of ['compensation.minimum_salary', 'geography.remote_friendly', 'geography.regions']) {
+            expect(screen.getByTestId(`fit-scope-${path}`))
+                .toHaveTextContent('Checked for each job, not for the company. See Open jobs.');
+        }
     });
 
-    test('the disclosure explains the numbers, the marks and the status words from the shared constants', async () => {
+    test('the disclosure is short and explains the numbers, the marks and the two status words', async () => {
         renderFit();
         await screen.findByTestId('fit-ready');
         const legend = screen.getByTestId('fit-legend');
         expect(legend.tagName).toBe('DETAILS');
         expect(legend).not.toHaveAttribute('open');
         const text = legend.textContent || '';
-        for (const term of [MATCH_TERMS.fit, MATCH_TERMS.companyScore, MATCH_TERMS.requirementCoverage,
-            MATCH_TERMS.sourced, MATCH_TERMS.changed]) {
+        for (const term of [MATCH_TERMS.companyScore, MATCH_TERMS.requirementCoverage, MATCH_TERMS.sourced]) {
             expect(text).toContain(term.label);
             expect(text).toContain(term.meaning);
         }
         for (const mark of Object.values(REQUIREMENT_MARKS)) expect(text).toContain(mark.meaning);
-        expect(text).toContain('Fit is a weighted score out of 100');
-        expect(text).toContain('Coverage only says how many of your priorities could be decided');
-        expect(text).toContain('A requirement is a priority you marked as a requirement');
-        expect(text).toContain('Why a fact is Verified below and Sourced, not confirmed here');
+        expect(text).toContain(EVIDENCE_STATUS_META.verified.meaning);
+        // The Fit number says what it is, and that it has no top of 100.
+        expect(text).toContain('The ranking\u2019s score for this company under your priorities');
+        expect(text).toContain('so it cannot reach 100');
+        // Why the number and the rows can disagree.
+        expect(text).toContain('Why the fit and the rows can disagree');
+        expect(text).toContain('the fit reads the profile values');
+        expect(text).toContain('a priority under Meets can add nothing to the fit');
+        expect(text).toContain('Does not meet lists requirements that are not met; Tradeoffs lists preferences that are not met.');
+        expect(text).toContain('a row built on it Sourced, not confirmed');
+        // Cut to what a reader meets: no entry for a status this view cannot show, no run-together words.
+        expect(text).not.toContain(MATCH_TERMS.changed.label);
+        expect(text).not.toContain('Refresh matches');
+        expect(text).not.toMatch(/confirmedeven|confirmed[a-z]/);
+        expect(text.split(/\s+/).length).toBeLessThan(270);
         expect(within(legend).getByText('What these labels mean').tagName).toBe('SUMMARY');
+    });
+
+    test('the Fit number carries no scale it cannot reach', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.getByTestId('fit-score').textContent).not.toMatch(/100/);
+        expect(document.querySelector('.job-match-figure-label')!.getAttribute('title')).toContain('cannot reach 100');
     });
 
     test('the heading takes focus (a jump target) and the settle callback runs when the read lands', async () => {
@@ -200,8 +226,8 @@ describe('FitSection (issue #486, AC 15-16)', () => {
             expect(screen.getByTestId(`fit-empty-${key}`)).toBeInTheDocument();
         }
         expect(screen.queryByTestId('fit-empty-meets')).toBeNull();
-        expect(screen.getByTestId('fit-empty-tradeoffs')).toHaveTextContent('No preference is unmet.');
-        expect(screen.getByTestId('fit-empty-does-not-meet')).toHaveTextContent('No requirement is unmet.');
+        expect(screen.getByTestId('fit-empty-tradeoffs')).toHaveTextContent('No preference is known to be unmet.');
+        expect(screen.getByTestId('fit-empty-does-not-meet')).toHaveTextContent('No requirement is known to be unmet.');
         expect(screen.getByTestId('fit-empty-unknown')).toHaveTextContent('Nothing is undecided.');
         global.fetch = jest.fn().mockResolvedValue(answer(fit({requirements: [req({status: 'unknown', observed: null})]})));
         cleanup();
@@ -216,6 +242,45 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(screen.getByTestId('fit-score')).toHaveTextContent('—');
         expect(screen.getByTestId('fit-company-score')).toHaveTextContent('—');
         expect(screen.getByTestId('fit-coverage')).toHaveTextContent('—');
+    });
+
+    test('priorities the engine cannot check are named, never left out silently', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({unsupported: ['roles.titles', 'compensation.minimum_total_compensation']})));
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.getByTestId('fit-unsupported'))
+            .toHaveTextContent('Not checked for a company: Role titles, Minimum total compensation.');
+        cleanup();
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({unsupported: []})));
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.queryByTestId('fit-unsupported')).toBeNull();
+    });
+
+    test('a reader whose saved priorities are all unsupported is not told to set priorities', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            has_preferences: false, requirements: [], unsupported: ['roles.titles', 'compensation.minimum_total_compensation'],
+        })));
+        const onEdit = jest.fn();
+        renderFit({onEditPriorities: onEdit});
+        const prompt = await screen.findByTestId('fit-unsupported-only');
+        expect(prompt).toHaveTextContent('Your saved priorities cannot be checked against a company yet: Role titles, Minimum total compensation.');
+        expect(prompt).toHaveTextContent('Add another priority to see how Acme fits.');
+        expect(screen.queryByTestId('fit-no-priorities')).toBeNull();
+        expect(prompt).not.toHaveTextContent('Set your priorities');
+        fireEvent.click(screen.getByRole('button', {name: 'Edit your priorities'}));
+        expect(onEdit).toHaveBeenCalledTimes(1);
+    });
+
+    test('Retry keeps the keyboard focus in the section, on its heading', async () => {
+        global.fetch = jest.fn().mockResolvedValueOnce(answer({}, {ok: false, status: 500})).mockResolvedValue(answer(fit()));
+        renderFit();
+        const retry = await screen.findByTestId('fit-retry');
+        retry.focus();
+        fireEvent.click(retry);
+        expect(document.activeElement).toBe(document.getElementById('company-fit-title'));
+        await screen.findByTestId('fit-ready');
+        expect(document.activeElement).toBe(document.getElementById('company-fit-title'));
     });
 
     test('no saved priorities: a sentence and a control that opens the editor', async () => {
@@ -365,12 +430,12 @@ describe('the fit follows a saved priorities change (issue #486, F4)', () => {
         act(() => store.setPrioritiesRevision(7));
         expect(calls()).toBe(2);
         expect(screen.getByTestId('fit-ready')).toHaveAttribute('aria-busy', 'true');
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3 / 100');
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3');
         expect(screen.queryByTestId('fit-loading')).toBeNull();
         await act(async () => {
             release(answer(second()));
         });
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5 / 100');
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5');
         expect(screen.getByTestId('fit-ready')).not.toHaveAttribute('aria-busy');
         expect(calls()).toBe(2);
     });
@@ -407,7 +472,7 @@ describe('the fit follows a saved priorities change (issue #486, F4)', () => {
         await act(async () => {
             waiting[1](answer(second()));
         });
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5 / 100');
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5');
     });
 
     test('a second change while one read is out keeps only the last answer', async () => {
@@ -420,11 +485,11 @@ describe('the fit follows a saved priorities change (issue #486, F4)', () => {
         await act(async () => {
             waiting[0](answer(fit({fit_score: 1})));
         });
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3 / 100');
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3');
         await act(async () => {
             waiting[1](answer(second()));
         });
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5 / 100');
+        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5');
     });
 
     test('a purge during a re-read leaves nothing, and its late answer is dropped', async () => {
@@ -524,35 +589,173 @@ describe('fitGroupOf and observedText', () => {
         expect(observedText(req({observed: []}))).toBe('Unknown');
         expect(observedText(req({observed: {a: 1}}))).toBe('Unknown');
         expect(observedText(req({observed: 'p'}))).toBe('Public');
-        expect(observedText(req({path: 'industry', observed: 'Software'}))).toBe('Software');
-        expect(observedText(req({path: 'compensation.minimum_salary', observed: 120000}))).toBe('120000');
     });
 
-    // The values the matching engine sends (crank/agents/jobs/matching.py), per path.
+    // Every requirement path of the matching engine (crank/agents/jobs/matching.py,
+    // `_requirement_set_paths`) and every shape of `observed` it can send for it
+    // (`_eval_requirement`), each as the words a reader would write. The table in
+    // the PR body lists the same values; a path or shape added to the engine is
+    // added here.
     test.each([
-        ['funding_stage', 'b', 'Series B'],
-        ['funding_stage', 's', 'Seed'],
-        ['funding_stage', 'x', 'Series G or Later'],
-        ['funding_stage', 'o', 'Other Private'],
-        ['funding_stage', 'p', 'Public'],
-        ['funding_stage', 'series h', 'series h'],
+        // compensation.minimum_salary: a listing's own pay (an integer), or its currency when it differs.
+        ['compensation.minimum_salary', 120000, '120,000 per year'],
+        ['compensation.minimum_salary', 'EUR', 'Pay is published in EUR'],
+        ['compensation.minimum_salary', 'usd', 'Pay is published in USD'],
+        // compensation.equity_minimum_percent: a float.
+        ['compensation.equity_minimum_percent', 0.5, '0.5%'],
+        ['compensation.equity_minimum_percent', 1, '1%'],
+        // compensation.require_public_company: the evidence's own prose, or the funding letter.
         ['compensation.require_public_company', 'P', 'Public'],
         ['compensation.require_public_company', 'B', 'Series B'],
         ['compensation.require_public_company', 'Private company', 'Private company'],
+        ['compensation.require_public_company', 'Public company', 'Public company'],
+        // work_location.modes: "remote" | "hybrid" | "in-office".
         ['work_location.modes', 'remote', 'Remote'],
         ['work_location.modes', 'hybrid', 'Hybrid'],
         ['work_location.modes', 'in-office', 'In-Office'],
         ['work_location.modes', 'R', 'Remote'],
         ['work_location.modes', 'flexible', 'flexible'],
+        // work_location.countries: the reader's own lower-case country, or the evidence's prose.
+        ['work_location.countries', 'us', 'US'],
+        ['work_location.countries', 'usa', 'USA'],
+        ['work_location.countries', 'uk', 'UK'],
+        ['work_location.countries', 'canada', 'Canada'],
+        ['work_location.countries', 'united states', 'United States'],
+        ['work_location.countries', 'United States', 'United States'],
+        ['work_location.countries', 'Austin, TX, USA', 'Austin, TX, USA'],
+        // work_location.max_in_office_days: a number of days.
         ['work_location.max_in_office_days', 0, '0 days a week in the office'],
         ['work_location.max_in_office_days', 1, '1 day a week in the office'],
         ['work_location.max_in_office_days', 3, '3 days a week in the office'],
+        ['work_location.max_in_office_days', 5, '5 days a week in the office'],
+        // geography.regions: the reader's lower-case region.
+        ['geography.regions', 'san francisco', 'San Francisco'],
+        ['geography.regions', 'emea', 'Emea'],
+        // geography.remote_friendly: a boolean.
+        ['geography.remote_friendly', true, 'Yes'],
+        ['geography.remote_friendly', false, 'No'],
+        // industry: the lower-case words of the profile or the reader.
+        ['industry', 'software', 'Software'],
+        ['industry', 'fintech', 'Fintech'],
+        ['industry', 'health care', 'Health Care'],
+        ['industry', 'ai ml', 'AI ML'],
+        ['industry', 'saas', 'SAAS'],
+        // funding_stage: one lower-case letter, or the words of a stage the engine does not alias.
+        ['funding_stage', 's', 'Seed'],
+        ['funding_stage', 'a', 'Series A'],
+        ['funding_stage', 'b', 'Series B'],
+        ['funding_stage', 'c', 'Series C'],
+        ['funding_stage', 'd', 'Series D'],
+        ['funding_stage', 'e', 'Series E'],
+        ['funding_stage', 'f', 'Series F'],
+        ['funding_stage', 'x', 'Series G or Later'],
+        ['funding_stage', 'o', 'Other Private'],
+        ['funding_stage', 'p', 'Public'],
+        ['funding_stage', 'series h', 'Series H'],
+        ['funding_stage', 'growth', 'Growth'],
+        // culture: the matched or the profile's lower-case tag.
+        ['culture', 'collaborative', 'Collaborative'],
+        ['culture', 'fast paced', 'Fast Paced'],
+        // vesting.*: months, and a boolean.
         ['vesting.max_cliff_months', 12, '12 months'],
+        ['vesting.max_cliff_months', 0, '0 months'],
         ['vesting.max_vesting_months', 1, '1 month'],
-        ['compensation.equity_minimum_percent', 0.5, '0.5%'],
-        ['work_location.countries', 'United States', 'United States'],
-        ['industry', 'software', 'software'],
+        ['vesting.max_vesting_months', 48, '48 months'],
+        ['vesting.prefer_accelerated', true, 'Yes'],
+        ['vesting.prefer_accelerated', false, 'No'],
+        // A path this does not know prints its value unchanged.
+        ['something.new', 'raw-value', 'raw-value'],
     ])('%s: %p reads %p', (path, observed, words) => {
         expect(observedText(req({path, observed}))).toBe(words);
+    });
+
+    test('no value of any requirement path prints as a bare lower-case code or a bare number', () => {
+        const values: [string, unknown][] = [
+            ['funding_stage', 'b'], ['work_location.modes', 'remote'], ['work_location.max_in_office_days', 0],
+            ['work_location.countries', 'us'], ['industry', 'software'], ['culture', 'collaborative'],
+            ['geography.regions', 'emea'], ['compensation.minimum_salary', 100000],
+            ['vesting.max_cliff_months', 12], ['compensation.equity_minimum_percent', 2],
+        ];
+        for (const [path, observed] of values) {
+            const text = observedText(req({path, observed}));
+            expect(text).not.toBe(String(observed));
+            expect(text).not.toMatch(/^[a-z]{1,3}$/);
+            expect(text).not.toMatch(/^\d+(\.\d+)?$/);
+        }
+    });
+});
+
+describe('Retry and the reader\'s place', () => {
+    test('retryFrom without a heading still retries', () => {
+        const retry = jest.fn();
+        retryFrom('no-such-heading', retry);
+        expect(retry).toHaveBeenCalledTimes(1);
+    });
+
+    // jsdom lays nothing out: each probe reports the rectangles the browser would.
+    // `next` is where what follows the section sits once the new content is in
+    // the page: it is applied in a layout effect that runs before the hook's.
+    const Probe = ({value, next}: {value: number; next: number}) => {
+        const ref = React.useRef<HTMLElement>(null);
+        React.useLayoutEffect(() => {
+            if (value > 1) afterTop = next;
+        }, [value, next]);
+        useHoldReaderBelow(ref, value);
+        return (
+            <div>
+                <section ref={ref} data-testid="held">{value}</section>
+                <p data-testid="after">after</p>
+            </div>
+        );
+    };
+    const scrollBy = jest.fn();
+    let sectionBottom = -100;
+    let afterTop = 50;
+    let rects: jest.SpyInstance;
+    beforeEach(() => {
+        scrollBy.mockReset();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        rects = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const top = this.tagName === 'P' ? afterTop : 0;
+            const bottom = this.tagName === 'SECTION' ? sectionBottom : top;
+            return {top, bottom, left: 0, right: 0, width: 0, height: 0, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+    });
+    afterEach(() => {
+        rects.mockRestore();
+        cleanup();
+    });
+
+    test('a section above the top of the screen that grows pushes the page back by the growth', () => {
+        sectionBottom = -100;
+        afterTop = 50;
+        const view = render(<Probe value={1} next={50}/>);
+        view.rerender(<Probe value={2} next={400}/>);
+        expect(scrollBy).toHaveBeenCalledWith({top: 350, behavior: 'instant'});
+    });
+
+    test('nothing moves when the browser kept the reader\'s place, or the section was on screen', () => {
+        sectionBottom = -100;
+        afterTop = 50;
+        const view = render(<Probe value={1} next={50}/>);
+        view.rerender(<Probe value={2} next={50}/>);
+        expect(scrollBy).not.toHaveBeenCalled();
+        sectionBottom = 200;
+        afterTop = 300;
+        view.rerender(<Probe value={3} next={700}/>);
+        expect(scrollBy).not.toHaveBeenCalled();
+    });
+
+    test('a section that ends the page is measured by its own bottom', () => {
+        const Last = ({value}: {value: number}) => {
+            const ref = React.useRef<HTMLElement>(null);
+            useHoldReaderBelow(ref, value);
+            return <section ref={ref}>{value}</section>;
+        };
+        sectionBottom = -10;
+        const view = render(<Last value={1}/>);
+        sectionBottom = -10;
+        view.rerender(<Last value={2}/>);
+        expect(scrollBy).not.toHaveBeenCalled();
     });
 });

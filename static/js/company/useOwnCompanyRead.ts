@@ -146,3 +146,42 @@ export function useOwnCompanyRead<T>(
     const state = held.id === organizationId ? held.state : (LOADING as OwnReadState<T>);
     return {state, retry, refreshing: refreshing && state.kind === 'ready'};
 }
+
+/**
+ * A Retry button is replaced by the loading placeholder the moment it is
+ * pressed, which would drop the keyboard focus to the page body. Move it to the
+ * section's own heading (already focusable, and always on screen) and read again.
+ */
+export function retryFrom(headingId: string, retry: () => void): void {
+    document.getElementById(headingId)?.focus({preventScroll: true});
+    retry();
+}
+
+/**
+ * Keeps a reader who has scrolled past a section where they are when the
+ * section's answer changes its height. Chromium does not anchor the scroll
+ * position inside a size container (`.company-view`), so what follows the
+ * section would jump by the change in height; Firefox corrects it itself, which
+ * is why the movement is measured on screen rather than assumed.
+ *
+ * The position of what follows the section is read while rendering (before the
+ * new content is in the page) and again after the commit. When the whole section
+ * was above the top of the screen and what follows it moved, the page is
+ * scrolled by the same amount.
+ */
+export function useHoldReaderBelow(sectionRef: React.RefObject<HTMLElement>, dependency: unknown): void {
+    const before = React.useRef<{bottom: number; next: number} | null>(null);
+    const section = sectionRef.current;
+    if (section) {
+        const bottom = section.getBoundingClientRect().bottom;
+        before.current = {bottom, next: section.nextElementSibling?.getBoundingClientRect().top ?? bottom};
+    }
+    React.useLayoutEffect(() => {
+        const element = sectionRef.current;
+        const was = before.current;
+        if (!element || !was) return;
+        const next = element.nextElementSibling?.getBoundingClientRect().top ?? element.getBoundingClientRect().bottom;
+        const moved = next - was.next;
+        if (was.bottom <= 0 && Math.abs(moved) >= 1) window.scrollBy({top: moved, behavior: 'instant' as ScrollBehavior});
+    }, [dependency, sectionRef]);
+}

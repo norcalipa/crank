@@ -2,11 +2,11 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 import {
-    EVIDENCE_CHANGED_MARKER, EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS, formatScopeWords, fundingRoundLabel,
+    EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS, formatScopeWords, fundingRoundLabel,
     partialScopeWords, requirementLabel, rtoPolicyLabel,
 } from '../labels';
 import EvidenceBadge from '../evidence/EvidenceBadge';
-import {useOwnCompanyRead} from './useOwnCompanyRead';
+import {retryFrom, useHoldReaderBelow, useOwnCompanyRead} from './useOwnCompanyRead';
 
 export interface FitRequirement {
     path: string;
@@ -45,8 +45,8 @@ interface FitGroupMeta {
 
 export const FIT_GROUPS: FitGroupMeta[] = [
     {key: 'meets', title: 'Meets', empty: 'No priority is confirmed as met.'},
-    {key: 'tradeoffs', title: 'Tradeoffs', empty: 'No preference is unmet.'},
-    {key: 'does-not-meet', title: 'Does not meet', empty: 'No requirement is unmet.'},
+    {key: 'tradeoffs', title: 'Tradeoffs', empty: 'No preference is known to be unmet.'},
+    {key: 'does-not-meet', title: 'Does not meet', empty: 'No requirement is known to be unmet.'},
     {key: 'unknown', title: 'Unknown', empty: 'Nothing is undecided.'},
 ];
 
@@ -63,10 +63,28 @@ export function fitGroupOf(requirement: FitRequirement): FitGroupKey {
 // What the matching engine sends as `observed`, per requirement path (see the
 // table in the PR body). The engine's own vocabulary is not a reader's: a
 // funding stage is one lower-case letter, a work mode is "remote" / "hybrid" /
-// "in-office", the in-office requirement is a number of days. A value this does
-// not know is printed unchanged.
+// "in-office", the in-office requirement is a number of days, and a country,
+// industry, region or culture tag is the reader's own lower-case word. A value
+// this does not know is printed unchanged.
 const MODE_WORDS: Record<string, string> = {remote: 'Remote', hybrid: 'Hybrid', 'in-office': 'In-Office'};
 const FUNDING_CODE = /^[a-z]$/i;
+// Paths whose engine value is a lower-cased word of the reader's own.
+const LOWER_CASE_PATHS = [
+    'work_location.countries', 'geography.regions', 'industry', 'culture', 'funding_stage',
+];
+const ACRONYMS = new Set([
+    'ai', 'ml', 'saas', 'hr', 'it', 'vr', 'ar', 'iot', 'b2b', 'b2c', 'api', 'ux', 'ui', 'us', 'usa', 'uk', 'eu', 'uae',
+]);
+
+// Decided from a job listing's own pay, place and remote flag: the company-level
+// check has no listing, so these never have a fact behind them for a company.
+const PER_JOB_PATHS = ['compensation.minimum_salary', 'geography.regions', 'geography.remote_friendly'];
+const PER_JOB_TEXT = 'Checked for each job, not for the company. See Open jobs.';
+// The words the evidence list uses for the same answer.
+const NO_EVIDENCE_TEXT = 'No accepted evidence';
+
+const capitalizeWords = (text: string): string =>
+    text.replace(/[^\s\-/]+/g, word => (ACRONYMS.has(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)));
 
 const countText = (count: number, unit: string, suffix = ''): string =>
     `${count} ${unit}${count === 1 ? '' : 's'}${suffix}`;
@@ -94,6 +112,12 @@ export function observedText(requirement: FitRequirement): string {
         return countText(observed as number, 'month');
     }
     if (path === 'compensation.equity_minimum_percent' && numeric) return `${observed}%`;
+    if (path === 'compensation.minimum_salary') {
+        if (numeric) return `${(observed as number).toLocaleString('en-US')} per year`;
+        if (/^[a-z]{3}$/i.test(text)) return `Pay is published in ${text.toUpperCase()}`;
+    }
+    if (path === 'work_location.countries' && /^[a-z]{2,3}$/.test(text)) return text.toUpperCase();
+    if (LOWER_CASE_PATHS.includes(path) && text === text.toLowerCase()) return capitalizeWords(text);
     return text;
 }
 
@@ -109,6 +133,13 @@ function evidenceText(requirement: FitRequirement): string | null {
     return null;
 }
 
+// What the Fit number is. It is the ranking's own score for the company
+// (`_score_organization_match`), not a count of the rows below, and it has no
+// fixed top: a company is scored on five of the ranking's eight factors.
+const FIT_MEANING = 'The ranking\u2019s score for this company under your priorities. It scores the profile fields at '
+    + 'the top of this page against your funding stage, work mode, industry and vesting priorities, and adds points for '
+    + 'the company\u2019s ratings. Only five of the ranking\u2019s eight factors apply to a company, so it cannot reach 100.';
+
 const figure = (value: number | null, scale: string, digits = 1): string =>
     value === null || value === undefined ? '—' : `${value.toFixed(digits)}${scale}`;
 
@@ -118,8 +149,8 @@ function Figures({fit}: {fit: CompanyFit}) {
     return (
         <div className="job-match-figures company-fit-figures mb-3" role="list" aria-label="Match figures">
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label" title={MATCH_TERMS.fit.meaning}>{MATCH_TERMS.fit.label}</span>
-                <strong className="job-match-figure-value" data-testid="fit-score">{figure(fit.fit_score, ' / 100')}</strong>
+                <span className="job-match-figure-label" title={FIT_MEANING}>{MATCH_TERMS.fit.label}</span>
+                <strong className="job-match-figure-value" data-testid="fit-score">{figure(fit.fit_score, '')}</strong>
             </span>
             <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label" title={MATCH_TERMS.companyScore.meaning}>{MATCH_TERMS.companyScore.label}</span>
@@ -151,7 +182,7 @@ function FitRow({requirement}: {requirement: FitRequirement}) {
             <li {...rowProps}>
                 {label}
                 <span className="company-fit-out-of-scope small" data-testid={`fit-out-of-scope-${requirement.path}`}>
-                    Not counted for you: the fact on record covers {partialScopeWords(requirement.scope) ?? 'part of the company'} only.
+                    Not counted: the fact on record covers {partialScopeWords(requirement.scope) ?? 'part of the company'} only.
                 </span>
             </li>
         );
@@ -164,7 +195,9 @@ function FitRow({requirement}: {requirement: FitRequirement}) {
             <span className="company-fit-value">{observedText(requirement)}</span>
             <span className="company-fit-meta small text-muted">
                 {noFact ? (
-                    <span data-testid={`fit-scope-${requirement.path}`}>No fact on record</span>
+                    <span data-testid={`fit-scope-${requirement.path}`}>
+                        {PER_JOB_PATHS.includes(requirement.path) ? PER_JOB_TEXT : NO_EVIDENCE_TEXT}
+                    </span>
                 ) : (
                     <>
                         {evidence && <span data-testid={`fit-evidence-${requirement.path}`}>{evidence}</span>}
@@ -179,13 +212,13 @@ function FitRow({requirement}: {requirement: FitRequirement}) {
     );
 }
 
-const LEGEND_STATUSES = ['verified', 'stale', 'profile'] as const;
 const LEGEND_MARKS = ['match', 'mismatch', 'unknown'] as const;
 
 /**
- * The words on the three numbers, the marks and the status words, in the
- * visible page and not only in `title` attributes. Built from the constants the
- * job-match panel's legend reads, so the two cannot drift.
+ * The words on the three numbers, the marks and the two status words a row can
+ * carry, in the visible page and not only in `title` attributes. Built from the
+ * constants the job-match panel's legend reads where the meaning is shared, so
+ * the two cannot drift.
  */
 function FitLegend() {
     return (
@@ -193,22 +226,20 @@ function FitLegend() {
             <summary className="how-ranking-works-summary">What these labels mean</summary>
             <div className="how-ranking-works-content">
                 <dl className="ranking-definitions mb-0">
-                    {[MATCH_TERMS.fit, MATCH_TERMS.companyScore, MATCH_TERMS.requirementCoverage].map(term => (
-                        <React.Fragment key={term.label}>
-                            <dt>{term.label}</dt>
-                            <dd>{term.meaning}</dd>
-                        </React.Fragment>
-                    ))}
-                    <dt>Why every priority can be met and the fit still be low</dt>
+                    <dt>{MATCH_TERMS.fit.label}</dt>
+                    <dd>{FIT_MEANING}</dd>
+                    <dt>{MATCH_TERMS.companyScore.label}</dt>
+                    <dd>{MATCH_TERMS.companyScore.meaning}</dd>
+                    <dt>{MATCH_TERMS.requirementCoverage.label}</dt>
+                    <dd>{MATCH_TERMS.requirementCoverage.meaning}</dd>
+                    <dt>Why the fit and the rows can disagree</dt>
                     <dd>
-                        Fit is a weighted score out of 100, not the share of your priorities that are met. Coverage
-                        only says how many of your priorities could be decided, so it can be 100% while the fit is low.
+                        The rows are decided from sourced facts; the fit reads the profile values. Where they differ,
+                        a priority under Meets can add nothing to the fit, and one that is unmet or undecided can add to it.
                     </dd>
-                    <dt>Requirement and preference</dt>
+                    <dt>Groups</dt>
                     <dd>
-                        A requirement is a priority you marked as a requirement: when it is not met it is listed under
-                        Does not meet. A preference is one you marked as a preference: when it is not met it is listed
-                        under Tradeoffs.
+                        Does not meet lists requirements that are not met; Tradeoffs lists preferences that are not met.
                     </dd>
                     <dt>Marks</dt>
                     <dd>
@@ -226,24 +257,14 @@ function FitLegend() {
                     <dt>Evidence behind a row</dt>
                     <dd>
                         <ul className="evidence-legend list-unstyled mb-0">
-                            {LEGEND_STATUSES.map(status => (
-                                <li key={status}><EvidenceBadge status={status}/>: {EVIDENCE_STATUS_META[status].meaning}</li>
-                            ))}
+                            <li><EvidenceBadge status="verified"/>: {EVIDENCE_STATUS_META.verified.meaning}</li>
                             <li><span className="evidence-badge">{MATCH_TERMS.sourced.label}</span>: {MATCH_TERMS.sourced.meaning}</li>
-                            <li>
-                                <span className="evidence-badge">
-                                    <span className="evidence-badge-marker" aria-hidden="true">{EVIDENCE_CHANGED_MARKER}</span>
-                                    {' '}{MATCH_TERMS.changed.label}
-                                </span>: {MATCH_TERMS.changed.meaning}
-                            </li>
                         </ul>
-                    </dd>
-                    <dt>Why a fact is {EVIDENCE_STATUS_META.verified.label} below and {MATCH_TERMS.sourced.label} here</dt>
-                    <dd>
-                        "Data Freshness &amp; Sources" says whether the fact itself was accepted and re-checked. A row
-                        here says how this priority was decided from it: read from a source's wording, inferred, or
-                        taken from a source that covers only part of the company, a priority is {MATCH_TERMS.sourced.label}
-                        even when the fact is {EVIDENCE_STATUS_META.verified.label}.
+                        <p className="mb-0 mt-1">
+                            A fact can be {EVIDENCE_STATUS_META.verified.label} in "Data Freshness &amp; Sources" and
+                            a row built on it {MATCH_TERMS.sourced.label}: the list is about the fact, the row about
+                            how this priority was decided from it.
+                        </p>
                     </dd>
                 </dl>
             </div>
@@ -274,6 +295,8 @@ const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
     organizationId, name, isAuthenticated, signInUrl, onEditPriorities, onSettled,
 }, headingRef) => {
     const {state, retry, refreshing} = useOwnCompanyRead<CompanyFit>('fit', organizationId, isAuthenticated, isCompanyFit, true);
+    const sectionRef = React.useRef<HTMLElement>(null);
+    useHoldReaderBelow(sectionRef, state);
     const target = name.length > 40 ? 'this company' : name;
     const titleId = 'company-fit-title';
 
@@ -301,13 +324,25 @@ const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
         body = (
             <div className="alert alert-warning mb-0" role="alert" data-testid="fit-error">
                 <p className="mb-2">Fit could not be loaded.</p>
-                <button type="button" className="btn btn-outline-light" data-testid="fit-retry" onClick={retry}>
+                <button type="button" className="btn btn-outline-light" data-testid="fit-retry" onClick={() => retryFrom(titleId, retry)}>
                     Retry<span className="visually-hidden"> loading fit</span>
                 </button>
             </div>
         );
     } else if (!state.data.has_preferences) {
-        body = (
+        const unsupported = state.data.unsupported || [];
+        body = unsupported.length > 0 ? (
+            <div data-testid="fit-unsupported-only" aria-busy={refreshing || undefined}>
+                <p className="mb-2">
+                    Your saved priorities cannot be checked against a company yet: {unsupported.map(requirementLabel).join(', ')}.
+                    {' '}Add another priority to see how {target} fits.
+                </p>
+                <button type="button" className="btn btn-outline-light" data-testid="fit-set-priorities"
+                        onClick={onEditPriorities}>
+                    Edit your priorities
+                </button>
+            </div>
+        ) : (
             <div data-testid="fit-no-priorities" aria-busy={refreshing || undefined}>
                 <p className="mb-2">Set your priorities to see how {target} fits.</p>
                 <button type="button" className="btn btn-outline-light" data-testid="fit-set-priorities"
@@ -340,12 +375,17 @@ const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
                         </div>
                     );
                 })}
+                {(fit.unsupported || []).length > 0 && (
+                    <p className="small text-body-secondary mb-0" data-testid="fit-unsupported">
+                        Not checked for a company: {(fit.unsupported || []).map(requirementLabel).join(', ')}.
+                    </p>
+                )}
             </div>
         );
     }
 
     return (
-        <section className="company-fit mt-3" data-testid="company-fit" aria-labelledby={titleId}>
+        <section ref={sectionRef} className="company-fit mt-3" data-testid="company-fit" aria-labelledby={titleId}>
             <h3 id={titleId} ref={headingRef} tabIndex={-1} className="h5 mb-2 company-jump-heading">
                 Fit with your priorities
             </h3>

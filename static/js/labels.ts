@@ -183,6 +183,21 @@ const REQUIREMENT_LABELS: Record<string, string> = {
     'vesting.max_cliff_months': 'Cliff',
     'vesting.max_vesting_months': 'Vesting length',
     'vesting.prefer_accelerated': 'Accelerated vesting',
+    // The priorities the editor offers but the matching engine cannot check yet
+    // (the server's names for them, crank.services.preferences CRITERION_LABELS).
+    'roles.families': 'Role families',
+    'roles.titles': 'Role titles',
+    'roles.seniority': 'Seniority',
+    'compensation.minimum_total_compensation': 'Minimum total compensation',
+    'compensation.equity_liquidity_required': 'Equity liquidity required',
+    'compensation.acceptable_liquidity_events': 'Acceptable liquidity events',
+    'compensation.basis': 'Salary basis',
+    'compensation.period': 'Salary period',
+    'work_location.require_onsite': 'Require on-site',
+    'work_location.office_days_exact': 'Exact office days per week',
+    'scope.countries': 'Scope countries',
+    'scope.role_families': 'Scope role families',
+    'notes': 'Notes',
 };
 
 export const requirementLabel = (path: string): string =>

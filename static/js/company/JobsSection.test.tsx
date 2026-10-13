@@ -202,7 +202,9 @@ describe('a job row says each thing once (issue #486, round 2)', () => {
         expect(jobMeta(job({location_text: 'Austin, TX'}))).toBe('Austin, TX · Remote · USD 150,000–190,000 per year');
         expect(jobMeta(job({location_text: '', is_remote: true}))).toBe('Remote · USD 150,000–190,000 per year');
         expect(jobMeta(job({location_text: 'Remote', is_remote: false, compensation_min: null, compensation_max: null})))
-            .toBe('Remote · Not listed as remote · Pay not published');
+            .toBe('Remote · Pay not published');
+        // The location text says remote though the flag is off: one answer, not two.
+        expect(jobMeta(job({location_text: 'Remote - US', is_remote: false}))).toBe('Remote - US · USD 150,000–190,000 per year');
     });
 
     test('a listing without an http(s) address says there is no link; one with an address names the new tab', async () => {

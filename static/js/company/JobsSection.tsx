@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {useOwnCompanyRead} from './useOwnCompanyRead';
+import {retryFrom, useHoldReaderBelow, useOwnCompanyRead} from './useOwnCompanyRead';
 
 export interface CompanyJob {
     id: number;
@@ -65,10 +65,9 @@ export function payText(job: CompanyJob): string {
 /** Where it is, whether it is remote (once), and the pay. */
 export function jobMeta(job: CompanyJob): string {
     const place = job.location_text || '';
-    // A location that already says "Remote" is not followed by the same word.
-    const arrangement = job.is_remote
-        ? (/\bremote\b/i.test(place) ? '' : 'Remote')
-        : 'Not listed as remote';
+    // A location that already says "Remote" is neither followed by the same word
+    // nor by "Not listed as remote", which the same line would contradict.
+    const arrangement = /\bremote\b/i.test(place) ? '' : job.is_remote ? 'Remote' : 'Not listed as remote';
     return [place, arrangement, payText(job)].filter(part => part !== '').join(' · ');
 }
 
@@ -88,6 +87,8 @@ const JobsSection = React.forwardRef<HTMLHeadingElement, JobsSectionProps>(({
     organizationId, name, isAuthenticated, signInUrl,
 }, headingRef) => {
     const {state, retry} = useOwnCompanyRead<CompanyJobs>('jobs', organizationId, isAuthenticated, isCompanyJobs);
+    const sectionRef = React.useRef<HTMLElement>(null);
+    useHoldReaderBelow(sectionRef, state);
     const target = name.length > 40 ? 'this company' : name;
     const titleId = 'company-jobs-title';
 
@@ -111,7 +112,7 @@ const JobsSection = React.forwardRef<HTMLHeadingElement, JobsSectionProps>(({
         body = (
             <div className="alert alert-warning mb-0" role="alert" data-testid="jobs-error">
                 <p className="mb-2">Open jobs could not be loaded.</p>
-                <button type="button" className="btn btn-outline-light" data-testid="jobs-retry" onClick={retry}>
+                <button type="button" className="btn btn-outline-light" data-testid="jobs-retry" onClick={() => retryFrom(titleId, retry)}>
                     Retry<span className="visually-hidden"> loading open jobs</span>
                 </button>
             </div>
@@ -137,9 +138,12 @@ const JobsSection = React.forwardRef<HTMLHeadingElement, JobsSectionProps>(({
                             {href ? (
                                 <a href={href} target="_blank" rel="noopener noreferrer" className="company-job-link"
                                    data-testid={`job-link-${job.id}`}>
-                                    View posting<span className="visually-hidden"> for {job.title}</span>
+                                    <span className="text-nowrap">
+                                        View posting{' '}
+                                        <i className="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                    </span>
+                                    <span className="visually-hidden"> for {job.title}</span>
                                     {' '}<span className="evidence-external-note">(opens in a new tab)</span>
-                                    {' '}<i className="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
                                 </a>
                             ) : (
                                 <span className="company-job-no-link small text-body-secondary"
@@ -155,7 +159,7 @@ const JobsSection = React.forwardRef<HTMLHeadingElement, JobsSectionProps>(({
     }
 
     return (
-        <section className="company-jobs mt-3" data-testid="company-jobs" aria-labelledby={titleId}>
+        <section ref={sectionRef} className="company-jobs mt-3" data-testid="company-jobs" aria-labelledby={titleId}>
             <h3 id={titleId} ref={headingRef} tabIndex={-1} className="h5 mb-2 company-jump-heading">Open jobs</h3>
             {body}
         </section>
