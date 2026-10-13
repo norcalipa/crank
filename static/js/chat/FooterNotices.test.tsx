@@ -55,6 +55,13 @@ describe('FooterNotices (issue #483)', () => {
         expect(details).toHaveAttribute('aria-controls', notices().id);
     });
 
+    test('the error of a failed turn collapses, since its card in the transcript has the same Retry', () => {
+        setup({error: 'Could not send.', retrying: true});
+        expect(notices()).toHaveClass('is-collapsed');
+        expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+        expect(screen.getByTestId('chat-notices-details')).toHaveAttribute('aria-expanded', 'false');
+    });
+
     test('a status that renders nothing does not collapse a short error', () => {
         setup({status: ready, error: 'Could not send.'});
         expect(notices()).not.toHaveClass('is-collapsible');

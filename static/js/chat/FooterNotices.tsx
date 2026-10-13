@@ -20,9 +20,10 @@ export interface FooterNoticesProps {
 }
 
 /** The notices above the composer: the availability status and the error of the
- * last send. A status notice plus an error, or an error longer than
- * LONG_ERROR_CHARS, would take the composer's room, so they collapse to one line
- * (the error with an ellipsis, its Retry, and a Details button). The error is one
+ * last send. A status notice plus an error, an error longer than LONG_ERROR_CHARS,
+ * or the error of a failed turn (the transcript already shows that turn's card
+ * with its own Retry) would take the composer's room, so they collapse to one
+ * line (the error with an ellipsis, its Retry, and a Details button). The error is one
  * `role="alert"` element holding its whole text in both modes; the ellipsis is CSS. */
 export function FooterNotices({status, statusChecking, onStatusRetry, error, errorType, retrying, pending, onRetry}: FooterNoticesProps) {
     const listId = `chat-notices-${React.useId()}`;
@@ -34,7 +35,7 @@ export function FooterNotices({status, statusChecking, onStatusRetry, error, err
         setExpanded(false);
     }
     const statusShown = status !== null && statusNoticeShows(status);
-    const collapsible = error !== null && (statusShown || error.length > LONG_ERROR_CHARS);
+    const collapsible = error !== null && (statusShown || retrying || error.length > LONG_ERROR_CHARS);
     const collapsed = collapsible && !expanded;
     return (
         <div id={listId} data-testid="chat-footer-notices"
