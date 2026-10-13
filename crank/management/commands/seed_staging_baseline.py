@@ -50,11 +50,12 @@ from crank.agents.jobs.matching import evaluate_requirements, project_criteria
 from crank.management.commands.seed_job_sources import SEED_SOURCES
 from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.job import JobListing, JobSourceCatalog
-from crank.models.job_match import JobMatch
+from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
 from crank.models.preference import SCHEMA_VERSION, UserPreference, default_preferences
 from crank.services.company_evidence import field_evidence_payload, resolve_field_evidence
+from crank.services.match_recompute import RecomputeStatus, recompute_user
 from crank.services.preferences import to_markdown
 from crank.settings.base import DEFAULT_ALGORITHM_ID
 
@@ -62,6 +63,10 @@ from crank.settings.base import DEFAULT_ALGORITHM_ID
 #: fixture markers are present and the example company holds field evidence;
 #: bump when the fixture rows below change shape or meaning.
 FIXTURE_REVISION = "staging-baseline-2"
+
+#: ``ranker_version`` of the matches this command writes; the real matcher
+#: never writes it, so ``readiness_baseline`` can tell them apart.
+FIXTURE_RANKER_VERSION = "staging-baseline"
 
 #: Throwaway staging credential for the *ordinary* (non-privileged) test
 #: account only. Never a real credential; documented in the baseline doc.
@@ -170,6 +175,7 @@ class Command(BaseCommand):
             staff_password=options["staff_password"],
             notes=notes,
         )
+        self._refresh_citations_of_deleted_rows(notes)
         for note in notes:
             self.stdout.write(note)
         self.stdout.write(
@@ -477,12 +483,20 @@ class Command(BaseCommand):
         # account has none: a participant's or moderator's saved priorities
         # are never overwritten.
         preferences = fixture_preferences()
+        # A recreated row starts above the revision of the results already
+        # published for the account, or its next refresh is discarded as stale.
+        published_revision = (
+            MatchResultState.objects.filter(user=ordinary)
+            .values_list("preference_revision", flat=True)
+            .first()
+        )
         preference, created["preference_ordinary"] = UserPreference.objects.get_or_create(
             user=ordinary,
             defaults={
                 "preferences": preferences,
                 "preferences_markdown": to_markdown(preferences),
                 "schema_version": SCHEMA_VERSION,
+                "revision": 0 if published_revision is None else published_revision + 1,
             },
         )
         if preference.preferences != preferences:
@@ -512,7 +526,7 @@ class Command(BaseCommand):
             user=ordinary,
             listing=active_listing,
             preference_version=1,
-            ranker_version="staging-baseline",
+            ranker_version=FIXTURE_RANKER_VERSION,
             defaults={
                 "organization": target_org,
                 "score": 4.0,
@@ -553,7 +567,7 @@ class Command(BaseCommand):
             user=ordinary,
             listing=active_listing,
             preference_version=2,
-            ranker_version="staging-baseline",
+            ranker_version=FIXTURE_RANKER_VERSION,
             defaults={
                 "organization": target_org,
                 "score": 2.0,
@@ -574,6 +588,44 @@ class Command(BaseCommand):
 
         readings = self._readings(target_org)
         return created, readings
+
+    @staticmethod
+    def _refresh_citations_of_deleted_rows(notes: list[str]) -> None:
+        """Republish the account's matches when one cites a deleted evidence row.
+
+        The documented reset deletes the example company's evidence rows. A
+        match the real matcher already published for the account then cites
+        rows that are gone, and a scheduled refresh answers ``current`` because
+        this command records no change. One forced refresh, the product's own
+        path, makes the published match cite the rows just written.
+        """
+        user = get_user_model().objects.filter(username=ORDINARY_USERNAME).first()
+        if user is None:
+            return
+        cited = set()
+        for ids in (
+            JobMatch.objects.filter(user=user)
+            .exclude(ranker_version=FIXTURE_RANKER_VERSION)
+            .values_list("evidence_ids", flat=True)
+        ):
+            cited.update(ids or [])
+        existing = set(
+            CompanyFieldEvidence.objects.filter(pk__in=cited).values_list("pk", flat=True)
+        )
+        if cited <= existing:
+            return
+        outcome = recompute_user(user, reason="seed_staging_baseline", force=True)
+        if outcome.status == RecomputeStatus.PUBLISHED:
+            notes.append(
+                f"Republished the matches of {ORDINARY_USERNAME}: one cited an "
+                "evidence row that no longer exists."
+            )
+        else:
+            notes.append(
+                f"A published match of {ORDINARY_USERNAME} cites an evidence row "
+                f"that no longer exists and the refresh answered {outcome.status.value}; "
+                "it is not repaired."
+            )
 
     @staticmethod
     def _readings(organization) -> dict[str, str]:

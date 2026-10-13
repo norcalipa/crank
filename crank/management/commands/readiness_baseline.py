@@ -159,12 +159,14 @@ def fixture_set() -> dict:
     Presence is detected via the fixture set's unique marker rows (the fixture
     target organization or the fixture job source). The revision is read from
     the data: ``FIXTURE_REVISION`` (owned by ``seed_staging_baseline``) when the
-    target organization holds field evidence of any version, which every run of
-    the revision-2 command leaves behind and revision 1 never wrote, else
-    ``staging-baseline-1``.
+    command's own ordinary match of the target organization stores requirements,
+    which every run of the revision-2 command writes and revision 1 never did
+    (evidence rows of the company can come from any writer, so they prove
+    nothing), else ``staging-baseline-1``.
     """
-    from crank.models.company_profile import CompanyFieldEvidence
+    from crank.models.job_match import JobMatch
     from crank.management.commands.seed_staging_baseline import (
+        FIXTURE_RANKER_VERSION,
         FIXTURE_REVISION,
         FIXTURE_SOURCE_NAME,
         TARGET_ORG_NAME,
@@ -174,9 +176,13 @@ def fixture_set() -> dict:
         Organization.objects.filter(name=TARGET_ORG_NAME).exists()
         or JobSourceCatalog.objects.filter(name=FIXTURE_SOURCE_NAME).exists()
     )
-    upgraded = CompanyFieldEvidence.objects.filter(
-        organization__name=TARGET_ORG_NAME
-    ).exists()
+    upgraded = any(
+        JobMatch.objects.filter(
+            organization__name=TARGET_ORG_NAME,
+            ranker_version=FIXTURE_RANKER_VERSION,
+            preference_version=1,
+        ).values_list("requirements", flat=True)
+    )
     revision = FIXTURE_REVISION if upgraded else "staging-baseline-1"
     return {
         "revision": revision if present else None,

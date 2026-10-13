@@ -22,6 +22,7 @@ from django.core.cache import cache
 from django.core.management import CommandError, call_command
 from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from crank.management.commands.readiness_baseline import (
     baseline_record,
@@ -437,11 +438,15 @@ class SeedStagingBaselineTests(TestCase):
         payload, _ = _run()
         return _parse(payload)["fixtures"]
 
+    def _make_revision_1(self):
+        """The shape ``main``'s command left: no field evidence, a match without requirements."""
+        CompanyFieldEvidence.objects.all().delete()
+        JobMatch.objects.update(requirements=[], evidence_ids=[])
+
     def test_revision_is_read_from_the_data(self):
         _seed_staging()
         self.assertEqual(self._revision()["revision"], "staging-baseline-2")
-        # A database seeded only at revision 1 has no field evidence.
-        CompanyFieldEvidence.objects.all().delete()
+        self._make_revision_1()
         self.assertEqual(
             self._revision(), {"present": True, "revision": "staging-baseline-1"}
         )
@@ -449,6 +454,56 @@ class SeedStagingBaselineTests(TestCase):
         payload, _ = _run()
         self.assertIn("fixtures_present", _parse(payload)["release_verdict"]["blockers"])
         _seed_staging()
+        self.assertEqual(self._revision()["revision"], "staging-baseline-2")
+
+    def test_evidence_of_another_writer_does_not_make_a_revision_1_database_revision_2(self):
+        _seed_staging()
+        self._make_revision_1()
+        # A pipeline wrote a claim for the example company before the first run
+        # of the revision-2 command: the evidence is not a sign of the revision.
+        target = Organization.objects.get(name="Staging Example Corp")
+        CompanyFieldEvidence.objects.create(
+            organization=target,
+            field_key=CompanyFieldEvidence.FieldKey.ACCELERATED_VESTING,
+            state=CompanyFieldEvidence.State.PENDING,
+            value_text="Yes",
+            source_url="https://jobs.example.test/profile",
+            source_domain="jobs.example.test",
+            observed_at=timezone.now(),
+            validation_version="company-profile.v3",
+            extractor_version="company-profile.v3",
+        )
+        self.assertEqual(self._revision()["revision"], "staging-baseline-1")
+        _seed_staging()
+        self.assertEqual(self._revision()["revision"], "staging-baseline-2")
+
+    def test_only_the_command_s_match_of_the_example_company_counts(self):
+        _seed_staging()
+        self._make_revision_1()
+        match = JobMatch.objects.get(preference_version=1)
+        stored = [{"path": "funding_stage", "status": "match"}]
+        other_org = Organization.objects.get(name="Staging Rating Source")
+        # The same requirements on a match of another company, on a match of
+        # another ranker (what a real refresh publishes), or under another
+        # preference version, are not the revision-2 command's write.
+        for field, value in (
+            ("organization", other_org),
+            ("ranker_version", "real-ranker"),
+            ("preference_version", 7),
+        ):
+            with self.subTest(field=field):
+                JobMatch.objects.filter(pk=match.pk).update(requirements=stored, **{field: value})
+                self.assertEqual(self._revision()["revision"], "staging-baseline-1")
+                JobMatch.objects.filter(pk=match.pk).update(
+                    requirements=[],
+                    organization=match.organization,
+                    ranker_version=match.ranker_version,
+                    preference_version=match.preference_version,
+                )
+
+    def test_revision_stays_two_between_the_two_steps_of_the_documented_reset(self):
+        _seed_staging()
+        CompanyFieldEvidence.objects.all().delete()
         self.assertEqual(self._revision()["revision"], "staging-baseline-2")
 
     def test_revision_is_two_after_a_run_that_added_no_evidence_row(self):

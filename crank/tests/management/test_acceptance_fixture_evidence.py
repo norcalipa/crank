@@ -476,14 +476,24 @@ class EvidenceStatusRuleTests(TestCase):
     def test_a_requirement_citing_a_non_accepted_row_never_reads_verified(self):
         _run()
         claim = _rows(field_key=FieldKey.RTO_POLICY).get()
+        # The shape the product stores for the work-mode requirement.
         requirement = {
-            "path": "work_location.modes", "status": "match", "scope_ok": True,
-            "source_kind": "evidence", "source_id": claim.pk, "observed": "In office",
+            "path": "work_location.modes", "status": "mismatch", "scope_ok": True,
+            "source_kind": "evidence", "source_id": claim.pk, "observed": "in-office",
         }
-        for state in (State.CONFLICTED, State.REJECTED, State.SUPERSEDED):
-            CompanyFieldEvidence.objects.filter(pk=claim.pk).update(state=state)
-            states = company_evidence.annotate_requirement_evidence([[requirement]])[0]
-            self.assertNotIn(states[0]["evidence_status"]["state"], ("verified", "sourced"))
+
+        def read(state):
+            CompanyFieldEvidence.objects.filter(pk=claim.pk).update(
+                state=state, last_verified_at=timezone.now()
+            )
+            annotated = company_evidence.annotate_requirement_evidence([[requirement]])
+            return annotated[0][0]["evidence_status"]["state"]
+
+        # Positive control: the same requirement reads verified once the row is
+        # the accepted, fresh fact.
+        self.assertEqual(read(State.ACCEPTED), "verified")
+        for state in (State.PENDING, State.CONFLICTED, State.REJECTED, State.SUPERSEDED):
+            self.assertNotIn(read(state), ("verified", "sourced"), state)
 
     def test_a_superseded_row_re_accepted_with_the_same_value_reads_as_the_accepted_row(self):
         _run()
@@ -647,3 +657,118 @@ class StagingOutputTests(TestCase):
         JobMatch.objects.update(requirements=[], evidence_ids=[])
         lines = _run()
         self.assertTrue(any(line.startswith("Rewrote the stored requirements") for line in lines))
+
+
+@override_settings(CACHES=LOCMEM)
+class StagingResetAfterARefreshTests(TestCase):
+    """The documented reset leaves nothing the product serves citing a deleted row."""
+
+    def setUp(self):
+        _run()
+        self.user = get_user_model().objects.get(username=ORDINARY_USERNAME)
+
+    def _served(self):
+        """Every requirement the list and detail endpoints serve to ``staging_user``."""
+        self.assertTrue(
+            self.client.login(username=ORDINARY_USERNAME, password=DEFAULT_ORDINARY_PASSWORD)
+        )
+        served = []
+        results = self.client.get("/api/job-matches/").json()["results"]
+        self.assertTrue(results)
+        for row in results:
+            detail = self.client.get(f"/api/job-matches/{row['id']}/")
+            self.assertEqual(detail.status_code, 200)
+            served.append((row["id"], detail.json()["requirements"]))
+        return served
+
+    def _cited_rows_exist_and_read(self):
+        existing = set(CompanyFieldEvidence.objects.values_list("pk", flat=True))
+        reads = {}
+        for match_id, requirements in self._served():
+            for requirement in requirements:
+                if requirement.get("source_kind") != "evidence":
+                    continue
+                self.assertIn(requirement["source_id"], existing, (match_id, requirement))
+                reads.setdefault(match_id, {})[requirement["path"]] = requirement[
+                    "evidence_status"
+                ]["state"]
+        return reads
+
+    def test_one_refresh_the_reset_and_a_read_through_the_product(self):
+        self.assertEqual(
+            recompute_user(self.user, reason="test", force=True).status, RecomputeStatus.PUBLISHED
+        )
+        published = JobMatch.objects.filter(user=self.user).exclude(
+            ranker_version="staging-baseline"
+        ).get()
+        old = set(published.evidence_ids)
+        self.assertTrue(old)
+        for flag in (False, True):
+            with self.subTest(match_results_read_enabled=flag), override_settings(
+                MATCH_RESULTS_READ_ENABLED=flag
+            ):
+                # The documented reset: delete the example company's evidence rows.
+                _rows().delete()
+                lines = _run()
+                self.assertTrue(any(line.startswith("Republished the matches") for line in lines))
+                published.refresh_from_db()
+                self.assertTrue(set(published.evidence_ids))
+                self.assertFalse(set(published.evidence_ids) & old)
+                reads = self._cited_rows_exist_and_read()
+                self.assertEqual(
+                    reads[published.pk],
+                    {
+                        "compensation.require_public_company": "verified",
+                        "funding_stage": "stale",
+                    },
+                )
+                old = set(published.evidence_ids)
+        # The reset and a run that finds nothing dangling republish nothing.
+        self.assertFalse(any(line.startswith("Republished") for line in _run()))
+
+    def test_a_refresh_that_does_not_publish_is_said_not_hidden(self):
+        recompute_user(self.user, reason="test", force=True)
+        _rows().delete()
+        failed = mock.Mock(status=RecomputeStatus.FAILED)
+        with mock.patch(
+            "crank.management.commands.seed_staging_baseline.recompute_user",
+            return_value=failed,
+        ):
+            lines = _run()
+        self.assertTrue(any("refresh answered failed" in line for line in lines))
+
+    def test_without_a_published_match_the_command_runs_no_refresh(self):
+        _rows().delete()
+        with mock.patch(
+            "crank.management.commands.seed_staging_baseline.recompute_user"
+        ) as refresh:
+            _run()
+        refresh.assert_not_called()
+
+
+@override_settings(CACHES=LOCMEM)
+class StagingRecreatedPreferenceTests(TestCase):
+    def test_a_recreated_row_starts_above_the_published_revision(self):
+        _run()
+        user = get_user_model().objects.get(username=ORDINARY_USERNAME)
+        # The participant changed priorities twice and one refresh published
+        # results for revision 2.
+        UserPreference.objects.filter(user=user).update(revision=2)
+        self.assertEqual(
+            recompute_user(user, reason="test", force=True).status, RecomputeStatus.PUBLISHED
+        )
+        UserPreference.objects.filter(user=user).delete()
+        _run()
+        preference = UserPreference.objects.get(user=user)
+        self.assertEqual(preference.preferences, fixture_preferences())
+        self.assertEqual(preference.revision, 3)
+        self.assertEqual(
+            recompute_user(user, reason="test", force=True).status, RecomputeStatus.PUBLISHED
+        )
+
+    def test_a_row_recreated_before_any_refresh_starts_at_revision_0(self):
+        _run()
+        user = get_user_model().objects.get(username=ORDINARY_USERNAME)
+        UserPreference.objects.filter(user=user).delete()
+        _run()
+        self.assertEqual(UserPreference.objects.get(user=user).revision, 0)
