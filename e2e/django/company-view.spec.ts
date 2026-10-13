@@ -1201,7 +1201,7 @@ test.describe('company view fit, jobs and scope (issue #486c)', () => {
         await expect(page.getByTestId('fit-scope-work_location.modes')).toHaveText(/Company-wide/);
         const jobRow = page.locator('[data-testid^="job-row-"]').first();
         await expect(jobRow).toContainText('E2E Seed Software Engineer');
-        await expect(jobRow).toContainText('Pay');
+        await expect(jobRow).toContainText('USD 120,000–160,000 per year');
         const link = jobRow.getByRole('link', {name: /View posting/});
         await expect(link).toHaveAttribute('target', '_blank');
         await expect(link).toHaveAttribute('rel', 'noopener noreferrer');

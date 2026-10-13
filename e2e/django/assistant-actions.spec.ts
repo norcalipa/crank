@@ -250,25 +250,29 @@ test.describe('assistant actions (issue #484)', () => {
         const alphaId = await page.locator('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')
             .locator('visible=true').first().getAttribute('data-organization-id');
         expect(alphaId).not.toBeNull();
-        // The reply is the real one; only its stored results gain a company card.
-        await page.route('**/api/agent/conversations/*/', async (route) => {
-            if (route.request().method() !== 'POST') {
-                await route.continue();
-                return;
-            }
-            const response = await route.fetch();
-            const body = await response.json();
-            body.message.results = {jobs: [], organizations: [{
-                id: Number(alphaId), name: 'E2E Alpha Corp', url: 'https://e2e.example.test/', funding_round: 'P', rto_policy: 'H',
-            }]};
-            await route.fulfill({response, json: body});
-        });
+        // The reply is the real one; only its results gain a company card. The page's own fetch is
+        // wrapped (a Playwright route cannot reach this host name from the test process).
+        const card = {id: Number(alphaId), name: 'E2E Alpha Corp', url: 'https://e2e.example.test/', funding_round: 'P', rto_policy: 'H'};
+        await page.addInitScript((organization) => {
+            const real = window.fetch.bind(window);
+            window.fetch = async (input, init) => {
+                const response = await real(input, init);
+                const address = typeof input === 'string' ? input : (input as Request).url;
+                if (init?.method === 'POST' && /\/api\/agent\/conversations\/\d+\/$/.test(new URL(address, window.location.href).pathname)) {
+                    const body = await response.clone().json();
+                    body.message.results = {jobs: [], organizations: [organization]};
+                    return new Response(JSON.stringify(body), {status: response.status, headers: response.headers});
+                }
+                return response;
+            };
+        }, card);
+        await page.reload();
         await openAssistant(page);
         await ask(page, 'Which companies fit?');
-        const card = page.getByRole('article', {name: 'Organization: E2E Alpha Corp'});
-        await expect(card).toBeVisible();
-        await expect(card.getByRole('link', {name: /Website of E2E Alpha Corp/})).toHaveAttribute('href', 'https://e2e.example.test/');
-        await card.getByTestId(`view-company-${alphaId}`).click();
+        const companyCard = page.getByRole('article', {name: 'Organization: E2E Alpha Corp'});
+        await expect(companyCard).toBeVisible();
+        await expect(companyCard.getByRole('link', {name: /Website of E2E Alpha Corp/})).toHaveAttribute('href', 'https://e2e.example.test/');
+        await companyCard.getByTestId(`view-company-${alphaId}`).click();
         await expect(page.getByTestId('company-view')).toBeVisible();
         await expect(page.locator('#organization-details-title')).toHaveText('E2E Alpha Corp');
         await expect.poll(() => new URL(page.url()).searchParams.get('company')).toBe(alphaId);
