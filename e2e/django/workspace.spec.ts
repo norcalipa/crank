@@ -196,25 +196,26 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await expectNoHorizontalOverflow(page);
     });
 
-    test('one blocking surface at a time: a details dialog over the sheet closes it', async ({page}) => {
+    // 486b: was "a details dialog over the sheet closes it"; the view is not a blocking surface,
+    // so the sheet opens over it (the view cannot be reached by pointer while the sheet is open)
+    // and closing the sheet leaves the same view, at the same scroll position.
+    test('the assistant sheet opens over the company view and closing it returns to the same view', async ({page}) => {
         await page.setViewportSize({width: 375, height: 700});
         await login(page);
         await page.goto('/');
+        await page.evaluate(() => {
+            document.querySelector<HTMLElement>('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')?.click();
+        });
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        const before = await page.evaluate(() => Math.round(window.scrollY));
         await page.locator('[data-testid="assistant-launcher"]').click();
         await expect(page.locator('[data-testid="assistant-panel"]')).toBeVisible();
-        // Trigger the company details dialog programmatically: the sheet
-        // inerts the rankings rows, so a real pointer click cannot reach
-        // them — the dialog opens over the sheet (e.g. from a recovered
-        // state) and the sheet must yield.
-        await page.evaluate(() => {
-            document.querySelector<HTMLElement>('tr[aria-label="View details for E2E Alpha Corp"]')?.click();
-        });
-        await expect(page.getByRole('dialog').first()).toBeVisible();
+        await expect(page.getByTestId('company-view')).toHaveCount(1);
+        await page.locator('[data-testid="assistant-close"]').click();
         await expect(page.locator('[data-testid="assistant-panel"]')).toHaveCount(0);
-        const inertCount = await page.evaluate(
-            () => document.querySelectorAll('.app-shell[inert], main.app-content[inert]').length,
-        );
-        expect(inertCount).toBeGreaterThan(0);
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        await expect.poll(() => page.evaluate((y) => Math.abs(Math.round(window.scrollY) - y), before)).toBeLessThanOrEqual(1);
+        await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
     });
 
     test('admin and login pages render no workspace anchor', async ({page}) => {

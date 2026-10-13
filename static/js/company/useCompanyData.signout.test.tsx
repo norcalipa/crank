@@ -3,6 +3,7 @@
 import {act, renderHook} from '@testing-library/react';
 
 import {clearProvenanceCache} from '../provenanceCache';
+import * as store from '../workspace/store';
 import {useCompanyData} from './useCompanyData';
 
 const correction = (id: number) => ({
@@ -60,5 +61,24 @@ describe('useCompanyData sign-out and sign-in again', () => {
         expect(after.filter(entry => entry.signedIn).length).toBeGreaterThanOrEqual(2);
         for (const entry of after.slice(0, -1)) expect(entry.pending).toEqual([]);
         expect(after[after.length - 1].pending).toEqual([correction(8)]);
+    });
+
+    test('unmounting removes the hook\'s store listener and its purge listener', () => {
+        store.resetWorkspaceForTests();
+        store.setWorkspaceAccount({status: 'authenticated', key: 'ann'});
+        const removeSpy = jest.spyOn(document, 'removeEventListener');
+        try {
+            const {unmount} = renderHook(() => useCompanyData(1, true));
+            unmount();
+            expect(removeSpy).toHaveBeenCalledWith('crank:private-state-purged', expect.any(Function));
+
+            // A store change after unmount reaches nothing of the hook's.
+            const snapshotSpy = jest.spyOn(store, 'getWorkspaceSnapshot');
+            act(() => store.setWorkspaceAccount({status: 'authenticated', key: 'bob'}));
+            expect(snapshotSpy).not.toHaveBeenCalled();
+        } finally {
+            removeSpy.mockRestore();
+            store.resetWorkspaceForTests();
+        }
     });
 });

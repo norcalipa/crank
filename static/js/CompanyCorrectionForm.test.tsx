@@ -623,6 +623,59 @@ describe('CompanyCorrectionForm', () => {
             window.removeEventListener('crank:company-open', handler);
         });
 
+        test('"Back to <Company>" has nothing to reopen while the company\'s view is still open under the form', async () => {
+            const handler = jest.fn();
+            window.addEventListener('crank:company-open', handler);
+            const companyView = document.createElement('section');
+            companyView.setAttribute('data-testid', 'company-view');
+            companyView.setAttribute('data-organization-id', '1');
+            document.body.appendChild(companyView);
+            try {
+                const {onClose} = await succeed(baseContext);
+                expect(screen.getByTestId('correction-back')).toHaveTextContent('Back to Acme');
+                jest.useFakeTimers();
+                fireEvent.click(screen.getByTestId('correction-back'));
+                act(() => {
+                    jest.runAllTimers();
+                });
+                expect(onClose).toHaveBeenCalledTimes(1);
+                expect(handler).not.toHaveBeenCalled();
+            } finally {
+                companyView.remove();
+                window.removeEventListener('crank:company-open', handler);
+            }
+        });
+
+        test('a view that shows another company does not stop the reopen', async () => {
+            const handler = jest.fn();
+            window.addEventListener('crank:company-open', handler);
+            const companyView = document.createElement('section');
+            companyView.setAttribute('data-testid', 'company-view');
+            companyView.setAttribute('data-organization-id', '2');
+            document.body.appendChild(companyView);
+            try {
+                await succeed(baseContext);
+                jest.useFakeTimers();
+                fireEvent.click(screen.getByTestId('correction-back'));
+                act(() => {
+                    jest.runAllTimers();
+                });
+                expect(handler).toHaveBeenCalledTimes(1);
+            } finally {
+                companyView.remove();
+                window.removeEventListener('crank:company-open', handler);
+            }
+        });
+
+        test('a stored suggestion tells the company view so it can list it as pending', async () => {
+            const handler = jest.fn();
+            window.addEventListener('crank:company-correction-saved', handler);
+            await succeed(baseContext);
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect((handler.mock.calls[0][0] as CustomEvent).detail).toEqual({organizationId: 1});
+            window.removeEventListener('crank:company-correction-saved', handler);
+        });
+
         test.each(['job_results', 'assistant'] as const)('%s entries get "Back to results" and reopen nothing', async (source) => {
             const handler = jest.fn();
             window.addEventListener('crank:company-open', handler);

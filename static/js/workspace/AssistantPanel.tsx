@@ -45,6 +45,18 @@ const LoadMarker: React.FC = () => {
     return null;
 };
 
+// Over a company's view, the sheet's first button says which page it returns
+// to: the view's own "Back to results" goes elsewhere (issue #486).
+function backLabel(context: WorkspaceContext | null): string {
+    const view = document.querySelector('[data-testid="company-view"]');
+    if (!view) return 'Back to results';
+    const id = context?.organizationId;
+    if (id !== undefined && context?.organizationName && view.getAttribute('data-organization-id') === String(id)) {
+        return `Back to ${context.organizationName}`;
+    }
+    return 'Back to company';
+}
+
 interface AssistantPanelProps {
     mode: WorkspaceMode;
     context: WorkspaceContext | null;
@@ -79,7 +91,8 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
             {mode === 'sheet' && (
                 <button type="button" className="btn btn-outline-light assistant-back-to-results"
                         onClick={closeAssistant} data-testid="assistant-back-to-results">
-                    <i className="fa-solid fa-arrow-left" aria-hidden="true"></i> Back to results
+                    <i className="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                    <span className="assistant-back-label">{backLabel(context)}</span>
                 </button>
             )}
             <div className="assistant-panel-header">

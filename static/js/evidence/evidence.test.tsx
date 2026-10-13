@@ -258,17 +258,15 @@ describe('EvidenceDetails', () => {
     });
 });
 
-describe('details dialog overlay CSS (#473a)', () => {
+describe('company view CSS (#473a, #486)', () => {
     const css = fs.readFileSync(path.resolve(__dirname, '../../css/popup.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     const rules = (selector: string) => css.split('}').filter(block => block.trim().startsWith(selector + ' {'));
 
-    test('the overlay never scrolls; only the card body does', () => {
-        const overlay = rules('.popup-overlay').join('\n');
-        expect(overlay).not.toMatch(/overflow-y:\s*auto/);
+    test('the card body is positioned so the visually hidden spans stay inside it', () => {
         expect(rules('.popup-details .card-body').join('\n')).toMatch(/position:\s*relative/);
     });
 
-    test('popup-overlay has exactly one consumer: the details popup', () => {
+    test('popup-overlay has no consumer left: the company is a view, not a dialog', () => {
         const roots = [path.resolve(__dirname, '..'), path.resolve(__dirname, '../../../templates')];
         const users: string[] = [];
         const walk = (dir: string) => {
@@ -284,12 +282,7 @@ describe('details dialog overlay CSS (#473a)', () => {
             }
         };
         roots.forEach(walk);
-        expect(users).toEqual(['OrganizationDetailsPopup.tsx']);
-    });
-
-    test('the dialog height accounts for the overlay top gap', () => {
-        const dialog = rules('.popup-details').join('\n');
-        expect(dialog).toContain('var(--popup-gap-top');
-        expect(dialog).not.toContain('100dvh - 1.5rem');
+        expect(users).toEqual([]);
+        expect(rules('.popup-overlay')).toEqual([]);
     });
 });

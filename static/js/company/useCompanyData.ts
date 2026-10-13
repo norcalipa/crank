@@ -3,6 +3,12 @@
 import * as React from 'react';
 import {EvidenceData} from '../evidence/EvidenceDetails';
 import {setCachedProvenance} from '../provenanceCache';
+import {getWorkspaceSnapshot, subscribeWorkspace} from '../workspace/store';
+import {isCompanyId} from './companyId';
+
+// Fired on `window` by the correction form once a suggestion is stored, so a
+// view that stays open shows it under "Your pending suggestions" (issue #486).
+export const COMPANY_CORRECTION_SAVED_EVENT = 'crank:company-correction-saved';
 
 export interface ScoreDetail {
     type__name: string;
@@ -48,7 +54,6 @@ export interface CompanyData {
     scoresLoading: boolean;
     provenance: Provenance | null;
     provenanceLoading: boolean;
-    provenanceFailed: boolean;
     // Starts the provenance request again on the user's behalf.
     retryProvenance: () => void;
     // Counts the failures of attempts the user started with retryProvenance
@@ -72,7 +77,6 @@ interface ProvenanceState {
     id: number | null;
     data: Provenance | null;
     loading: boolean;
-    failed: boolean;
 }
 
 interface CorrectionsState {
@@ -92,14 +96,17 @@ const NO_CORRECTIONS: PendingCorrection[] = [];
  * changed or the caller has unmounted.
  */
 export function useCompanyData(
-    organizationId: number | null,
+    requestedId: number | null,
     isAuthenticated: boolean,
     options: CompanyDataOptions = {},
 ): CompanyData {
+    // Nothing is requested for an id that is not a positive integer: it would
+    // otherwise be interpolated into three URL paths as given (issue #486).
+    const organizationId = isCompanyId(requestedId) ? requestedId : null;
     const skipScores = options.skipScores === true;
     const [scores, setScores] = React.useState<ScoresState>({id: null, items: NO_SCORES, loading: false});
     const [provenance, setProvenance] = React.useState<ProvenanceState>(
-        {id: null, data: null, loading: false, failed: false});
+        {id: null, data: null, loading: false});
     const [corrections, setCorrections] = React.useState<CorrectionsState>({id: null, items: NO_CORRECTIONS});
     const [provenanceAttempt, setProvenanceAttempt] = React.useState(0);
     const [retryFailures, setRetryFailures] = React.useState(0);
@@ -139,7 +146,7 @@ export function useCompanyData(
 
     React.useEffect(() => {
         if (organizationId === null) {
-            setProvenance({id: null, data: null, loading: false, failed: false});
+            setProvenance({id: null, data: null, loading: false});
             return undefined;
         }
         let cancelled = false;
@@ -147,7 +154,6 @@ export function useCompanyData(
             id: organizationId,
             data: previous.id === organizationId ? previous.data : null,
             loading: true,
-            failed: false,
         }));
         fetch(`/api/organizations/${organizationId}/provenance/`)
             .then(response => {
@@ -157,13 +163,13 @@ export function useCompanyData(
             .then(data => {
                 if (cancelled) return;
                 userRetryRef.current = false;
-                setProvenance({id: organizationId, data, loading: false, failed: false});
+                setProvenance({id: organizationId, data, loading: false});
                 setCachedProvenance(organizationId, data);
             })
             .catch(error => {
                 if (cancelled) return;
                 console.error('Error fetching organization provenance:', error);
-                setProvenance({id: organizationId, data: null, loading: false, failed: true});
+                setProvenance({id: organizationId, data: null, loading: false});
                 if (userRetryRef.current) setRetryFailures(count => count + 1);
                 userRetryRef.current = false;
             });
@@ -171,6 +177,45 @@ export function useCompanyData(
             cancelled = true;
         };
     }, [organizationId, provenanceAttempt]);
+
+    // Pending suggestions belong to one account. A purge (sign-out, account
+    // switch) or an account change in the workspace store empties the list and
+    // makes any response still in flight for the previous account ignorable;
+    // the shell closes the view itself, this keeps the rows out of the DOM in
+    // the meantime. An `unobserved` hydration never reaches here (issue #527).
+    const accountEpoch = React.useRef(0);
+    const [correctionsAttempt, setCorrectionsAttempt] = React.useState(0);
+    React.useEffect(() => {
+        const clear = () => {
+            accountEpoch.current += 1;
+            setCorrections({id: null, items: NO_CORRECTIONS});
+        };
+        let seen = getWorkspaceSnapshot().account;
+        const unsubscribe = subscribeWorkspace(() => {
+            const account = getWorkspaceSnapshot().account;
+            const previous = seen;
+            seen = account;
+            if (previous.status !== 'unknown'
+                && (previous.status !== account.status || previous.key !== account.key)) {
+                clear();
+            }
+        });
+        document.addEventListener('crank:private-state-purged', clear);
+        return () => {
+            unsubscribe();
+            document.removeEventListener('crank:private-state-purged', clear);
+        };
+    }, []);
+
+    React.useEffect(() => {
+        const saved = (event: Event) => {
+            if ((event as CustomEvent).detail?.organizationId === organizationId) {
+                setCorrectionsAttempt(attempt => attempt + 1);
+            }
+        };
+        window.addEventListener(COMPANY_CORRECTION_SAVED_EVENT, saved);
+        return () => window.removeEventListener(COMPANY_CORRECTION_SAVED_EVENT, saved);
+    }, [organizationId]);
 
     // The requester's own pending suggestions (issue #477). Only fetched when
     // signed in; a failure simply hides the list.
@@ -180,21 +225,23 @@ export function useCompanyData(
             return undefined;
         }
         let cancelled = false;
-        setCorrections({id: organizationId, items: NO_CORRECTIONS});
+        const epoch = accountEpoch.current;
+        const stale = () => cancelled || epoch !== accountEpoch.current;
+        setCorrections(previous => (previous.id === organizationId ? previous : {id: organizationId, items: NO_CORRECTIONS}));
         fetch(`/api/company-corrections/?organization=${organizationId}`)
             .then(response => (response.ok ? response.json() : {corrections: []}))
             .then(data => {
-                if (cancelled) return;
+                if (stale()) return;
                 const items: PendingCorrection[] = Array.isArray(data.corrections) ? data.corrections : [];
                 setCorrections({id: organizationId, items: items.filter(item => item.status === 'pending')});
             })
             .catch(() => {
-                if (!cancelled) setCorrections({id: organizationId, items: NO_CORRECTIONS});
+                if (!stale()) setCorrections({id: organizationId, items: NO_CORRECTIONS});
             });
         return () => {
             cancelled = true;
         };
-    }, [organizationId, isAuthenticated]);
+    }, [organizationId, isAuthenticated, correctionsAttempt]);
 
     const retryProvenance = React.useCallback(() => {
         userRetryRef.current = true;
@@ -211,7 +258,6 @@ export function useCompanyData(
         scoresLoading: shown && !skipScores && (scoresCurrent ? scores.loading : true),
         provenance: provenanceCurrent ? provenance.data : null,
         provenanceLoading: shown && (provenanceCurrent ? provenance.loading : true),
-        provenanceFailed: shown && provenanceCurrent && provenance.failed,
         retryProvenance,
         retryFailures,
         pendingCorrections: isAuthenticated && corrections.id === organizationId ? corrections.items : NO_CORRECTIONS,

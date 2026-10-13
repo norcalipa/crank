@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as React from 'react';
 
-import OrganizationDetailsPopup from '../OrganizationDetailsPopup';
+import CompanyView from './CompanyView';
 import CompanyDetails, {CompanyDetailsOrganization} from './CompanyDetails';
 
 const company = (id: number, overrides: Partial<CompanyDetailsOrganization> = {}): CompanyDetailsOrganization => ({
@@ -162,12 +162,18 @@ describe('CompanyDetails', () => {
         }
     });
 
-    test('the same walk does find the modal lock and the portal from the dialog shell', () => {
-        const graph = reachable(path.join(JS_ROOT, 'OrganizationDetailsPopup.tsx'));
+    test('the same walk does find the modal lock and the portal from a real dialog', () => {
+        const graph = reachable(path.join(JS_ROOT, 'CompanyCorrectionForm.tsx'));
+
+        expect(graph.files).toContain('modalIsolation.ts');
+    });
+
+    test('the view around the content reaches neither the modal lock nor a portal', () => {
+        const graph = reachable(path.resolve(__dirname, 'CompanyView.tsx'));
 
         expect(graph.files).toContain('company/CompanyDetails.tsx');
-        expect(graph.files).toContain('modalIsolation.ts');
-        expect(graph.packages).toContain('react-dom');
+        expect(graph.files).not.toContain('modalIsolation.ts');
+        expect(graph.packages).not.toContain('react-dom');
     });
 
     test('a plain click on Ask calls onAsk and prevents the navigation', async () => {
@@ -181,6 +187,36 @@ describe('CompanyDetails', () => {
 
         expect(onAsk).toHaveBeenCalledTimes(1);
         expect(notPrevented).toBe(false);
+    });
+
+    test.each([
+        ['at the limit', 'N'.repeat(40), 'N'.repeat(40)],
+        ['over the limit', 'N'.repeat(41), 'this company'],
+    ])('the Ask label keeps the name or says "this company" (%s)', async (_label, name, shown) => {
+        renderDetails({organization: company(1, {name})});
+        await loaded();
+        expect(screen.getByTestId('company-chat-cta')).toHaveTextContent(`Ask the assistant about ${shown}`);
+        expect(screen.getByTestId('company-chat-cta')).not.toHaveClass('btn-sm');
+    });
+
+    test.each([
+        ['at the limit', 'S'.repeat(40), 'S'.repeat(40)],
+        ['over the limit', 'S'.repeat(41), 'this company'],
+    ])('the signed-out button follows the same rule (%s)', async (_label, name, shown) => {
+        renderDetails({
+            organization: company(1, {name}), isAuthenticated: false,
+            signInUrlTemplate: '/accounts/login/?next=%2F%3Fcompany%3D__COMPANY_ID__',
+        });
+        await loaded();
+        expect(screen.getByTestId('company-sign-in-cta')).toHaveTextContent(`Sign in to ask about ${shown}`);
+        expect(screen.getByTestId('company-sign-in-cta')).not.toHaveClass('btn-sm');
+    });
+
+    test('Not ranked is plain text and the empty score line is the muted one', async () => {
+        renderDetails({organization: company(1, {ranking: undefined, avg_score: undefined, avg_scores: []})});
+        await loaded();
+        expect(screen.getByTestId('not-ranked')).not.toHaveClass('text-muted');
+        await waitFor(() => expect(screen.getByTestId('no-scores')).toHaveClass('text-muted'));
     });
 
     test('Ask stays a plain link for modified clicks and without the workspace host', async () => {
@@ -322,7 +358,8 @@ describe('CompanyDetails', () => {
     // same tests run against the code before the extraction.
     describe('scores do not carry over between companies', () => {
         const openDialog = (organization: CompanyDetailsOrganization) => (
-            <OrganizationDetailsPopup organization={organization} visible onClose={() => {}}/>
+            <CompanyView organizationId={organization.id} status="ready" organization={organization}
+                         onBack={() => {}} onAsk={() => {}} onSuggestCorrection={() => {}}/>
         );
 
         test('open A (scores load), open B with a failing scores request: B shows no scores of A', async () => {
@@ -350,7 +387,7 @@ describe('CompanyDetails', () => {
             expect(screen.getByText('3.10')).toBeInTheDocument();
         });
 
-        // The path a modal dialog actually takes: A is closed before B is opened.
+        // The path a modal dialog actually takes: A is closed before B is opened (Back to results, then another row).
         test('open A, close the dialog, open B with a failing scores request: B shows no scores of A', async () => {
             mockFetch([
                 ['/api/organizations/1/scores/', reply([{type__name: 'Culture', avg_score: 4.5}])],
@@ -364,8 +401,8 @@ describe('CompanyDetails', () => {
             expect(screen.getByText('Culture')).toBeInTheDocument();
 
             // Closing keeps the company selected, as the list does.
-            rerender(<OrganizationDetailsPopup organization={company(1)} visible={false} onClose={() => {}}/>);
-            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            rerender(<div/>);
+            expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
             rerender(openDialog(company(2, {avg_score: 3.1})));
             await loaded();
 

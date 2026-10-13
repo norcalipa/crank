@@ -31,9 +31,9 @@ test.describe('company handoff through sign-in (issue #465 AC-7)', () => {
         await page.goto('/');
         const trigger = page.locator('tr[aria-label="View details for E2E Alpha Corp"]');
         await trigger.click();
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(page.getByTestId('company-view')).toBeVisible();
 
-        // The initiating control the dialog previously lacked entirely.
+        // The initiating control the details previously lacked entirely.
         const signInCta = page.getByTestId('company-sign-in-cta');
         await expect(signInCta).toBeVisible();
         await expect(signInCta).toContainText('E2E Alpha Corp');
@@ -44,7 +44,7 @@ test.describe('company handoff through sign-in (issue #465 AC-7)', () => {
 
         // Back on the rankings with the same company's dialog reopened.
         await page.waitForURL((url) => url.pathname === '/' && url.searchParams.has('company'));
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(page.getByTestId('company-view')).toBeVisible();
         await expect(page.locator('#organization-details-title')).toHaveText('E2E Alpha Corp');
 
         // The post-sign-in landing state offers the company conversation.

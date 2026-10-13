@@ -141,6 +141,85 @@ describe('WorkspaceShell', () => {
         await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(0, 240));
     });
 
+    describe('the page changes under an open sheet (issue #486)', () => {
+        let scrollTo: jest.Mock;
+
+        const setView = (id: number | null): void => {
+            const main = document.querySelector('main.app-content') as HTMLElement;
+            main.innerHTML = id === null ? '' : `<section data-testid="company-view" data-organization-id="${id}">`
+                + '<h2 id="organization-details-title" tabindex="-1">Company</h2></section>';
+        };
+        const openSheet = async (): Promise<void> => {
+            act(() => openAssistant());
+            await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        };
+        const closeSheet = async (): Promise<void> => {
+            act(() => closeAssistant());
+            await waitFor(() => expect(screen.queryByTestId('assistant-panel')).not.toBeInTheDocument());
+        };
+
+        beforeEach(() => {
+            scrollTo = jest.fn();
+            Object.defineProperty(window, 'scrollTo', {value: scrollTo, writable: true, configurable: true});
+            Object.defineProperty(window, 'scrollY', {value: 900, writable: true, configurable: true});
+        });
+
+        test('a company view that opened under the sheet keeps its place and takes the focus on its heading', async () => {
+            renderShell();
+            await openSheet();
+            setView(7);
+            await closeSheet();
+
+            expect(scrollTo).not.toHaveBeenCalled();
+            expect(document.activeElement).toBe(document.getElementById('organization-details-title'));
+        });
+
+        test('a view replaced by another company under the sheet is treated the same way', async () => {
+            setView(7);
+            renderShell();
+            await openSheet();
+            setView(8);
+            await closeSheet();
+
+            expect(scrollTo).not.toHaveBeenCalled();
+            expect(document.activeElement).toBe(document.getElementById('organization-details-title'));
+        });
+
+        test('a view removed under the sheet leaves the scroll alone and the focus goes to the launcher', async () => {
+            setView(7);
+            renderShell();
+            await openSheet();
+            setView(null);
+            await closeSheet();
+
+            expect(scrollTo).not.toHaveBeenCalled();
+            await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-launcher')));
+        });
+
+        test('the same view under the sheet gets the saved scroll position and the launcher gets the focus', async () => {
+            setView(7);
+            renderShell();
+            await openSheet();
+            await closeSheet();
+
+            expect(scrollTo).toHaveBeenCalledWith(0, 900);
+            await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-launcher')));
+        });
+
+        test('the change is forgotten after one close: the next close restores the scroll again', async () => {
+            renderShell();
+            await openSheet();
+            setView(7);
+            await closeSheet();
+            scrollTo.mockClear();
+
+            await openSheet();
+            await closeSheet();
+
+            expect(scrollTo).toHaveBeenCalledWith(0, 900);
+        });
+    });
+
     test('focus moves into the sheet on open and returns to the launcher on close', async () => {
         renderShell();
         act(() => openAssistant());

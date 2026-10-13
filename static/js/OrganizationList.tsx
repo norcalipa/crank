@@ -2,20 +2,25 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 import {createRoot} from "react-dom/client";
-import OrganizationDetailsPopup from './OrganizationDetailsPopup';
+import CompanyView, {CompanyViewStatus} from './company/CompanyView';
+import {CompanyDetailsOrganization, CorrectionSource} from './company/CompanyDetails';
+import {isCompanyId, parseCompanyId} from './company/companyId';
 import EvidenceSummary, {evidenceDescription} from './evidence/EvidenceSummary';
 import {EvidenceSummaryData, RTO_POLICY_LABELS} from './labels';
 import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './suggestCompany/controller';
-import {installPositionTracking, PositionAnchor, restoreResultPosition} from './workspace/position';
+import {installPositionTracking, PositionAnchor, restoreResultPosition, saveResultPosition} from './workspace/position';
 import {
     clearWorkspaceContext,
+    closeAssistant,
     getWorkspaceSnapshot,
+    openAssistant,
     registerCompanyTarget,
     registerFilterTarget,
     setWorkspaceContext,
+    setWorkspaceEntity,
     subscribeWorkspace,
 } from './workspace/store';
-import {RtoPolicyCode, WorkspaceFilters} from './workspace/types';
+import {RtoPolicyCode, WORKSPACE_FOCUS_EVENT, WorkspaceFilters} from './workspace/types';
 
 interface ScoreDetail {
     type__name: string;
@@ -59,7 +64,7 @@ interface OrganizationListProps {
     canSuggestCompany?: boolean;
     isAuthenticated?: boolean;
     // Server-built, server-validated login URL template for the company
-    // details dialog's sign-in CTA (issue #465 AC-7); see
+    // view's sign-in CTA (issue #465 AC-7); see
     // crank/views/index.py.
     signInUrlTemplate?: string;
     // Ranking presets (issue #478): rendered server-side as non-user-specific
@@ -91,6 +96,25 @@ function allowlistedParams(search: string): URLSearchParams {
     return params;
 }
 
+interface CompanyViewState {
+    id: number;
+    status: CompanyViewStatus | 'error';
+    organization: Organization | null;
+    // Name of the list row while the record loads, so the heading is not blank.
+    name?: string;
+}
+
+// Marks the history entry that opening a company added, so Back to results
+// knows it can go back instead of rewriting the URL (issue #486).
+const VIEW_ENTRY_KEY = 'crankCompanyView';
+// Where the scroll tracker keeps its result position (workspace/position.ts).
+const POSITION_STATE_KEY = 'crankPosition';
+// Result rows and cards only: the company view and the correction form carry
+// the attribute too, and neither is a place the results can be restored to.
+const RESULT_ANCHOR_SELECTOR = '.organization-row[data-organization-id], .organization-card[data-organization-id]';
+// `:root` smooths scrolling; a restored row must be where it is read at once.
+const INSTANT = 'instant' as ScrollBehavior;
+
 interface OrganizationListState {
     organizations: Organization[];
     filteredOrganizations: Organization[];
@@ -101,8 +125,10 @@ interface OrganizationListState {
     acceleratedVesting: boolean;
     rtoPolicy: RtoPolicyCode | '';
     searchTerm: string;
-    selectedOrganization: Organization | null;
-    showPopup: boolean;
+    // The company shown instead of the results (issue #486); null when the
+    // results are showing. `organization` is null while the record loads for an
+    // id that is not a list row, and stays null for an id that is gone.
+    view: CompanyViewState | null;
     choicesStatus: 'loading' | 'ready' | 'error';
 }
 
@@ -120,17 +146,25 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting: urlState.acceleratedVesting,
             rtoPolicy: urlState.rtoPolicy,
             searchTerm: urlState.searchTerm,
-            selectedOrganization: null,
-            showPopup: false,
+            view: null,
             choicesStatus: 'loading'
         };
     }
 
-    // Monotonically increasing generation for blocking-dialog intents (issue
-    // #464). Every dialog open/close/select action claims the next value so
-    // an in-flight organization-details fetch can detect, when its response
-    // arrives, that a newer intent has superseded it.
+    // Monotonically increasing generation for company-view intents. Every
+    // open/close claims the next value so an in-flight record fetch can detect,
+    // when its response arrives, that a newer intent has superseded it.
     private modalGeneration = 0;
+    // Back was requested through history.back(); the popstate it causes does
+    // the closing, so further close requests in the meantime are ignored.
+    private closeRequested = false;
+    // Private state was dropped (a purge, or the store wiped for another
+    // account): the view closed in place for it, once.
+    private closedAfterPurge = false;
+    // The store's account went from known to unknown, which only a wipe does:
+    // a context cleared by the reader leaves the account as it is.
+    private privateStateDropped = false;
+    private lastAccountStatus = getWorkspaceSnapshot().account.status;
 
     // Funding-round and RTO labels come from two choice endpoints. The status
     // drives the loading/error cue next to the result count; on failure the
@@ -164,27 +198,36 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
         window.addEventListener('popstate', this.handlePopState);
         window.addEventListener(COMPANY_OPEN_EVENT, this.handleCompanyOpenEvent);
+        window.addEventListener('crank:private-state-purged', this.handlePrivateStatePurged, true);
         this.normalizeCurrentPage();
         this.openCompanyFromUrl();
         // Issue #479: keep the shared workspace context in step with this
         // list, restore the Back-navigation scroll position, and close the
-        // company dialog when the assistant's "Clear context" removes it.
+        // company view when the assistant's "Clear context" removes it.
         this.reportContext();
         this.stopPositionTracking = installPositionTracking(this.visibleOrganizationAnchor);
         restoreResultPosition(this.findOrganizationAnchor);
         this.restoredScrollY = window.scrollY;
+        this.lastAccountStatus = getWorkspaceSnapshot().account.status;
         this.unsubscribeWorkspace = subscribeWorkspace(this.handleWorkspaceChange);
         this.unregisterFilterTarget = registerFilterTarget(this.applyAssistantFilters);
         this.unregisterCompanyTarget = registerCompanyTarget(this.openCompanyById);
     }
 
     componentDidUpdate(_prevProps: unknown, prevState: OrganizationListState) {
-        const dialogChanged = prevState.showPopup !== this.state.showPopup
-            || prevState.selectedOrganization?.id !== this.state.selectedOrganization?.id;
-        if (dialogChanged) {
-            this.syncCompanyParam();
+        const companyChanged = prevState.view?.organization?.id !== this.state.view?.organization?.id;
+        // A view that ended without a company (gone, or failed to load) must
+        // not leave the previous company in the assistant. The URL keeps its
+        // ?company=, so only the assistant's company goes.
+        const failed = (status?: string) => status === 'not-found' || status === 'error';
+        if (failed(this.state.view?.status) && !failed(prevState.view?.status)
+            && this.reportedOrganizationId !== null) {
+            if (getWorkspaceSnapshot().context?.organizationId === this.reportedOrganizationId) {
+                setWorkspaceEntity({});
+            }
+            this.reportedOrganizationId = null;
         }
-        if (dialogChanged
+        if (companyChanged
             || prevState.searchTerm !== this.state.searchTerm
             || prevState.acceleratedVesting !== this.state.acceleratedVesting
             || prevState.rtoPolicy !== this.state.rtoPolicy
@@ -196,6 +239,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     componentWillUnmount() {
         window.removeEventListener('popstate', this.handlePopState);
         window.removeEventListener(COMPANY_OPEN_EVENT, this.handleCompanyOpenEvent);
+        window.removeEventListener('crank:private-state-purged', this.handlePrivateStatePurged, true);
         this.stopPositionTracking?.();
         this.unsubscribeWorkspace?.();
         this.unregisterFilterTarget?.();
@@ -210,8 +254,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     // Organization id of the first result on screen. Table rows and cards
     // both carry the id; whichever layout is displayed has a non-empty box.
+    // With a company open there is none: the view is not a result.
     visibleOrganizationAnchor = (): PositionAnchor | null => {
-        const candidates = document.querySelectorAll<HTMLElement>('[data-organization-id]');
+        const candidates = document.querySelectorAll<HTMLElement>(RESULT_ANCHOR_SELECTOR);
         for (const element of Array.from(candidates)) {
             const rect = element.getBoundingClientRect();
             if (rect.height > 0 && rect.bottom > 0) {
@@ -225,8 +270,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         if (!/^\d+$/.test(id)) {
             return null;
         }
-        const candidates = document.querySelectorAll<HTMLElement>(`[data-organization-id="${id}"]`);
-        return Array.from(candidates).find((element) => element.getBoundingClientRect().height > 0) ?? null;
+        const candidates = document.querySelectorAll<HTMLElement>(RESULT_ANCHOR_SELECTOR);
+        return Array.from(candidates).find((element) => element.getAttribute('data-organization-id') === id
+            && element.getBoundingClientRect().height > 0) ?? null;
     };
 
     // Account hydration can reopen the drawer/docked panel and reflow rows
@@ -247,33 +293,20 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // Company id this list last reported to the workspace, so a close only
     // removes context the list itself set (never the Ask CTA's).
     private reportedOrganizationId: number | null = null;
-
-    // `company` is the only extra URL param the list writes, via replaceState
-    // so opening or closing a dialog never adds a history entry (issue #479).
-    syncCompanyParam = () => {
-        const params = allowlistedParams(window.location.search);
-        const {showPopup, selectedOrganization} = this.state;
-        const current = params.get('company');
-        const wanted = showPopup && selectedOrganization ? String(selectedOrganization.id) : null;
-        if (current === wanted) {
-            return;
-        }
-        if (wanted === null) {
-            params.delete('company');
-        } else {
-            params.set('company', wanted);
-        }
-        const query = params.toString();
-        window.history.replaceState(
-            window.history.state,
-            '',
-            `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
-        );
-    };
+    // Company the user asked the assistant about from the view: the context
+    // is then the assistant's, so leaving the view must not clear it, while
+    // "Clear context" still takes the view with it (issue #486).
+    private askedOrganizationId: number | null = null;
+    // The company the view was first opened with from the results, so Back
+    // can focus its row after a switch to a company the list does not show.
+    private openedRowId: number | null = null;
 
     // Applies assistant-proposed filters (issue #484), one history entry, on
     // top of the current search; page resets to 1. Only enum values reach here.
     applyAssistantFilters = (filters: WorkspaceFilters): boolean => {
+        // Filters act on the results: show them, leaving the company view in
+        // place of going back through history (issue #486).
+        this.leaveViewInPlace();
         const rtoPolicy = filters.rtoPolicy ?? this.state.rtoPolicy;
         const acceleratedVesting = filters.acceleratedVesting === true || this.state.acceleratedVesting;
         if (rtoPolicy === this.state.rtoPolicy && acceleratedVesting === this.state.acceleratedVesting) {
@@ -303,13 +336,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     reportContext = () => {
-        const {showPopup, selectedOrganization, searchTerm, currentPage} = this.state;
+        const {searchTerm, currentPage} = this.state;
+        const selectedOrganization = this.state.view?.organization ?? null;
         const {currentAlgorithmId} = this.props;
         const view = {
             filters: this.reportedFilters(),
             ...(currentAlgorithmId ? {algorithmId: currentAlgorithmId} : {}),
         };
-        if (showPopup && selectedOrganization) {
+        if (selectedOrganization) {
             this.reportedOrganizationId = selectedOrganization.id;
             setWorkspaceContext({
                 surface: 'company',
@@ -320,6 +354,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             return;
         }
         const context = getWorkspaceSnapshot().context;
+        // Switching companies from inside a view: while the next record loads
+        // the previous company's context stays. Clearing it would also strip
+        // `company` from the URL the switch just wrote.
+        if (this.state.view?.status === 'loading' && this.reportedOrganizationId !== null) {
+            return;
+        }
         if (this.reportedOrganizationId !== null
             && context?.organizationId === this.reportedOrganizationId) {
             clearWorkspaceContext();
@@ -333,48 +373,80 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     handleWorkspaceChange = () => {
         this.restoreAfterHydration();
-        const {showPopup, selectedOrganization} = this.state;
-        if (showPopup && selectedOrganization
-            && this.reportedOrganizationId === selectedOrganization.id
-            && getWorkspaceSnapshot().context?.organizationId !== selectedOrganization.id) {
-            this.handleClosePopup();
+        const {account} = getWorkspaceSnapshot();
+        if (account.status !== 'unknown') {
+            this.privateStateDropped = false;
+        } else if (this.lastAccountStatus !== 'unknown') {
+            this.privateStateDropped = true;
+        }
+        this.lastAccountStatus = account.status;
+        const shown = this.state.view?.organization;
+        if (shown
+            && !this.closedAfterPurge
+            && (this.reportedOrganizationId === shown.id || this.askedOrganizationId === shown.id)
+            && getWorkspaceSnapshot().context?.organizationId !== shown.id) {
+            if (this.privateStateDropped) {
+                this.closeAfterPurge();
+            } else {
+                this.closeView();
+            }
         }
     };
 
-    // A user sent to sign-in from a company's details dialog returns with
-    // that company id in the URL (issue #465 AC-7): open the same dialog on
-    // load so the round trip through sign-in feels seamless. A missing or
-    // unknown id is silently ignored — never a console error — the page
-    // still renders the normal ranked list.
+    // The workspace purge (sign-out, account switch) drops every private
+    // entity; the company view goes with it, whatever the store held. The
+    // listener is on `window`, capturing: the event is dispatched on the
+    // document, and window's capture listeners run before any listener on the
+    // document, so the list hears it before the store does, whatever the
+    // registration order. The store's notification that follows then finds the
+    // close already made (`closedAfterPurge`) and never reads the wipe as a
+    // reader's "Clear context", even when the account was never known.
+    handlePrivateStatePurged = () => {
+        this.closeAfterPurge();
+    };
+
+    // Never through history: a traversal queued in the same task as the
+    // sign-out form's submission could cancel it. Once per purge, whichever of
+    // the two listeners hears it first.
+    private closeAfterPurge = () => {
+        if (!this.state.view || this.closedAfterPurge) {
+            return;
+        }
+        this.closedAfterPurge = true;
+        this.leaveViewInPlace();
+    };
+
+    // A user sent to sign-in from a company's view returns with that company
+    // id in the URL (issue #465 AC-7): open the same view on load so the round
+    // trip through sign-in feels seamless. A missing or malformed id is
+    // silently ignored, never a console error and never a request.
     openCompanyFromUrl = () => {
-        const params = new URLSearchParams(window.location.search);
-        const raw = params.get('company');
-        if (raw === null) return;
-        const companyId = Number(raw);
-        if (!Number.isInteger(companyId)) return;
-        const organization = this.props.organizations.find((org) => org.id === companyId);
-        if (organization) {
-            this.handleOrganizationClick(organization);
+        const companyId = parseCompanyId(new URLSearchParams(window.location.search).get('company'));
+        if (companyId !== null) {
+            this.openView(companyId, 'url');
         }
     };
 
-    // "Back to <Company>" from the correction form (issue #477): reopens the
-    // company's details dialog through the same path as `?company=`. An
-    // unknown or non-integer id is ignored.
+    // "Back to <Company>" from the correction form (issue #477): shows the
+    // company's view through the same path as `?company=`. A malformed id is
+    // ignored; a view that is already open stays as it is.
     handleCompanyOpenEvent = (event: Event) => {
         const organizationId = (event as CustomEvent).detail?.organizationId;
-        if (!Number.isInteger(organizationId)) return;
+        if (!isCompanyId(organizationId)) return;
         this.openCompanyById(organizationId);
     };
 
-    // Opens the dialog for an id in this list; false when it is not ranked here.
+    // The assistant's typed target: opens the view for any valid id, ranked in
+    // this list or not; false only for an id that cannot be one.
     openCompanyById = (organizationId: number): boolean => {
-        const organization = this.props.organizations.find((org) => org.id === organizationId);
-        if (!organization) {
-            return false;
+        const opened = this.openView(organizationId, 'user');
+        // On a phone the assistant is a sheet over the page: a company opened
+        // from inside it would stay hidden behind it, so the sheet closes, as
+        // it did when the company was a dialog.
+        if (opened && document.body.classList.contains('assistant-sheet')) {
+            closeAssistant();
         }
-        this.handleOrganizationClick(organization);
-        return true;
+        return opened;
     };
 
     getUrlState = () => {
@@ -469,6 +541,15 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             rtoPolicy: urlState.rtoPolicy,
             filteredOrganizations
         });
+        // Back and Forward move between the results entry and the company's:
+        // the URL says which one is showing.
+        this.closeRequested = false;
+        const companyId = parseCompanyId(new URLSearchParams(window.location.search).get('company'));
+        if (companyId !== null) {
+            this.openView(companyId, 'url');
+        } else if (this.state.view) {
+            this.showResults();
+        }
     };
 
     handlePageChange = (pageNumber: number) => {
@@ -545,100 +626,226 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     handleOrganizationClick = (organization: Organization) => {
-        // Claim this open intent synchronously (issue #464): every later
-        // open/close action bumps the generation, and the details fetch below
-        // re-checks it on resolve, so a stale response can never reopen or
-        // replace a newer dialog or a different company selection.
+        this.openView(organization.id, 'user');
+    };
+
+    // Shows the company in place of the results (issue #486). History rules:
+    // 1. Only an open from the results adds a history entry, exactly one; a
+    //    switch from inside the view replaces it; an open from the address
+    //    (`?company=` on load, Back/Forward) never writes history, the URL
+    //    already says it.
+    // 2. The `crankCompanyView` marker is written by that one push and removed
+    //    by `leaveViewInPlace`; nothing copies `history.state` onto a new entry.
+    // 3. "Back to results" and "Clear context" go back through that entry when
+    //    it exists, and rewrite the address in place when it does not.
+    // 4. A purge or an account change always closes in place, never through
+    //    history, in every account state (signed in, anonymous, never
+    //    known): a traversal queued with the sign-out form's submission could
+    //    cancel the sign-out.
+    openView = (id: number, source: 'user' | 'url'): boolean => {
+        if (!isCompanyId(id)) {
+            return false;
+        }
+        const current = this.state.view;
+        if (current && current.id === id) {
+            return true;
+        }
         const generation = ++this.modalGeneration;
-        // Get organization details if not already fetched. Opening the details
-        // dialog closes the suggest modal: only one blocking dialog may be
-        // active at a time (issue #464).
-        if (!organization.url || !organization.type) {
-            fetch(`/api/organizations/${organization.id}/`)
-                .then(response => response.json())
-                .then(data => {
-                    // Stale-response guard (issue #464): the dialog may have
-                    // been closed, a different company selected, or a newer
-                    // request issued while this fetch was in flight. Ignore
-                    // the late response in all of those cases.
-                    if (!this.isCurrentDetailsIntent(generation, organization.id)) {
-                        return;
-                    }
-                    const updatedOrg = { ...organization, ...data };
-                    const updatedOrganizations = this.state.organizations.map(org =>
-                        org.id === organization.id ? updatedOrg : org
+        this.closeRequested = false;
+        this.closedAfterPurge = false;
+        this.privateStateDropped = false;
+        this.askedOrganizationId = null;
+        if (current === null) {
+            this.openedRowId = id;
+        }
+        const row = this.state.organizations.find(org => org.id === id) ?? null;
+        closeSuggestCompany();
+        if (source === 'user') {
+            this.writeViewEntry(id, current !== null);
+        }
+        if (row && row.url && row.type) {
+            this.setState({view: {id, status: 'ready', organization: row}});
+            return true;
+        }
+        this.setState({view: {id, status: 'loading', organization: null, name: row?.name}});
+        this.loadRecord(id, row, generation);
+        return true;
+    };
+
+    private writeViewEntry = (id: number, replace: boolean) => {
+        const params = allowlistedParams(window.location.search);
+        params.set('company', String(id));
+        const url = `${window.location.pathname}?${params.toString()}${window.location.hash}`;
+        if (replace) {
+            window.history.replaceState(window.history.state, '', url);
+            return;
+        }
+        // The results entry remembers where it was scrolled to and which row
+        // was first on screen; Back puts that back.
+        const anchor = this.visibleOrganizationAnchor();
+        saveResultPosition(anchor?.id ?? null, anchor?.offset ?? 0);
+        window.history.pushState({[VIEW_ENTRY_KEY]: true}, '', url);
+    };
+
+    // Loads `GET /api/organizations/<id>/` for a company the list row does not
+    // fully describe (the ranking payload carries no url or type) or that is
+    // not a list row at all. A 404 is the company's disappearance, not an
+    // error; any other failure still shows a ranked row from what the list has.
+    private loadRecord = (id: number, row: Organization | null, generation: number) => {
+        // A response for a company that is no longer the one shown (another
+        // was opened, or the user went back) is dropped, errors included.
+        const current = () => generation === this.modalGeneration && this.state.view?.id === id;
+        const apply = (view: CompanyViewState, organizations?: Organization[]) => {
+            this.setState(previous => ({view, organizations: organizations ?? previous.organizations}));
+        };
+        fetch(`/api/organizations/${id}/`)
+            .then(response => {
+                if (response.status === 404) {
+                    if (current()) apply({id, status: 'not-found', organization: null});
+                    return undefined;
+                }
+                if (response.ok === false) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json().then(data => {
+                    if (!current()) return;
+                    const organization = {...row, ...data} as Organization;
+                    apply(
+                        {id, status: 'ready', organization},
+                        row ? this.state.organizations.map(org => (org.id === id ? organization : org)) : undefined,
                     );
-                    // Opening the details dialog closes the suggest modal:
-                    // only one blocking dialog may be active at a time
-                    // (issue #464), now enforced across the shared controller
-                    // (issue #471).
-                    closeSuggestCompany();
-                    this.setState({
-                        organizations: updatedOrganizations,
-                        selectedOrganization: updatedOrg,
-                        showPopup: true
-                    });
-                })
-                .catch(error => {
-                    if (!this.isCurrentDetailsIntent(generation, organization.id)) {
-                        return;
-                    }
-                    console.error('Error fetching organization details:', error);
-                    closeSuggestCompany();
-                    this.setState({
-                        selectedOrganization: organization,
-                        showPopup: true
-                    });
                 });
-        } else {
-            closeSuggestCompany();
-            this.setState({
-                selectedOrganization: organization,
-                showPopup: true
+            })
+            .catch(error => {
+                if (!current()) return;
+                console.error('Error fetching organization details:', error);
+                apply(row ? {id, status: 'ready', organization: row} : {id, status: 'error', organization: null});
             });
+    };
+
+    retryView = () => {
+        const view = this.state.view;
+        if (!view) {
+            return;
+        }
+        const generation = ++this.modalGeneration;
+        this.setState({view: {id: view.id, status: 'loading', organization: null}});
+        this.loadRecord(view.id, null, generation);
+    };
+
+    // Back to results, the button and the assistant's "Clear context". When
+    // opening added a history entry, go back through it so Back and Forward
+    // stay in step; otherwise (a deep link) rewrite the URL in place.
+    closeView = () => {
+        if (!this.state.view || this.closeRequested) {
+            return;
+        }
+        ++this.modalGeneration;
+        if (window.history.state?.[VIEW_ENTRY_KEY] === true) {
+            this.closeRequested = true;
+            window.history.back();
+            return;
+        }
+        this.leaveViewInPlace();
+    };
+
+    private leaveViewInPlace = () => {
+        if (!this.state.view) {
+            return;
+        }
+        const params = allowlistedParams(window.location.search);
+        params.delete('company');
+        const query = params.toString();
+        // The position on this entry was saved while the company was on
+        // screen, so it is dropped with the marker; the rest of the state stays.
+        const {[POSITION_STATE_KEY]: _position, [VIEW_ENTRY_KEY]: _marker, ...kept} = window.history.state ?? {};
+        window.history.replaceState(
+            kept, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+        this.showResults(false);
+    };
+
+    // Shows the results again exactly as they were: the region was only
+    // hidden, so search, filters and page are untouched. Through history the
+    // entry's own saved position is restored; in place there is none to
+    // restore. The row the view was opened from takes focus and is never
+    // left off screen.
+    private showResults = (throughHistory = true) => {
+        const id = this.state.view?.id;
+        const openedRowId = this.openedRowId;
+        this.openedRowId = null;
+        ++this.modalGeneration;
+        this.setState({view: null}, () => {
+            // After the commit that shows the results again (and any list
+            // state a popstate restored in the same turn) has painted.
+            window.requestAnimationFrame(() => {
+                if (throughHistory) {
+                    restoreResultPosition(this.findOrganizationAnchor);
+                }
+                // The row the view was opened from; after a switch to a
+                // company that is gone it is still the one to come back to.
+                // (`String(null)` is not an id, so a missing one finds no row.)
+                const row = this.findOrganizationAnchor(String(openedRowId))
+                    ?? this.findOrganizationAnchor(String(id));
+                if (row) {
+                    this.bringRowIntoView(row, throughHistory);
+                } else if (!throughHistory) {
+                    window.scrollTo({top: 0, behavior: INSTANT});
+                }
+                (row ?? this.resultsRef.current)?.focus({preventScroll: true});
+            });
+        });
+    };
+
+    // A restored row that is at least partly on screen stays where it was
+    // restored to; one that is not is centred, clear of the top bar and the
+    // Assistant bar. In place the row must be fully inside.
+    private bringRowIntoView = (row: HTMLElement, partlyIsEnough: boolean) => {
+        const rect = row.getBoundingClientRect();
+        const visible = partlyIsEnough
+            ? rect.bottom > 0 && rect.top < window.innerHeight
+            : rect.top >= 0 && rect.bottom <= window.innerHeight;
+        if (!visible) {
+            const top = Math.round(rect.top + window.scrollY - (window.innerHeight - rect.height) / 2);
+            window.scrollTo({top: Math.max(0, top), behavior: INSTANT});
         }
     };
 
-    // A details response may only open the dialog while its captured intent
-    // is still the latest one (issue #464 stale-response race): no newer
-    // open/close/select has superseded it (generation check) and no other
-    // company's dialog is the currently active intent (selection check).
-    // Without this guard, a slow response could reopen a dialog the user
-    // closed, clobber a suggest form the user is typing into, or replace a
-    // newer selection when responses resolve out of order.
-    isCurrentDetailsIntent = (generation: number, organizationId: number): boolean => {
-        if (generation !== this.modalGeneration) {
-            return false;
+    private resultsRef = React.createRef<HTMLDivElement>();
+
+    handleAsk = () => {
+        const organization = this.state.view?.organization;
+        if (!organization) {
+            return;
         }
-        return !(
-            this.state.showPopup
-            && this.state.selectedOrganization !== null
-            && this.state.selectedOrganization.id !== organizationId
-        );
+        this.askedOrganizationId = organization.id;
+        this.reportedOrganizationId = null;
+        openAssistant({surface: 'company', organizationId: organization.id, organizationName: organization.name});
+        // The assistant may never reach a composer (initialization error,
+        // gated account); the shell still moves focus into it.
+        window.dispatchEvent(new CustomEvent(WORKSPACE_FOCUS_EVENT));
+    };
+
+    handleSuggestCorrection = (source: CorrectionSource, fieldKey?: string) => {
+        const organization = this.state.view?.organization;
+        if (!organization) {
+            return;
+        }
+        openSuggestCompany({
+            kind: 'correction',
+            source,
+            companyName: organization.name,
+            organizationId: organization.id,
+            fieldKey,
+        });
     };
 
     handleOpenSuggestModal = (source: 'rankings' | 'rankings_empty') => {
-        // Opening the suggest modal closes the details dialog: only one
-        // blocking dialog may be active at a time (issue #464). The
-        // generation bump also invalidates any in-flight details fetch so
-        // its late response cannot reopen the details dialog over this
-        // modal or destroy the user's form input.
-        ++this.modalGeneration;
-        this.setState({showPopup: false, selectedOrganization: null});
         openSuggestCompany({
             source,
             searchTerm: this.state.searchTerm,
             companyName: source === 'rankings_empty' && this.state.searchTerm ? this.state.searchTerm : undefined,
             page: this.state.currentPage
         });
-    };
-
-    handleClosePopup = () => {
-        // Closing the details dialog invalidates any in-flight details fetch
-        // (issue #464): a response that arrives after this close must not
-        // reopen the dialog.
-        ++this.modalGeneration;
-        this.setState({ showPopup: false });
     };
 
     renderChips = () => {
@@ -676,8 +883,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting,
             rtoPolicy,
             searchTerm,
-            selectedOrganization,
-            showPopup,
+            view,
             choicesStatus
         } = this.state;
 
@@ -734,6 +940,22 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         );
 
         return (<div>
+            {view && (
+                <CompanyView
+                    organizationId={view.id}
+                    status={view.status}
+                    organization={view.organization as CompanyDetailsOrganization | null}
+                    name={view.name}
+                    isAuthenticated={this.props.isAuthenticated}
+                    signInUrlTemplate={this.props.signInUrlTemplate}
+                    onBack={this.closeView}
+                    onRetry={this.retryView}
+                    onAsk={this.handleAsk}
+                    onSuggestCorrection={this.handleSuggestCorrection}
+                />
+            )}
+            <div ref={this.resultsRef} tabIndex={-1} hidden={view !== null} className="organization-results-region"
+                 data-testid="organization-results-region">
             <div className="rankings-toolbar" data-testid="rankings-toolbar">
                 <div className="rankings-toolbar-search">
                     <label className="form-label" htmlFor="organization-search">Search organizations</label>
@@ -888,14 +1110,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 </div>
                 {pageCount > 1 && renderPager('bottom')}
             </>)}
-
-            <OrganizationDetailsPopup
-                organization={selectedOrganization}
-                visible={showPopup}
-                onClose={this.handleClosePopup}
-                isAuthenticated={this.props.isAuthenticated}
-                signInUrlTemplate={this.props.signInUrlTemplate}
-            />
+            </div>
         </div>);
     }
 }

@@ -29,26 +29,31 @@ test.describe('skip link and tab order', () => {
     });
 });
 
-test.describe('blocking dialog keyboard semantics', () => {
-    test('company dialog: focus lands on Close, Escape returns focus to the trigger', async ({page}) => {
+test.describe('company view and blocking dialog keyboard semantics', () => {
+    // 486b: replaces "company dialog: focus lands on Close, Escape returns focus to the trigger".
+    test('company view: heading takes focus, Tab reaches Back to results, Escape does nothing, Back returns focus to the row', async ({page}) => {
         await login(page);
         await page.goto('/');
         const trigger = page.locator('tr[aria-label="View details for E2E Alpha Corp"]');
         await trigger.click();
-        const dialog = page.getByRole('dialog');
-        await expect(dialog).toBeVisible();
-        await expect(page.locator('.popup-details button[aria-label="Close"]')).toBeFocused();
+        const view = page.getByTestId('company-view');
+        await expect(view).toBeVisible();
+        await expect(page.locator('#organization-details-title')).toBeFocused();
+        // A view is not a modal: no dialog role, no aria-modal, background not inert.
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
+        await expect(page.locator('main#main-content')).not.toHaveAttribute('inert', /.*/);
 
-        // Tab stays inside the dialog's own controls.
         await page.keyboard.press('Tab');
-        const inside = await page.evaluate(() =>
-            Boolean(document.activeElement?.closest('.popup-details')),
-        );
-        expect(inside, 'focus must stay inside the dialog while it is open').toBe(true);
+        await expect(page.getByRole('button', {name: 'Back to results'})).toBeFocused();
 
-        // Escape closes and restores focus to the element that opened it.
+        // Escape has no effect in the view.
         await page.keyboard.press('Escape');
-        await expect(dialog).toBeHidden();
+        await expect(view).toBeVisible();
+
+        // Back to results restores focus to the element that opened the view.
+        await page.keyboard.press('Enter');
+        await expect(view).toHaveCount(0);
         await expect(trigger).toBeFocused();
     });
 

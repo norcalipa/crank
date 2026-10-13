@@ -98,8 +98,7 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
     componentDidUpdate(prevProps: SuggestCompanyModalProps, _prevState: Readonly<SuggestCompanyModalState>, focusWasInside: boolean) {
         if (this.props.visible && !prevProps.visible) {
             // Capture the opener BEFORE lockBackground() inerts the shell (issue
-            // #464 contract, mirrored from OrganizationDetailsPopup): inerting
-            // blurs the trigger and resets activeElement to <body> in real
+            // #464 contract): inerting blurs the trigger and resets activeElement to <body> in real
             // browsers, so capturing after the lock would lose the focus-restore
             // target and Escape/Close could not return focus to the opener.
             this.openerRef = document.activeElement instanceof HTMLElement

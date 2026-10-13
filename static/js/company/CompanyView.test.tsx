@@ -5,10 +5,31 @@ import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-li
 
 import * as React from 'react';
 
-import OrganizationDetailsPopup from './OrganizationDetailsPopup';
-import {getCachedProvenance} from './provenanceCache';
-import * as suggestCompanyController from './suggestCompany/controller';
-import {getWorkspaceSnapshot, resetWorkspaceForTests} from './workspace/store';
+import CompanyView from './CompanyView';
+import {CompanyDetailsOrganization, CorrectionSource} from './CompanyDetails';
+import {getCachedProvenance} from '../provenanceCache';
+import {resetWorkspaceForTests} from '../workspace/store';
+
+interface HostProps {
+    organization: CompanyDetailsOrganization | null;
+    visible?: boolean;
+    onClose?: () => void;
+    isAuthenticated?: boolean;
+    signInUrlTemplate?: string;
+    onAsk?: () => void;
+    onSuggestCorrection?: (source: CorrectionSource, fieldKey?: string) => void;
+}
+
+// CompanyView for a record that is already loaded; `visible={false}` unmounts
+// it the way the list does when the results come back.
+const CompanyViewHost: React.FC<HostProps> = ({
+    organization, visible = true, onClose = () => {}, isAuthenticated, signInUrlTemplate,
+    onAsk = () => {}, onSuggestCorrection = () => {},
+}) => (organization && visible ? (
+    <CompanyView organizationId={organization.id} status="ready" organization={organization}
+                 isAuthenticated={isAuthenticated} signInUrlTemplate={signInUrlTemplate}
+                 onBack={onClose} onAsk={onAsk} onSuggestCorrection={onSuggestCorrection}/>
+) : null);
 
 // Add an interface that matches the component's expected props
 interface ScoreDetail {
@@ -32,7 +53,7 @@ interface Organization {
     avg_scores?: ScoreDetail[];
 }
 
-describe('OrganizationDetailsPopup', () => {
+describe('CompanyView', () => {
     beforeEach(() => {
         // Mock fetch calls
         global.fetch = jest.fn().mockImplementation((url) => {
@@ -89,33 +110,9 @@ describe('OrganizationDetailsPopup', () => {
         public: true
     };
 
-    test('renders nothing when visible is false', () => {
-        const { container } = render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={false}
-                onClose={() => {}}
-            />
-        );
-        
-        expect(container.firstChild).toBeNull();
-    });
-
-    test('renders nothing when organization is null', () => {
-        const { container } = render(
-            <OrganizationDetailsPopup
-                organization={null}
-                visible={true}
-                onClose={() => {}}
-            />
-        );
-        
-        expect(container.firstChild).toBeNull();
-    });
-
     test('renders organization details when visible is true', () => {
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -130,8 +127,16 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getAllByText('Yes').length).toBe(2); // For gives_ratings and accelerated_vesting
         expect(screen.getByText('5')).toBeInTheDocument(); // For ranking
         expect(screen.getByTestId('rating-coverage')).toHaveTextContent('85% of rating dimensions'); // fallback without dimension counts
-        expect(screen.getByRole('dialog', {name: 'Test Organization'})).toHaveAttribute('aria-modal', 'true');
-        expect(screen.getByRole('button', {name: 'Close'})).toHaveFocus();
+        // A named region, not a dialog; the heading takes focus on open.
+        const region = screen.getByRole('region', {name: 'Test Organization'});
+        expect(region).toHaveAttribute('data-testid', 'company-view');
+        expect(region).toHaveAttribute('data-organization-id', '1');
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        expect(region).not.toHaveAttribute('aria-modal');
+        expect(document.querySelector('.popup-overlay')).toBeNull();
+        const heading = screen.getByRole('heading', {level: 2, name: 'Test Organization'});
+        expect(heading).toHaveAttribute('id', 'organization-details-title');
+        expect(heading).toHaveFocus();
     });
 
     test('fetches and displays scores when organization has no avg_scores', async () => {
@@ -139,7 +144,7 @@ describe('OrganizationDetailsPopup', () => {
         delete organizationWithoutScores.avg_scores;
         
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={organizationWithoutScores}
                 visible={true}
                 onClose={() => {}}
@@ -170,7 +175,7 @@ describe('OrganizationDetailsPopup', () => {
         };
         
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={organizationWithScores}
                 visible={true}
                 onClose={() => {}}
@@ -200,7 +205,7 @@ describe('OrganizationDetailsPopup', () => {
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
         
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={organizationWithoutScores}
                 visible={true}
                 onClose={() => {}}
@@ -219,323 +224,12 @@ describe('OrganizationDetailsPopup', () => {
         consoleSpy.mockRestore();
     });
 
-    test('calls onClose when close button is clicked', () => {
-        const onCloseMock = jest.fn();
-        
-        // Create a div with tabindex to make it focusable
-        const focusableDiv = document.createElement('div');
-        focusableDiv.setAttribute('tabindex', '0');
-        document.body.appendChild(focusableDiv);
-        
-        // Focus the element
-        focusableDiv.focus();
-        
-        // Verify the element is focused
-        expect(document.activeElement).toBe(focusableDiv);
-        
-        render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-        
-        const closeButton = screen.getByRole('button', { name: 'Close' });
-        fireEvent.click(closeButton);
-        
-        // Check that onClose was called and focus returned to the opener.
-        expect(onCloseMock).toHaveBeenCalledTimes(1);
-        expect(document.activeElement).toBe(focusableDiv);
-        
-        // Clean up
-        document.body.removeChild(focusableDiv);
-    });
-
-    test('calls onClose and restores focus to opener when Escape key is pressed', () => {
-        const onCloseMock = jest.fn();
-
-        // Create a div with tabindex to make it focusable and add to the DOM
-        const focusableDiv = document.createElement('div');
-        focusableDiv.setAttribute('tabindex', '0');
-        document.body.appendChild(focusableDiv);
-        focusableDiv.focus();
-
-        render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-        
-        // Simulate pressing the Escape key
-        fireEvent.keyDown(document, { key: 'Escape' });
-        
-        expect(onCloseMock).toHaveBeenCalledTimes(1);
-        expect(document.activeElement).toBe(focusableDiv);
-
-        document.body.removeChild(focusableDiv);
-    });
-
     // Regression (issue #471 CI repair): the opener must be captured BEFORE
     // background isolation inerts the shell. Inerting the shell blurs the
     // trigger (activeElement resets to <body>); if capture ran after the
     // lock, the restore target would be lost and Escape would strand focus
     // on <body>. This test drives the real modalIsolation inert/scroll lock
     // to prove focus still returns to the trigger through the full lifecycle.
-    test('restores focus to the trigger after Escape while the background is inerted', () => {
-        const onCloseMock = jest.fn();
-
-        // A real trigger element that lives in the (to-be-inerted) background.
-        const trigger = document.createElement('button');
-        trigger.setAttribute('aria-label', 'View details');
-        document.body.appendChild(trigger);
-        trigger.focus();
-        expect(document.activeElement).toBe(trigger);
-
-        const {rerender} = render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={false}
-                onClose={onCloseMock}
-            />
-        );
-
-        // Open: the shell/content/skip-link go inert. The trigger must have
-        // been captured before the inert blur so the restore can find it.
-        rerender(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-
-        // The background is isolated while open.
-        const shell = document.querySelector('.app-shell, main.app-content, .skip-to-content');
-        if (shell) {
-            expect(shell).toHaveAttribute('inert');
-        }
-
-        // Escape closes and returns focus to the captured trigger.
-        fireEvent.keyDown(document, {key: 'Escape'});
-        expect(onCloseMock).toHaveBeenCalledTimes(1);
-
-        // Parent honors onClose and hides the dialog (commit release path).
-        rerender(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={false}
-                onClose={onCloseMock}
-            />
-        );
-
-        expect(document.activeElement).toBe(trigger);
-        document.body.removeChild(trigger);
-    });
-
-    test('does not call onClose when other keys are pressed', () => {
-        const onCloseMock = jest.fn();
-        
-        render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-        
-        // Simulate pressing other keys
-        fireEvent.keyDown(document, { key: 'Enter' });
-        fireEvent.keyDown(document, { key: 'a' });
-        
-        expect(onCloseMock).not.toHaveBeenCalled();
-    });
-
-    test('does not call onClose when Escape key is pressed but popup is not visible', () => {
-        const onCloseMock = jest.fn();
-        
-        render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={false}
-                onClose={onCloseMock}
-            />
-        );
-        
-        // Simulate pressing the Escape key
-        fireEvent.keyDown(document, { key: 'Escape' });
-        
-        expect(onCloseMock).not.toHaveBeenCalled();
-    });
-
-    describe('focus trap (issue #464)', () => {
-        test('Tab from the last focusable element wraps to the first', () => {
-            render(
-                <OrganizationDetailsPopup
-                    organization={mockOrganization}
-                    visible={true}
-                    onClose={() => {}}
-                />
-            );
-
-            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
-            const focusables = Array.from(
-                dialog.querySelectorAll<HTMLElement>(
-                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-                )
-            );
-            expect(focusables.length).toBeGreaterThan(1);
-            const first = focusables[0];
-            const last = focusables[focusables.length - 1];
-
-            last.focus();
-            expect(document.activeElement).toBe(last);
-
-            fireEvent.keyDown(document, {key: 'Tab'});
-
-            expect(document.activeElement).toBe(first);
-        });
-
-        test('Shift+Tab from the first focusable element wraps to the last', () => {
-            render(
-                <OrganizationDetailsPopup
-                    organization={mockOrganization}
-                    visible={true}
-                    onClose={() => {}}
-                />
-            );
-
-            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
-            const focusables = Array.from(
-                dialog.querySelectorAll<HTMLElement>(
-                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-                )
-            );
-            const first = focusables[0];
-            const last = focusables[focusables.length - 1];
-
-            first.focus();
-            expect(document.activeElement).toBe(first);
-
-            fireEvent.keyDown(document, {key: 'Tab', shiftKey: true});
-
-            expect(document.activeElement).toBe(last);
-        });
-
-        test('Tab with focus outside the dialog moves focus into it (never behind it)', () => {
-            render(
-                <OrganizationDetailsPopup
-                    organization={mockOrganization}
-                    visible={true}
-                    onClose={() => {}}
-                />
-            );
-
-            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
-            const focusables = Array.from(
-                dialog.querySelectorAll<HTMLElement>(
-                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-                )
-            );
-            const first = focusables[0];
-
-            // Park focus on a background element outside the dialog.
-            const outside = document.createElement('button');
-            document.body.appendChild(outside);
-            outside.focus();
-            expect(document.activeElement).toBe(outside);
-
-            fireEvent.keyDown(document, {key: 'Tab'});
-
-            expect(dialog.contains(document.activeElement)).toBe(true);
-            expect(document.activeElement).toBe(first);
-
-            document.body.removeChild(outside);
-        });
-
-        test('Shift+Tab with focus outside the dialog moves focus to its last element', () => {
-            render(
-                <OrganizationDetailsPopup
-                    organization={mockOrganization}
-                    visible={true}
-                    onClose={() => {}}
-                />
-            );
-
-            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
-            const focusables = Array.from(
-                dialog.querySelectorAll<HTMLElement>(
-                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-                )
-            );
-            const last = focusables[focusables.length - 1];
-
-            const outside = document.createElement('button');
-            document.body.appendChild(outside);
-            outside.focus();
-
-            fireEvent.keyDown(document, {key: 'Tab', shiftKey: true});
-
-            expect(document.activeElement).toBe(last);
-
-            document.body.removeChild(outside);
-        });
-
-        test('Tab cycling ignores disabled buttons inside the dialog', () => {
-            render(
-                <OrganizationDetailsPopup
-                    organization={mockOrganization}
-                    visible={true}
-                    onClose={() => {}}
-                />
-            );
-
-            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
-            // The only anchor and button remain the cycle bounds; adding a
-            // disabled button must not affect the cycle.
-            const disabled = document.createElement('button');
-            disabled.disabled = true;
-            dialog.appendChild(disabled);
-
-            const focusables = Array.from(
-                dialog.querySelectorAll<HTMLElement>(
-                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-                )
-            );
-            expect(focusables).not.toContain(disabled);
-
-            fireEvent.keyDown(document, {key: 'Tab'});
-            expect(dialog.contains(document.activeElement)).toBe(true);
-
-            dialog.removeChild(disabled);
-        });
-    });
-
-    test('removes event listener on unmount', () => {
-        const onCloseMock = jest.fn();
-        const documentAddEventListenerSpy = jest.spyOn(document, 'addEventListener');
-        const documentRemoveEventListenerSpy = jest.spyOn(document, 'removeEventListener');
-        
-        const { unmount } = render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-        
-        expect(documentAddEventListenerSpy).toHaveBeenCalledWith('keydown', expect.any(Function));
-        
-        unmount();
-        
-        expect(documentRemoveEventListenerSpy).toHaveBeenCalledWith('keydown', expect.any(Function));
-        
-        documentAddEventListenerSpy.mockRestore();
-        documentRemoveEventListenerSpy.mockRestore();
-    });
-
     test('renders URL as a clickable link with proper attributes', () => {
         const organizationWithUrl: Organization = {
             ...mockOrganization,
@@ -543,7 +237,7 @@ describe('OrganizationDetailsPopup', () => {
         };
         
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={organizationWithUrl}
                 visible={true}
                 onClose={() => {}}
@@ -566,7 +260,7 @@ describe('OrganizationDetailsPopup', () => {
         delete organizationWithoutUrl.url;
         
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={organizationWithoutUrl}
                 visible={true}
                 onClose={() => {}}
@@ -586,157 +280,9 @@ describe('OrganizationDetailsPopup', () => {
     // The component's actual behavior has been manually verified in the browser.
     // The tests below address this by directly triggering the click handlers with properly mocked events.
 
-    test('closes popup when clicking on the overlay', () => {
-        const onCloseMock = jest.fn();
-        
-        // Create a div with tabindex to make it focusable and add to the DOM
-        const focusableDiv = document.createElement('div');
-        focusableDiv.setAttribute('tabindex', '0');
-        document.body.appendChild(focusableDiv);
-        
-        // Focus the element
-        focusableDiv.focus();
-        
-        // Verify the element is focused
-        expect(document.activeElement).toBe(focusableDiv);
-        
-        // Render component; the accessible dialog moves focus to its Close button.
-        render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-        
-        // Get the overlay
-        const overlay = screen.getByTestId('popup-overlay');
-        const closeButton = screen.getByRole('button', {name: 'Close'});
-        expect(closeButton).toHaveFocus();
-        
-        // Simulate click on the overlay (not its children)
-        // Using fireEvent directly instead of the mock approach
-        fireEvent.click(overlay, {
-            // Set target and currentTarget to the overlay element to simulate
-            // clicking directly on the overlay
-            target: overlay,
-            currentTarget: overlay
-        });
-        
-        // Check that onClose was called and focus returned to the opener.
-        expect(onCloseMock).toHaveBeenCalledTimes(1);
-        expect(document.activeElement).toBe(focusableDiv);
-        
-        // Clean up
-        document.body.removeChild(focusableDiv);
-    });
-    
-    test('does not close popup when clicking on popup content', () => {
-        const onCloseMock = jest.fn();
-        
-        render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-        
-        // Get the overlay and popup content
-        const overlay = screen.getByTestId('popup-overlay');
-        const popupContent = overlay.querySelector('.popup-details');
-        
-        expect(popupContent).not.toBeNull();
-        
-        // Simulate click on the popup content
-        // Using fireEvent directly instead of the mock approach
-        fireEvent.click(popupContent!, {
-            // Set target to the popup content but currentTarget to the overlay
-            // This simulates bubbling - click happened on content but bubbled to overlay
-            target: popupContent,
-            currentTarget: overlay
-        });
-        
-        // Check that onClose was NOT called
-        expect(onCloseMock).not.toHaveBeenCalled();
-    });
-    
-    test('closes popup without error when activeElement is not an HTMLElement', () => {
-        const onCloseMock = jest.fn();
-
-        // Save the original activeElement property descriptor so it can be
-        // restored exactly (activeElement is an accessor in jsdom).
-        const originalDescriptor = Object.getOwnPropertyDescriptor(document, 'activeElement');
-
-        // Mock document.activeElement to return a non-HTMLElement (like null)
-        Object.defineProperty(document, 'activeElement', {
-            get: jest.fn(() => null),
-            configurable: true
-        });
-
-        render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-
-        // Get the overlay
-        const overlay = screen.getByTestId('popup-overlay');
-
-        // Simulate click on the overlay
-        fireEvent.click(overlay, {
-            target: overlay,
-            currentTarget: overlay
-        });
-
-        // Check that onClose was called
-        expect(onCloseMock).toHaveBeenCalledTimes(1);
-
-        // Restore the original activeElement property (or remove our own
-        // property so the prototype accessor is used again).
-        if (originalDescriptor) {
-            Object.defineProperty(document, 'activeElement', originalDescriptor);
-        } else {
-            delete (document as any).activeElement;
-        }
-    });
-
-    test('blurs active element when opener is no longer connected on close', () => {
-        const onCloseMock = jest.fn();
-
-        const focusableDiv = document.createElement('div');
-        focusableDiv.setAttribute('tabindex', '0');
-        document.body.appendChild(focusableDiv);
-        focusableDiv.focus();
-
-        render(
-            <OrganizationDetailsPopup
-                organization={mockOrganization}
-                visible={true}
-                onClose={onCloseMock}
-            />
-        );
-
-        // Detach the opener so it is no longer connected, simulating the
-        // trigger being removed from the DOM while the dialog is open.
-        document.body.removeChild(focusableDiv);
-
-        const closeButton = screen.getByRole('button', { name: 'Close' });
-        const blurSpy = jest.spyOn(closeButton, 'blur');
-
-        fireEvent.keyDown(document, { key: 'Escape' });
-
-        expect(onCloseMock).toHaveBeenCalledTimes(1);
-        expect(blurSpy).toHaveBeenCalled();
-
-        blurSpy.mockRestore();
-    });
-
     test('renders provenance section with observation data', async () => {
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -771,7 +317,7 @@ describe('OrganizationDetailsPopup', () => {
         });
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -802,7 +348,7 @@ describe('OrganizationDetailsPopup', () => {
         });
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -859,7 +405,7 @@ describe('OrganizationDetailsPopup', () => {
 
     test('separates the source from the verified date with a comma and a space, and names a missing source', async () => {
         provenanceWithEvidence();
-        render(<OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}/>);
+        render(<CompanyViewHost organization={mockOrganization} visible={true} onClose={() => {}}/>);
         const meta = await screen.findByTestId('field-evidence-rto_policy');
         expect(meta).toHaveTextContent('Source: example.com');
         expect(meta).toHaveTextContent('Last verified');
@@ -868,7 +414,7 @@ describe('OrganizationDetailsPopup', () => {
             field_key: 'rto_policy', state: 'accepted', value: 'Remote first', source_domain: '',
             last_verified_at: '2025-01-10T12:00:00Z', stale: false, scope: {},
         }]});
-        render(<OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}/>);
+        render(<CompanyViewHost organization={mockOrganization} visible={true} onClose={() => {}}/>);
         expect(await screen.findByTestId('field-evidence-rto_policy')).toHaveTextContent('Source: unknown source');
     });
 
@@ -876,7 +422,7 @@ describe('OrganizationDetailsPopup', () => {
         provenanceWithEvidence();
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -899,7 +445,7 @@ describe('OrganizationDetailsPopup', () => {
         provenanceWithEvidence();
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -937,7 +483,7 @@ describe('OrganizationDetailsPopup', () => {
         });
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -968,7 +514,7 @@ describe('OrganizationDetailsPopup', () => {
         });
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -985,7 +531,7 @@ describe('OrganizationDetailsPopup', () => {
 
     test('shows suggest correction link when authenticated', async () => {
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -999,14 +545,15 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getByTestId('suggest-correction-link')).toBeInTheDocument();
     });
 
-    test('the correction trigger calls the controller with company_details context and closes the dialog', async () => {
-        const openSpy = jest.spyOn(suggestCompanyController, 'openSuggestCompany').mockImplementation(() => {});
+    test('the correction trigger reports company_details to the container and the view stays', async () => {
+        const onSuggestCorrection = jest.fn();
         const onClose = jest.fn();
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={onClose}
+                onSuggestCorrection={onSuggestCorrection}
                 isAuthenticated={true}
             />
         );
@@ -1016,20 +563,14 @@ describe('OrganizationDetailsPopup', () => {
         });
         fireEvent.click(screen.getByTestId('suggest-correction-link'));
 
-        expect(openSpy).toHaveBeenCalledWith({
-            kind: 'correction',
-            source: 'company_details',
-            companyName: 'Test Organization',
-            organizationId: 1,
-        });
-        expect(onClose).toHaveBeenCalledTimes(1);
-
-        openSpy.mockRestore();
+        expect(onSuggestCorrection).toHaveBeenCalledWith('company_details');
+        expect(onClose).not.toHaveBeenCalled();
+        expect(screen.getByTestId('company-view')).toBeInTheDocument();
     });
 
     test('does not show correction link when not authenticated', async () => {
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -1057,7 +598,7 @@ describe('OrganizationDetailsPopup', () => {
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -1101,7 +642,7 @@ describe('OrganizationDetailsPopup', () => {
         });
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -1145,7 +686,7 @@ describe('OrganizationDetailsPopup', () => {
         });
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -1189,7 +730,7 @@ describe('OrganizationDetailsPopup', () => {
         });
 
         render(
-            <OrganizationDetailsPopup
+            <CompanyViewHost
                 organization={mockOrganization}
                 visible={true}
                 onClose={() => {}}
@@ -1202,106 +743,6 @@ describe('OrganizationDetailsPopup', () => {
 
         const lastUpdated = screen.getByTestId('last-updated');
         expect(lastUpdated.textContent).toContain('weeks ago');
-    });
-
-    describe('background isolation (issue #464 review)', () => {
-        let backgroundRoots: HTMLElement[];
-
-        beforeEach(() => {
-            // Stand up the page structure the isolation module targets: the
-            // application shell (navigation chrome), the main content area,
-            // and the modal-external skip link (review r2: it used to stay a
-            // focusable page-level target while the dialog was open).
-            const shell = document.createElement('aside');
-            shell.className = 'app-shell';
-            shell.innerHTML = '<a href="/">Nav link</a>';
-            document.body.appendChild(shell);
-            const content = document.createElement('main');
-            content.className = 'app-content';
-            document.body.appendChild(content);
-            const skipLink = document.createElement('a');
-            skipLink.className = 'skip-to-content';
-            skipLink.href = '#main-content';
-            document.body.appendChild(skipLink);
-            backgroundRoots = [shell, content, skipLink];
-            document.body.style.overflow = 'auto';
-            document.documentElement.style.overflow = 'auto';
-        });
-
-        afterEach(() => {
-            for (const root of backgroundRoots) {
-                root.remove();
-            }
-            document.body.style.overflow = '';
-            document.documentElement.style.overflow = '';
-        });
-
-        test('locks document scrolling and inert-hides the background while the dialog is open', () => {
-            render(
-                <OrganizationDetailsPopup
-                    organization={mockOrganization}
-                    visible={true}
-                    onClose={() => {}}
-                />
-            );
-
-            expect(document.body.style.overflow).toBe('hidden');
-            // The root element carries the viewport overflow under the
-            // stylesheet's `html, body { overflow-x: hidden }` rule — locking
-            // body alone leaves the actual document scroller free (review r2).
-            expect(document.documentElement.style.overflow).toBe('hidden');
-            for (const root of backgroundRoots) {
-                expect(root).toHaveAttribute('inert');
-                expect(root).toHaveAttribute('aria-hidden', 'true');
-            }
-        });
-
-        test('releases the scroll lock and background inertness when the dialog closes', () => {
-            const {rerender} = render(
-                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
-            );
-            expect(document.body.style.overflow).toBe('hidden');
-
-            rerender(<OrganizationDetailsPopup organization={mockOrganization} visible={false} onClose={() => {}} />);
-
-            expect(document.body.style.overflow).toBe('auto');
-            expect(document.documentElement.style.overflow).toBe('auto');
-            for (const root of backgroundRoots) {
-                expect(root).not.toHaveAttribute('inert');
-                expect(root).not.toHaveAttribute('aria-hidden');
-            }
-        });
-
-        test('releases isolation when unmounted while the dialog is open', () => {
-            const {unmount} = render(
-                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
-            );
-            expect(document.body.style.overflow).toBe('hidden');
-
-            unmount();
-
-            expect(document.body.style.overflow).toBe('auto');
-            for (const root of backgroundRoots) {
-                expect(root).not.toHaveAttribute('inert');
-                expect(root).not.toHaveAttribute('aria-hidden');
-            }
-        });
-
-        test('restores focus to the opener after isolation is released on close', () => {
-            const opener = document.createElement('button');
-            document.body.appendChild(opener);
-            opener.focus();
-
-            const {rerender} = render(
-                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
-            );
-            rerender(<OrganizationDetailsPopup organization={mockOrganization} visible={false} onClose={() => {}} />);
-
-            // The cleanup restores focus AFTER unlocking, so the opener —
-            // inside the previously inert background — receives focus again.
-            expect(document.activeElement).toBe(opener);
-            opener.remove();
-        });
     });
 
     describe('Ask the assistant CTA (issue #479)', () => {
@@ -1323,17 +764,17 @@ describe('OrganizationDetailsPopup', () => {
 
         function renderAuthenticated(onClose: () => void) {
             return render(
-                <OrganizationDetailsPopup organization={mockOrganization} visible={true}
+                <CompanyViewHost organization={mockOrganization} visible={true}
                                           onClose={onClose} isAuthenticated={true} />
             );
         }
 
-        test('the dialog body is the scroll container and the details use the balanced grid', () => {
+        test('the view keeps the shared content class and the details use the balanced grid', () => {
             renderAuthenticated(jest.fn());
-            const dialog = screen.getByRole('dialog');
-            expect(dialog).toHaveClass('popup-details');
-            expect(dialog.querySelector('.card-header')).toBeInTheDocument();
-            expect(dialog.querySelector('.card-body')).toBeInTheDocument();
+            const view = screen.getByTestId('company-view');
+            expect(view).toHaveClass('popup-details');
+            expect(view.querySelector('.company-view-header')).toBeInTheDocument();
+            expect(view.querySelector('.card-body')).toBeInTheDocument();
             const grid = screen.getByTestId('popup-details-grid');
             expect(grid.querySelector('.popup-details-profile')).toBeInTheDocument();
             expect(grid.querySelector('.popup-details-scores')).toBeInTheDocument();
@@ -1351,70 +792,48 @@ describe('OrganizationDetailsPopup', () => {
                 .not.toHaveTextContent('Rank:');
         });
 
-        test('closes the dialog and opens the assistant with company context on the next frame', () => {
-            const workspace = document.createElement('div');
-            workspace.id = 'assistant-workspace';
-            document.body.appendChild(workspace);
-            const onClose = jest.fn();
-            renderAuthenticated(onClose);
-
-            fireEvent.click(screen.getByTestId('company-chat-cta'));
-
-            expect(onClose).toHaveBeenCalledTimes(1);
-            // Not opened synchronously: the dialog's background lock must
-            // release first (#472 one-blocking-surface rule).
-            expect(getWorkspaceSnapshot().visibility).toBe('closed');
-            rafCallbacks.forEach((cb) => cb(0));
-            expect(getWorkspaceSnapshot().visibility).toBe('open');
-            expect(getWorkspaceSnapshot().context).toEqual({
-                surface: 'company',
-                organizationId: mockOrganization.id,
-                organizationName: mockOrganization.name,
-            });
-        });
-
-        test('requests assistant focus after opening so the error/gated path never strands focus', () => {
-            const workspace = document.createElement('div');
-            workspace.id = 'assistant-workspace';
-            document.body.appendChild(workspace);
-            const onFocusRequest = jest.fn();
-            window.addEventListener('crank:assistant-focus', onFocusRequest);
-            renderAuthenticated(jest.fn());
-
-            fireEvent.click(screen.getByTestId('company-chat-cta'));
-            expect(onFocusRequest).not.toHaveBeenCalled();
-            rafCallbacks.forEach((cb) => cb(0));
-
-            expect(onFocusRequest).toHaveBeenCalledTimes(1);
-            window.removeEventListener('crank:assistant-focus', onFocusRequest);
-        });
-
-        test('falls back to the plain /chat/ link when the workspace host is absent', () => {
-            const onClose = jest.fn();
-            renderAuthenticated(onClose);
-
-            const notPrevented = fireEvent.click(screen.getByTestId('company-chat-cta'));
-
-            expect(notPrevented).toBe(true);
-            expect(onClose).not.toHaveBeenCalled();
-            expect(rafCallbacks).toHaveLength(0);
-        });
-
         test('modified clicks keep the link behavior', () => {
             const workspace = document.createElement('div');
             workspace.id = 'assistant-workspace';
             document.body.appendChild(workspace);
-            const onClose = jest.fn();
-            renderAuthenticated(onClose);
+            const onAsk = jest.fn();
+            render(<CompanyViewHost organization={mockOrganization} isAuthenticated={true} onAsk={onAsk}/>);
 
             fireEvent.click(screen.getByTestId('company-chat-cta'), {ctrlKey: true});
 
+            expect(onAsk).not.toHaveBeenCalled();
+        });
+
+        test('a plain click on a page with the workspace host asks the container to open the assistant', () => {
+            const workspace = document.createElement('div');
+            workspace.id = 'assistant-workspace';
+            document.body.appendChild(workspace);
+            const onAsk = jest.fn();
+            const onClose = jest.fn();
+            render(<CompanyViewHost organization={mockOrganization} isAuthenticated={true}
+                                    onAsk={onAsk} onClose={onClose}/>);
+
+            const notPrevented = fireEvent.click(screen.getByTestId('company-chat-cta'));
+
+            expect(notPrevented).toBe(false);
+            expect(onAsk).toHaveBeenCalledTimes(1);
             expect(onClose).not.toHaveBeenCalled();
+            expect(screen.getByTestId('company-view')).toBeInTheDocument();
+        });
+
+        test('falls back to the plain /chat/ link when the workspace host is absent', () => {
+            const onAsk = jest.fn();
+            render(<CompanyViewHost organization={mockOrganization} isAuthenticated={true} onAsk={onAsk}/>);
+
+            const notPrevented = fireEvent.click(screen.getByTestId('company-chat-cta'));
+
+            expect(notPrevented).toBe(true);
+            expect(onAsk).not.toHaveBeenCalled();
         });
 
         test('the signed-out CTA is unchanged', () => {
             render(
-                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}
+                <CompanyViewHost organization={mockOrganization} visible={true} onClose={() => {}}
                                           isAuthenticated={false}
                                           signInUrlTemplate="/accounts/login/?next=%2F%3Fcompany%3D__COMPANY_ID__" />
             );
@@ -1431,16 +850,16 @@ describe('OrganizationDetailsPopup', () => {
                 url.includes('/api/company-corrections/') ? respond() : base(url));
         };
         const renderAuthed = (authed = true) => render(
-            <OrganizationDetailsPopup organization={mockOrganization} visible={true}
+            <CompanyViewHost organization={mockOrganization} visible={true}
                                       onClose={() => {}} isAuthenticated={authed}/>
         );
 
         test('evidence and unverified rows carry a per-field correction button that opens the form on that field', async () => {
             withCorrections(() => Promise.resolve({ok: true, json: () => Promise.resolve({corrections: []})}));
-            const openSpy = jest.spyOn(suggestCompanyController, 'openSuggestCompany').mockImplementation(() => {});
+            const onSuggestCorrection = jest.fn();
             const onClose = jest.fn();
-            render(<OrganizationDetailsPopup organization={mockOrganization} visible={true}
-                                             onClose={onClose} isAuthenticated={true}/>);
+            render(<CompanyViewHost organization={mockOrganization} visible={true} onClose={onClose}
+                                    onSuggestCorrection={onSuggestCorrection} isAuthenticated={true}/>);
 
             const evidenceButton = await screen.findByTestId('suggest-correction-field-rto_policy');
             expect(evidenceButton).toHaveAccessibleName('Suggest a correction to RTO Policy');
@@ -1456,12 +875,9 @@ describe('OrganizationDetailsPopup', () => {
             expect(getCachedProvenance(1)).toBeDefined();
 
             fireEvent.click(evidenceButton);
-            expect(openSpy).toHaveBeenCalledWith({
-                kind: 'correction', source: 'company_evidence', companyName: 'Test Organization',
-                organizationId: 1, fieldKey: 'rto_policy',
-            });
-            expect(onClose).toHaveBeenCalledTimes(1);
-            openSpy.mockRestore();
+            expect(onSuggestCorrection).toHaveBeenCalledWith('company_evidence', 'rto_policy');
+            expect(onClose).not.toHaveBeenCalled();
+            expect(screen.getByTestId('company-view')).toBeInTheDocument();
         });
 
         test('signed-out visitors get no per-field buttons and no pending list', async () => {
@@ -1515,5 +931,165 @@ describe('OrganizationDetailsPopup', () => {
             resolve({ok: true, json: () => Promise.resolve({corrections: [{id: 1, field_key: 'rto_policy', proposed_value: 'x', status: 'pending'}]})});
             await Promise.resolve();
         });
+    });
+});
+
+describe('CompanyView states (issue #486)', () => {
+    const ranked: CompanyDetailsOrganization = {
+        id: 5, name: 'Rank Five', ranking: 5, avg_score: 4.1, funding_round: 'S', rto_policy: 'R',
+        profile_completeness: 60, accelerated_vesting: false, type: 'C', url: 'https://five.example', avg_scores: [],
+    };
+    let scrollTo: jest.Mock;
+
+    beforeEach(() => {
+        scrollTo = jest.fn();
+        window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+        global.fetch = jest.fn().mockImplementation((url: string) => Promise.resolve({
+            ok: true, status: 200,
+            json: () => Promise.resolve(url.includes('/provenance/')
+                ? {organization_id: 5, organization_modified: null, organization_created: null, latest_observation: null}
+                : []),
+        }));
+    });
+
+    const view = (props: Partial<React.ComponentProps<typeof CompanyView>> = {}) => render(
+        <CompanyView organizationId={5} status="ready" organization={ranked} onBack={() => {}}
+                     onAsk={() => {}} onSuggestCorrection={() => {}} {...props}/>);
+
+    test('is a named region whose heading takes focus, and it starts at the top of the page', async () => {
+        view();
+
+        const region = screen.getByRole('region', {name: 'Rank Five'});
+        expect(region).toHaveAttribute('aria-labelledby', 'organization-details-title');
+        expect(region).not.toHaveAttribute('role');
+        expect(region).not.toHaveAttribute('aria-modal');
+        expect(screen.getByRole('heading', {level: 2, name: 'Rank Five'})).toHaveFocus();
+        expect(scrollTo).toHaveBeenCalledWith({top: 0, behavior: 'instant'});
+        await waitFor(() => expect(screen.getByTestId('provenance-section')).toBeInTheDocument());
+    });
+
+    test('Tab from the heading reaches Back to results first, then the actions', () => {
+        view({isAuthenticated: true});
+
+        const focusable = Array.from(document.querySelectorAll<HTMLElement>('a[href], button, [tabindex="0"]'));
+        expect(focusable[0]).toBe(screen.getByRole('button', {name: 'Back to results'}));
+        expect(focusable[1]).toBe(screen.getByTestId('company-chat-cta'));
+        expect(screen.getByRole('heading', {level: 2})).toHaveAttribute('tabindex', '-1');
+    });
+
+    test('Back to results calls onBack; Escape does nothing', () => {
+        const onBack = jest.fn();
+        view({onBack});
+
+        fireEvent.keyDown(document, {key: 'Escape'});
+        expect(onBack).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+
+        expect(onBack).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('company-view')).toBeInTheDocument();
+    });
+
+    test('focus moves to the heading when another company replaces this one, not when the record arrives', () => {
+        const {rerender} = view({status: 'loading', organization: null, name: 'Rank Five'});
+        expect(screen.getByRole('heading', {level: 2, name: 'Rank Five'})).toHaveFocus();
+        expect(screen.getByTestId('company-view-loading')).toHaveAttribute('aria-busy', 'true');
+        expect(scrollTo).toHaveBeenCalledTimes(1);
+
+        const other = {...ranked, id: 6, name: 'Rank Six'};
+        screen.getByRole('button', {name: 'Back to results'}).focus();
+        rerender(<CompanyView organizationId={5} status="ready" organization={ranked} onBack={() => {}}
+                              onAsk={() => {}} onSuggestCorrection={() => {}}/>);
+        expect(screen.getByRole('button', {name: 'Back to results'})).toHaveFocus();
+        expect(scrollTo).toHaveBeenCalledTimes(1);
+
+        rerender(<CompanyView organizationId={6} status="ready" organization={other} onBack={() => {}}
+                              onAsk={() => {}} onSuggestCorrection={() => {}}/>);
+        expect(screen.getByRole('heading', {level: 2, name: 'Rank Six'})).toHaveFocus();
+        expect(scrollTo).toHaveBeenCalledTimes(2);
+    });
+
+    test('loading with no name yet says so, and makes no evidence request', () => {
+        view({status: 'loading', organization: null});
+
+        expect(screen.getByRole('heading', {level: 2, name: 'Loading company…'})).toBeInTheDocument();
+        expect(screen.getByTestId('company-view-loading')).toHaveTextContent('Loading company details');
+        expect(screen.queryByTestId('popup-details-grid')).not.toBeInTheDocument();
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('not found says the company is no longer listed, with Back to results and no evidence request', () => {
+        const onBack = jest.fn();
+        view({status: 'not-found', organization: null, onBack});
+
+        expect(screen.getByRole('heading', {level: 2, name: 'Company not found'})).toHaveFocus();
+        expect(screen.getByTestId('company-not-found')).toHaveTextContent('This company is no longer listed.');
+        expect(screen.getByTestId('company-not-found')).toHaveAttribute('role', 'status');
+        expect(screen.queryByTestId('provenance-retry')).not.toBeInTheDocument();
+        expect(global.fetch).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+        expect(onBack).toHaveBeenCalledTimes(1);
+    });
+
+    test('a load error says so and offers Retry only when the container can retry', () => {
+        const onRetry = jest.fn();
+        const {rerender} = view({status: 'error', organization: null});
+
+        expect(screen.getByRole('heading', {level: 2, name: 'Company not loaded'})).toBeInTheDocument();
+        expect(screen.getByRole('alert')).toHaveTextContent('This company could not be loaded.');
+        expect(screen.queryByTestId('company-view-retry')).not.toBeInTheDocument();
+
+        rerender(<CompanyView organizationId={5} status="error" organization={null} onBack={() => {}}
+                              onRetry={onRetry} onAsk={() => {}} onSuggestCorrection={() => {}}/>);
+        fireEvent.click(screen.getByTestId('company-view-retry'));
+        expect(onRetry).toHaveBeenCalledTimes(1);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('Retry moves focus to the heading before it asks for the record again', () => {
+        const order: string[] = [];
+        const onRetry = jest.fn(() => order.push(`retry:${document.activeElement?.tagName}`));
+        view({status: 'error', organization: null, onRetry});
+        const retry = screen.getByTestId('company-view-retry');
+        retry.focus();
+        expect(retry).toHaveFocus();
+
+        fireEvent.click(retry);
+
+        expect(order).toEqual(['retry:H2']);
+        expect(screen.getByRole('heading', {level: 2, name: 'Company not loaded'})).toHaveFocus();
+    });
+
+    test('only the two short states are a compact block; loading keeps the full width', () => {
+        const {rerender} = view({status: 'loading', organization: null});
+        const props = {organizationId: 5, organization: null, onBack: () => {}, onAsk: () => {}, onSuggestCorrection: () => {}};
+        expect(screen.getByTestId('company-view')).not.toHaveClass('company-view--compact');
+        rerender(<CompanyView {...props} status="not-found"/>);
+        expect(screen.getByTestId('company-view')).toHaveClass('company-view--compact');
+        rerender(<CompanyView {...props} status="error"/>);
+        expect(screen.getByTestId('company-view')).toHaveClass('company-view--compact');
+        rerender(<CompanyView {...props} status="ready" organization={ranked}/>);
+        expect(screen.getByTestId('company-view')).not.toHaveClass('company-view--compact');
+        expect(screen.getAllByRole('button', {name: /Back to results/})).toHaveLength(1);
+    });
+
+    test('a company that is not ranked in the list says so where rank and coverage would be', async () => {
+        const unranked: CompanyDetailsOrganization = {
+            id: 9, name: 'Unlisted Labs', funding_round: 'S', rto_policy: 'R', accelerated_vesting: false,
+            type: 'C', url: 'https://unlisted.example',
+        };
+        view({organizationId: 9, organization: unranked});
+
+        expect(screen.getByTestId('not-ranked')).toHaveTextContent('Not ranked in this list');
+        expect(screen.queryByText('Rank:')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('rating-coverage')).not.toBeInTheDocument();
+        // With no breakdown and no overall score the card says so rather than showing NaN.
+        await waitFor(() => expect(screen.getByTestId('no-scores')).toHaveTextContent('No scores recorded'));
+    });
+
+    test('a very long company name stays in the heading, in full', () => {
+        const longName = 'A'.repeat(100);
+        view({organization: {...ranked, name: longName}});
+
+        expect(screen.getByRole('heading', {level: 2, name: longName})).toBeInTheDocument();
     });
 });
