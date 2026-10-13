@@ -1,6 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
-// Shared helpers for the Django-backed Playwright tier (issue #491).
+// Shared helpers for the Django-backed Playwright tier (issue #491); the fixture
+// tier imports this file too.
 import {expect, Page, test} from '@playwright/test';
 import {CONFIRM_ARM_DELAY_MS} from '../../static/js/chat/confirmArmDelay';
 

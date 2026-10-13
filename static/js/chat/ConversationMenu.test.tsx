@@ -299,7 +299,9 @@ describe('ConversationMenu', () => {
             fireEvent.click(confirmButton(), {detail: 1});
         };
         const press = () => { down(); release(); };
-        // A keyboard or assistive-technology activation: a click with no press (detail 0).
+        // A click with no press (detail 0), which is what a key press on the focused
+        // button sends. It is not what Firefox sends for an accessibility activation
+        // (a detail 1 click with no pointerdown).
         const activate = () => fireEvent.click(confirmButton());
         const expectIgnored = (called: jest.Mock) => {
             expect(called).not.toHaveBeenCalled();
@@ -406,7 +408,8 @@ describe('ConversationMenu', () => {
             skewHandler(600);
             openConfirm(testId);
             advance(550);
-            // advance puts both clocks 550 ms on; the handler clock is then 2 ms past the opening's.
+            // advance sets both clocks to the event clock plus 550, which discards the 600 ms
+            // skew: the handler clock is then 50 ms short of the opening's, and the 52 puts it 2 ms past.
             skewHandler(52);
             press();
             expectIgnored(props[called] as jest.Mock);
@@ -517,7 +520,7 @@ describe('ConversationMenu', () => {
             await waitFor(() => expect(props[called]).toHaveBeenCalledTimes(1));
         });
 
-        test.each(kinds)('%s: a keyboard or assistive activation is judged by its own click: ignored at 499 ms, honoured at 500 ms', async (testId, called) => {
+        test.each(kinds)('%s: a detail 0 click (a key press) is judged by its own click: ignored at 499 ms, honoured at 500 ms', async (testId, called) => {
             const {props} = setup();
             openConfirm(testId);
             activate();

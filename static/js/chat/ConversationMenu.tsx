@@ -247,9 +247,13 @@ export function ConversationMenu({
 
     const runConfirm = async (e: React.MouseEvent) => {
         if (!confirming || working) return;
-        // A pointer click (detail > 0) is judged by when its press went down, or by
-        // its own time when no pointerdown reached us; a keyboard or assistive
-        // activation (detail 0) only by its own click, whatever press went down before.
+        // A click with detail > 0 is judged by the stored press start, or by its own
+        // time when no pointerdown has reached the button since the confirmation
+        // opened; a click with detail 0 (a key press on the focused button) only by
+        // its own time. Only a new opening (handleItem) clears the stored press start:
+        // not its own click, not pointerup, not Cancel. Firefox sends an accessibility
+        // activation as a detail 1 click with no pointerdown, so after one early
+        // pointer press such activations are ignored until the confirmation is opened again.
         const began = e.detail > 0 ? confirmPressStartRef.current ?? e.timeStamp : e.timeStamp;
         if (performance.now() - confirmOpenedAtRef.current < CONFIRM_ARM_DELAY_MS) return;
         if (began - confirmOpenedStampRef.current < CONFIRM_ARM_DELAY_MS) return;
