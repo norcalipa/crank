@@ -3549,6 +3549,8 @@ body.assistant-open .app-content .table-responsive,
 
 #job-search-chat .chat-footer-notices.is-collapsed > .chat-notices-toggle {
     padding-inline: .25rem;
+    /* Bottom-right in both states, so pressing it does not move it. */
+    align-self: flex-end;
 }
 
 #job-search-chat .chat-footer-notices.is-collapsed .chat-notices-body {

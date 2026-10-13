@@ -649,6 +649,10 @@ describe('notices in the transcript and collapsing footer notices (issue #483)',
         expect(declared('body.assistant-docked #job-search-chat [role=\'log\'] > .chat-transcript-notice')).toMatch(/margin:\s*-1rem 0 0;/);
     });
 
+    it('keeps the toggle at the bottom right of the row whether collapsed or expanded', () => {
+        expect(declared('#job-search-chat .chat-footer-notices.is-collapsed > .chat-notices-toggle')).toMatch(/align-self:\s*flex-end;/);
+    });
+
     it('scrolls a control reached with Tab clear of the jump pill', () => {
         expect(declared('#job-search-chat .chat-transcript')).toMatch(/scroll-padding-bottom:\s*4\.5rem;/);
     });
