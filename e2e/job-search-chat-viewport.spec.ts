@@ -929,9 +929,12 @@ test.describe('one transcript scroller (issue #483)', () => {
 // the second press of a double press lands on the confirm button. It must be
 // ignored, however late it is released or handled; a deliberate press after the
 // delay still confirms. On this fixture page the confirm button opens under the
-// item at the listed sizes only; at 320x480, 375x440 and, with CI's fonts, 320x568
-// the fixture's menu sits 49 to 53 px higher than on the real page, so a press on
-// the item cannot land on the button here. On the real page the centre of the item
+// item at the listed sizes only; at 320x480 and 375x440 the fixture's menu sits 49
+// to 53 px higher than on the real page, so a press on the item cannot land on the
+// button here. 320x568 is not a case because the overlap there depends on the
+// fonts: about 15 px high with some hosts' fonts and none with CI's in Chromium and
+// Firefox (the button opens wholly below the item), which is under the 8 px the
+// cases require. On the real page the centre of the item
 // is on the button at 375x440, 430x440, 375x460 and 412x460 (e2e/django/chat-layout.spec.ts
 // covers 375x440 there), and not at 320x480, 375x380 or 320x420.
 test.describe('a double press on Delete conversation does not delete (issue #568)', () => {
@@ -984,6 +987,10 @@ test.describe('a double press on Delete conversation does not delete (issue #568
     };
 
     for (const size of SIZES) {
+        // 400 is the gap closest to the delay. On an overloaded runner it is the first
+        // to fail, with "the runner was too slow to prove anything"; do not answer that
+        // with a retry or a longer timeout. Lowering it to 300 would lose nothing,
+        // because Jest pins 499 and 500.
         for (const [input, press, gaps] of [['mouse', mousePress, [80, 150, 400]], ['touch', touchPress, [120]]] as const) {
             test(`${input} double press is ignored, then a deliberate press deletes, ${size.width}x${size.height}`, async ({page}) => {
                 const {deletes, articlesBefore, openDelete, x, y} = await prepare(page, size);
