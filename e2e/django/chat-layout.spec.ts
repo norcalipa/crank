@@ -95,7 +95,7 @@ async function openChat(page: Page, wideFont = false, idle = true): Promise<void
     await expect(page.getByTestId('priorities-sidebar').getByRole('button', {name: /Edit priorities|Add priorities/})).toBeVisible();
     if (wideFont) await page.addStyleTag({content: WIDE_FONT_CSS});
     // "Preferences updated." after the priorities were written through the API: a notice, not part of the layout under test.
-    const banner = page.locator('#job-search-chat .chat-pref-alert .btn-close');
+    const banner = page.locator('#job-search-chat .chat-pref-alert button[aria-label="Dismiss preference notice"]');
     if (await banner.count()) await banner.first().click();
     await expect(banner).toHaveCount(0);
 }

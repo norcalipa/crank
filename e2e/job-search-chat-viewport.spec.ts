@@ -1246,7 +1246,7 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
     }
 
     for (const size of [{width: 1280, height: 900}, {width: 1024, height: 800}, {width: 375, height: 667}, {width: 320, height: 640}]) {
-        test(`a status notice and a 600-character error collapse to one line behind Details, ${size.width}x${size.height}`, async ({page}) => {
+        test(`a status notice and a 600-character error collapse to one compact row behind Details, ${size.width}x${size.height}`, async ({page}) => {
             await page.setViewportSize(size);
             await page.route('**/api/agent/assistant-status/', (route) => route.fulfill({
                 status: 200, contentType: 'application/json',
@@ -1267,23 +1267,31 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
             await expect(details).toHaveAttribute('aria-expanded', 'false');
             const collapsed = await settled(page);
             expect(collapsed.collapsed).toBe(true);
-            expect(collapsed.noticesHeight, 'the collapsed notice area is one line').toBeLessThanOrEqual(56);
+            expect(collapsed.noticesHeight, 'the collapsed notice area is one compact row').toBeLessThanOrEqual(56);
             expect(collapsed.composerInViewport, 'collapsed: the composer is inside the viewport').toBe(true);
             expect(collapsed.bodyScrollRange).toBeLessThanOrEqual(1);
             // One alert holds the whole text, collapsed.
             expect(collapsed.alertCount).toBe(1);
             expect(collapsed.alertText).toBe(LONG_ERROR);
-            await expect(page.getByTestId('assistant-status-notice')).toBeHidden();
-            // The error is clipped by CSS only: its box is one line, its text is whole.
+            // The folded status notice lends the row its own title (one element, not a copy); its body and action are folded.
+            await expect(page.getByTestId('assistant-status-notice')).toHaveCount(1);
+            await expect(page.locator('#job-search-chat .assistant-status-title')).toBeVisible();
+            await expect(page.locator('#job-search-chat .assistant-status-title')).toHaveText('Assistant temporarily unavailable');
+            await expect(page.locator('#job-search-chat .assistant-status-body')).toBeHidden();
+            await expect(page.getByTestId('assistant-status-retry')).toBeHidden();
+            // The error is clipped by CSS only: its box is two lines, its text is whole.
             const clipped = await page.getByTestId('chat-error').locator('.chat-error-text').evaluate((el) => ({
-                overflows: el.scrollWidth > el.clientWidth, lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+                cut: el.scrollHeight > el.clientHeight + 1, lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
             }));
-            expect(clipped).toEqual({overflows: true, lines: 1});
+            expect(clipped).toEqual({cut: true, lines: 2});
+            for (const id of ['retry-button', 'chat-notices-details']) {
+                expect((await page.getByTestId(id).boundingBox())!.height, `${id} is a 44px target`).toBeGreaterThanOrEqual(44);
+            }
 
             await details.click();
             await expect(details).toHaveText('Hide details');
             await expect(details).toHaveAttribute('aria-expanded', 'true');
-            await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
+            await expect(page.locator('#job-search-chat .assistant-status-body')).toBeVisible();
             const expanded = await settled(page);
             expect(expanded.collapsed).toBe(false);
             expect(expanded.composerInViewport, 'expanded: the composer is inside the viewport').toBe(true);
@@ -1292,7 +1300,8 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
             expect(expanded.alertText).toBe(LONG_ERROR);
             // The expanded notices stop at the existing cap and scroll inside it.
             const capped = await page.getByTestId('chat-footer-notices').evaluate((el) => ({
-                cap: parseFloat(getComputedStyle(el).maxHeight), height: el.getBoundingClientRect().height, scrolls: getComputedStyle(el).overflowY,
+                cap: parseFloat(getComputedStyle(el).maxHeight), height: el.getBoundingClientRect().height,
+                scrolls: getComputedStyle(el.querySelector('.chat-notices-body')!).overflowY,
             }));
             expect(capped.height).toBeLessThanOrEqual(capped.cap + 1);
             expect(capped.scrolls).toBe('auto');
@@ -1314,7 +1323,7 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         });
     }
 
-    test('a failed send at 320x640 leaves the transcript at least 230px tall, and its Retry is in the one line', async ({page}) => {
+    test('a failed send at 320x640 leaves the transcript at least 230px tall (less the disclaimer\'s extra lines), and its Retry is in the compact row', async ({page}) => {
         await page.setViewportSize({width: 320, height: 640});
         await loadPanel(page, 'priorities=57');
         const quiet = await settled(page);
@@ -1326,12 +1335,14 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         const failed = await settled(page);
         expect(failed.collapsed).toBe(true);
         expect(failed.noticesHeight).toBeLessThanOrEqual(56);
-        // 230px is the gate where the composer's disclaimer takes one line. CI's wider fallback font wraps it to two
-        // (the transcript is then about 17px shorter before the send), so there the notice may take no more than its line.
+        // 230px is the gate where the composer's disclaimer takes one line; where the font wraps it, the gate falls by
+        // the extra height, and the send may cost the transcript no more than the compact row.
         const disclaimerLines = await page.locator('#job-search-chat .chat-disclaimer').evaluate((el) => (
             Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))));
-        const floor = disclaimerLines > 1 ? quiet.logHeight - 56 : 230;
-        expect(failed.logHeight, `the transcript was ${quiet.logHeight}px before the send`).toBeGreaterThanOrEqual(floor);
+        const extra = await page.locator('#job-search-chat .chat-disclaimer').evaluate((el) => Math.max(0, el.getBoundingClientRect().height - parseFloat(getComputedStyle(el).lineHeight)));
+        expect(disclaimerLines).toBeGreaterThan(0);
+        expect(failed.logHeight, `the transcript was ${quiet.logHeight}px before the send`).toBeGreaterThanOrEqual(230 - extra);
+        expect(quiet.logHeight - failed.logHeight, 'the failed send costs the transcript at most the compact row').toBeLessThanOrEqual(56);
         expect(failed.composerInViewport).toBe(true);
         // The Retry in the line works: it sends the same turn again.
         let posts = 0;
@@ -1348,7 +1359,7 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         expect(posts).toBe(1);
     });
 
-    test('an error alone is not collapsed unless it is long, and a short one has no Details button', async ({page}) => {
+    test('an error that fits in two lines is shown whole, and has no Details button', async ({page}) => {
         await page.setViewportSize({width: 1280, height: 900});
         await loadPanel(page, 'priorities=57');
         await page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
@@ -1360,4 +1371,367 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         expect(reading.collapsible).toBe(false);
         await expect(page.getByTestId('chat-notices-details')).toHaveCount(0);
     });
+});
+
+// Visual review round 1 of #483b-2: where a notice arrives, the jump pill against a notice's controls, the footer's
+// Details toggle, the compact error row and the plain banner's close button.
+test.describe('notices arrive on screen, the pill steps aside, the footer toggle stays reachable (issue #483)', () => {
+    const SIZES = [{width: 1280, height: 900}, {width: 1024, height: 800}, {width: 375, height: 667}, {width: 320, height: 640}];
+    const FIELDS: Array<{path: string; old: unknown; new: unknown}> = [
+        {path: 'compensation.minimum_salary', old: 120000, new: 150000},
+        {path: 'work_location.modes', old: [], new: ['remote', 'hybrid']},
+        {path: 'industry', old: [], new: ['fintech']},
+        {path: 'funding_stage', old: [], new: ['series_b']},
+        {path: 'work_location.countries', old: [], new: ['US', 'CA']},
+        {path: 'roles.titles', old: [], new: ['Staff Engineer']},
+        {path: 'work_location.max_in_office_days', old: null, new: 2},
+        {path: 'compensation.equity_minimum_percent', old: null, new: 0.5},
+        {path: 'compensation.minimum_total_compensation', old: null, new: 250000},
+        {path: 'notes', old: '', new: 'prefers remote-first teams'},
+    ];
+    const proposalOf = (count: number) => ({
+        id: `prop-${count}`, scope: 'account', changes: FIELDS.slice(0, count), change_count: count, base_revision: 2, unsupported_criteria: [], currency: 'USD',
+        token: {patch: {set: {notes: 'prefers remote-first teams'}}, scope: 'account', base_revision: 2},
+    });
+    const LONG_ERROR = `${'The assistant could not finish this reply because the provider stopped answering. '.repeat(8)}`.slice(0, 600);
+    const SHORT_ERROR = 'The assistant is unavailable right now. Try again shortly.';
+    const SEND = /\/api\/agent\/conversations\/\d+\/$/;
+    const jsonRoute = (page: Page, url: string, body: unknown, status = 200) => page.route(url, (route) => route.fulfill({status, contentType: 'application/json', body: JSON.stringify(body)}));
+    // A real reply takes longer than the scroll events of the reader's own send; answering at once under load races them.
+    const replyWith = (page: Page, extra: Record<string, unknown>, content = 'I can save these as your priorities.') => page.route(SEND, async (route) => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return route.fulfill({status: 201, contentType: 'application/json', body: JSON.stringify({
+            message: {id: 9000 + Math.floor(Math.random() * 90000), role: 'assistant', content, preferences_changed: false, created: null, results: null},
+            preferences_changed: false, ...extra,
+        })});
+    });
+    const failWith = (page: Page, message: string, status = 503, type = 'assistant_unavailable') => page.route(SEND, (route) => (route.request().method() === 'POST'
+        ? route.fulfill({status, contentType: 'application/json', body: JSON.stringify({error: {type, message}})})
+        : route.fallback()));
+    const send = async (page: Page, text: string) => {
+        await page.locator('textarea[aria-label="Message"]').fill(text);
+        await page.getByRole('button', {name: 'Send message'}).click();
+    };
+    const statusOn = (page: Page) => page.route('**/api/agent/assistant-status/', (route) => route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({state: 'temporarily_unavailable', actions: ['retry'], checked_at: '2026-10-13T00:00:00Z'}),
+    }));
+    const settleLayout = async (page: Page) => {
+        await page.evaluate(() => document.fonts.ready.then(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))));
+        await page.waitForTimeout(150);
+    };
+    const fromEnd = (page: Page) => page.getByRole('log').evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+    // What the reader can see of the notice in the transcript, with no scrolling of ours.
+    const arrival = (page: Page) => page.evaluate(() => {
+        const log = document.querySelector('[role="log"]') as HTMLElement;
+        const notice = document.querySelector('[data-testid="transcript-notice"]') as HTMLElement;
+        const box = log.getBoundingClientRect();
+        const inside = (el: Element) => { const r = el.getBoundingClientRect(); return r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5; };
+        const title = notice.querySelector('.pref-change-summary') as HTMLElement;
+        const rows = Array.from(notice.querySelectorAll('.pref-change-item'));
+        const apply = notice.querySelector('[data-testid="preference-apply-button"]') as HTMLElement | null;
+        return {
+            noticeTop: notice.getBoundingClientRect().top - box.top, titleInside: inside(title), rows: rows.length, rowsInside: rows.filter(inside).length,
+            applyInside: apply ? inside(apply) : null, fromEnd: log.scrollHeight - log.clientHeight - log.scrollTop, logHeight: log.clientHeight, noticeHeight: notice.getBoundingClientRect().height,
+        };
+    });
+
+    for (const size of SIZES) {
+        test(`a proposal arrives with its title on screen, then Apply is reachable, and a failed Apply stays at the end, ${size.width}x${size.height}`, async ({page}) => {
+            test.setTimeout(120_000);
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            // The reader is following the transcript: the loaded history has been scrolled to its end.
+            await expect.poll(() => fromEnd(page), {message: 'the loaded history is at its end'}).toBeLessThanOrEqual(2);
+            for (const count of [2, 5, 10]) {
+                await page.unroute(SEND).catch(() => undefined);
+                await replyWith(page, {preference_proposal: proposalOf(count)});
+                await send(page, `Please set ${count} things.`);
+                await expect(page.getByTestId('preference-proposal-notice')).toBeVisible();
+                await settleLayout(page);
+                // Read again until two readings 250ms apart agree: a smooth scroll that was already under way has ended.
+                let first = await arrival(page);
+                for (let i = 0; i < 20; i += 1) {
+                    await page.waitForTimeout(250);
+                    const again = await arrival(page);
+                    const same = JSON.stringify(again) === JSON.stringify(first);
+                    first = again;
+                    if (same) break;
+                }
+                expect(first.titleInside, `${count} fields: the title is fully on screen on arrival ${JSON.stringify(first)}`).toBe(true);
+                expect(first.rowsInside, `${count} fields: at least two complete rows are on screen ${JSON.stringify(first)}`).toBeGreaterThanOrEqual(Math.min(count, 2));
+                if (first.fromEnd > 2) expect(first.noticeTop, `${count} fields: the notice's top is just below the transcript's top`).toBeGreaterThanOrEqual(-1);
+                // Wheel to the end with the pointer over the transcript: Apply is on screen and takes a real click.
+                const box = (await page.getByRole('log').boundingBox())!;
+                await page.mouse.move(box.x + box.width / 2, box.y + 40);
+                for (let i = 0; i < 60 && (await fromEnd(page)) > 1; i += 1) {
+                    await page.mouse.wheel(0, 120);
+                    await page.waitForTimeout(40);
+                }
+                await settleLayout(page);
+                expect(await fromEnd(page)).toBeLessThanOrEqual(2);
+                expect((await arrival(page)).applyInside, `${count} fields: Apply is on screen at the end`).toBe(true);
+                await page.getByTestId('preference-proposal-dismiss-button').click();
+                await expect(page.getByTestId('transcript-notice')).toHaveCount(0);
+            }
+            // A failed Apply: the reader stays at the end with the error and Apply on screen.
+            await page.unroute(SEND).catch(() => undefined);
+            await replyWith(page, {preference_proposal: proposalOf(5)});
+            await send(page, 'Once more, five things.');
+            await expect(page.getByTestId('preference-proposal-notice')).toBeVisible();
+            await settleLayout(page);
+            await page.getByRole('log').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+            await page.route('**/api/agent/preferences/apply/', (route) => route.fulfill({
+                status: 500, contentType: 'application/json', body: JSON.stringify({error: {type: 'server_error', message: 'The proposal could not be applied. Please try again.'}}),
+            }));
+            await page.getByTestId('preference-apply-button').click();
+            await expect(page.getByTestId('preference-proposal-error')).toBeVisible();
+            await settleLayout(page);
+            const failed = await arrival(page);
+            expect(failed.fromEnd, 'a failed Apply keeps the reader at the end').toBeLessThanOrEqual(2);
+            expect(failed.applyInside, 'Apply is still on screen').toBe(true);
+        });
+
+        test(`the jump pill never covers or takes the press of a control of a notice, ${size.width}x${size.height}`, async ({page}) => {
+            test.setTimeout(150_000);
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            await expect.poll(() => fromEnd(page), {message: 'the loaded history is at its end'}).toBeLessThanOrEqual(2);
+            await replyWith(page, {preference_proposal: proposalOf(5)});
+            await send(page, 'Please set five things.');
+            await expect(page.getByTestId('preference-proposal-notice')).toBeVisible();
+            await page.unroute(SEND);
+            // A failed Apply adds the error message to the notice; two more turns put it in mid-history.
+            await page.route('**/api/agent/preferences/apply/', (route) => route.fulfill({
+                status: 500, contentType: 'application/json', body: JSON.stringify({error: {type: 'server_error', message: 'The proposal could not be applied. Please try again.'}}),
+            }));
+            await page.getByTestId('preference-apply-button').click();
+            await expect(page.getByTestId('preference-proposal-error')).toBeVisible();
+            await page.unroute('**/api/agent/preferences/apply/');
+            for (const text of ['A question after it.', 'And another one.']) {
+                await replyWith(page, {}, 'Noted, here is some more detail so the history grows past the notice.');
+                await send(page, text);
+                await expect(page.getByRole('log').getByText('here is some more detail').last()).toBeVisible();
+                await page.unroute(SEND);
+            }
+            await settleLayout(page);
+            // Every control of the notice at every scroll position (4px steps): none is covered by the pill.
+            const sweep = await page.evaluate(async () => {
+                const log = document.querySelector('[role="log"]') as HTMLElement;
+                const notice = log.querySelector('[data-testid="transcript-notice"]') as HTMLElement;
+                const controls = Array.from(notice.querySelectorAll('button, a[href]'));
+                let worst = 0; let shownNoticeOff = 0; let shownNoticeOn = 0; let positions = 0;
+                for (let y = 0; y <= log.scrollHeight - log.clientHeight; y += 4) {
+                    log.scrollTo({top: y, behavior: 'instant' as ScrollBehavior});
+                    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+                    positions += 1;
+                    const pill = document.querySelector('#job-search-chat .chat-jump-row .btn');
+                    if (!pill) continue;
+                    const pr = pill.getBoundingClientRect(); const lr = log.getBoundingClientRect(); const nr = notice.getBoundingClientRect();
+                    if (nr.bottom > lr.top && nr.top < lr.bottom) shownNoticeOn += 1; else shownNoticeOff += 1;
+                    for (const c of controls) {
+                        const r = c.getBoundingClientRect();
+                        const top = Math.max(r.top, lr.top); const bottom = Math.min(r.bottom, lr.bottom);
+                        if (bottom - top < 1) continue;
+                        const w = Math.min(r.right, pr.right) - Math.max(r.left, pr.left); const h = Math.min(bottom, pr.bottom) - Math.max(top, pr.top);
+                        if (w > 0 && h > 0) worst = Math.max(worst, (w * h) / (r.width * r.height));
+                    }
+                }
+                return {worst, shownNoticeOff, shownNoticeOn, positions, controls: controls.length};
+            });
+            // eslint-disable-next-line no-console
+            console.log(`pill sweep ${size.width}x${size.height}: ${JSON.stringify(sweep)}`);
+            expect(sweep.controls).toBeGreaterThanOrEqual(5);
+            expect(sweep.worst, 'the largest share of any control of the notice that the pill covers').toBe(0);
+            expect(sweep.shownNoticeOff, 'the pill still shows with the notice off screen').toBeGreaterThan(0);
+            // A real press where the pill used to be: Apply, centred 40px above the transcript's bottom edge, applies.
+            await jsonRoute(page, '**/api/agent/preferences/apply/', {applied: true, scope: 'account', revision: 3, changes: FIELDS.slice(0, 5), undo: {expected_revision: 3, document: {}}});
+            await page.getByRole('log').evaluate((log) => {
+                const apply = log.querySelector('[data-testid="preference-apply-button"]') as HTMLElement;
+                const r = apply.getBoundingClientRect(); const lr = log.getBoundingClientRect();
+                log.scrollTop += (r.top + r.height / 2) - (lr.bottom - 40);
+            });
+            await settleLayout(page);
+            const point = await page.getByTestId('preference-apply-button').evaluate((el) => {
+                const r = el.getBoundingClientRect(); const x = r.left + r.width / 2; const y = r.top + r.height / 2;
+                const top = document.elementFromPoint(x, y);
+                return {x, y, own: top === el || el.contains(top)};
+            });
+            expect(point.own, 'the control, not the pill, is under the pointer').toBe(true);
+            await page.mouse.click(point.x, point.y);
+            await expect(page.getByTestId('preference-change-notice')).toBeVisible();
+            // Keyboard: Tab through the applied notice's controls; none is under the pill.
+            await page.getByRole('log').evaluate((el) => { el.scrollTop = 0; });
+            await page.getByTestId('conversation-more').focus();
+            const walked: string[] = [];
+            for (let i = 0; i < 30 && walked.length < 2; i += 1) {
+                await page.keyboard.press('Tab');
+                await settleLayout(page);
+                const read = await page.evaluate(() => {
+                    const el = document.activeElement as HTMLElement; const notice = document.querySelector('[data-testid="transcript-notice"]');
+                    if (!notice || !notice.contains(el)) return null;
+                    const pill = document.querySelector('#job-search-chat .chat-jump-row .btn'); const r = el.getBoundingClientRect();
+                    let covered = 0;
+                    if (pill) { const p = pill.getBoundingClientRect(); const w = Math.min(r.right, p.right) - Math.max(r.left, p.left); const h = Math.min(r.bottom, p.bottom) - Math.max(r.top, p.top); if (w > 0 && h > 0) covered = (w * h) / (r.width * r.height); }
+                    const lr = (document.querySelector('[role="log"]') as HTMLElement).getBoundingClientRect();
+                    return {label: el.getAttribute('aria-label') || el.textContent, covered, inside: r.top >= lr.top - 0.5 && r.bottom <= lr.bottom + 0.5};
+                });
+                if (read) { walked.push(String(read.label)); expect(read.covered, `${read.label} is clear of the pill`).toBe(0); expect(read.inside, `${read.label} is inside the transcript`).toBe(true); }
+            }
+            expect(walked.length).toBe(2);
+        });
+
+        test(`the plain banner's close button is a 44px target and keeps its name, ${size.width}x${size.height}`, async ({page}) => {
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            await replyWith(page, {preferences_changed: true}, 'Noted, I will remember that.');
+            await send(page, 'I also prefer smaller teams.');
+            const close = page.getByRole('button', {name: 'Dismiss preference notice'});
+            await expect(close).toBeVisible();
+            await settleLayout(page);
+            const box = (await close.boundingBox())!;
+            expect(box.width, 'the close button is 44px wide').toBeGreaterThanOrEqual(44);
+            expect(box.height, 'the close button is 44px high').toBeGreaterThanOrEqual(44);
+            await expect(close).toHaveClass(/pref-change-dismiss/);
+            await close.click();
+            await expect(page.getByRole('status', {name: 'Preference update'})).toHaveCount(0);
+        });
+
+        test(`Details stays on screen and in the same place after it is pressed, by mouse, Enter and Space, ${size.width}x${size.height}`, async ({page}) => {
+            test.setTimeout(180_000);
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            const scenarios = [
+                {name: 'a status notice plus the 600-character error', status: true, error: LONG_ERROR},
+                {name: 'the 600-character error alone', status: false, error: LONG_ERROR},
+                {name: 'a status notice plus the 57-character error', status: true, error: SHORT_ERROR},
+            ];
+            let first = true;
+            for (const scenario of scenarios) {
+                await page.unroute(SEND).catch(() => undefined);
+                await page.unroute('**/api/agent/assistant-status/').catch(() => undefined);
+                if (scenario.status) await statusOn(page);
+                if (!first) await page.reload();
+                first = false;
+                await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+                await failWith(page, scenario.error);
+                await send(page, 'And which of them are hiring now?');
+                await expect(page.getByTestId('chat-error')).toBeVisible();
+                const details = page.getByTestId('chat-notices-details');
+                await expect(details).toHaveText('Details');
+                await settleLayout(page);
+                const collapsedBox = (await details.boundingBox())!;
+                const collapsedLog = await page.getByRole('log').evaluate((el) => el.clientHeight);
+                const collapsedArea = (await page.getByTestId('chat-footer-notices').boundingBox())!.height;
+                await details.evaluate((el) => { (el as unknown as {__same: boolean}).__same = true; });
+                for (const how of ['mouse', 'Enter', 'Space'] as const) {
+                    const label = `${scenario.name}, ${how}`;
+                    if (how === 'mouse') await details.click();
+                    else {
+                        await page.locator('textarea[aria-label="Message"]').focus();
+                        await page.keyboard.press('Shift+Tab');
+                        await expect(details).toBeFocused();
+                        await page.keyboard.press(how === 'Enter' ? 'Enter' : 'Space');
+                    }
+                    await expect(details).toHaveText('Hide details');
+                    await settleLayout(page);
+                    const read = await page.evaluate(() => {
+                        const area = document.querySelector('[data-testid="chat-footer-notices"]') as HTMLElement;
+                        const toggle = document.querySelector('[data-testid="chat-notices-details"]') as HTMLElement;
+                        const body = area.querySelector('.chat-notices-body') as HTMLElement;
+                        const text = area.querySelector('.chat-error-text') as HTMLElement;
+                        const form = document.querySelector('#job-search-chat form') as HTMLElement;
+                        const t = toggle.getBoundingClientRect(); const a = area.getBoundingClientRect(); const b = body.getBoundingClientRect(); const e = text.getBoundingClientRect();
+                        const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
+                        const visible = Math.max(0, Math.min(e.bottom, b.bottom) - Math.max(e.top, b.top));
+                        const inBody = Array.from(body.querySelectorAll('button')).map((el) => (el as HTMLElement).getBoundingClientRect().top);
+                        const status = area.querySelector('[data-testid="assistant-status-notice"]');
+                        return {
+                            toggleInside: t.top >= -0.5 && t.bottom <= window.innerHeight + 0.5 && t.left >= -0.5 && t.right <= window.innerWidth + 0.5
+                                && t.top >= a.top - 0.5 && t.bottom <= a.bottom + 0.5 && t.right <= a.right + 0.5,
+                            toggleLast: area.lastElementChild === toggle, same: (toggle as unknown as {__same?: boolean}).__same === true,
+                            right: t.right, top: t.top, errorLinesVisible: visible / lineHeight, errorWholeVisible: e.bottom <= b.bottom + 0.5,
+                            areaHeight: a.height, tabOrderIsVisualOrder: inBody.every((top, i) => i === 0 || inBody[i - 1] <= top + 0.5) && t.top >= b.bottom - 0.5,
+                            errorBeforeStatus: status ? !!(text.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING) : true,
+                            composerInViewport: form.getBoundingClientRect().bottom <= window.innerHeight + 0.5 && form.getBoundingClientRect().top >= -0.5,
+                            focusOnToggle: document.activeElement === toggle, focusRing: toggle.matches(':focus-visible'),
+                        };
+                    });
+                    expect(read.toggleInside, `${label}: Hide details is inside the viewport and the notice area, with no scrolling`).toBe(true);
+                    expect(read.toggleLast, `${label}: the toggle is the last row of the area`).toBe(true);
+                    expect(read.same, `${label}: the toggle is the same element`).toBe(true);
+                    expect(read.errorBeforeStatus, `${label}: the error comes before the status notice`).toBe(true);
+                    expect(read.tabOrderIsVisualOrder, `${label}: the tab order is the visual order`).toBe(true);
+                    expect(read.composerInViewport, `${label}: the composer is inside the viewport`).toBe(true);
+                    if (scenario.error === LONG_ERROR) expect(read.errorLinesVisible, `${label}: two complete lines of the error are on screen at first`).toBeGreaterThanOrEqual(2);
+                    else expect(read.errorWholeVisible, `${label}: the whole short error is on screen`).toBe(true);
+                    expect(Math.abs(read.right - (collapsedBox.x + collapsedBox.width)), `${label}: the toggle's right edge does not move`).toBeLessThanOrEqual(1);
+                    expect(Math.abs(read.top + 44 - (collapsedBox.y + collapsedBox.height)), `${label}: the toggle's bottom stays within 10px`).toBeLessThanOrEqual(10);
+                    if (how !== 'mouse') {
+                        expect(read.focusOnToggle, `${label}: the focus stays on the toggle`).toBe(true);
+                        expect(read.focusRing, `${label}: the focus ring shows after a key press`).toBe(true);
+                    }
+                    // A second press without moving the pointer collapses, and the heights return.
+                    if (how === 'mouse') await details.click();
+                    else await page.keyboard.press(how === 'Enter' ? 'Enter' : 'Space');
+                    await expect(details).toHaveText('Details');
+                    await settleLayout(page);
+                    expect(await page.getByRole('log').evaluate((el) => el.clientHeight), `${label}: the transcript returns to its height`).toBe(collapsedLog);
+                    expect(Math.abs((await page.getByTestId('chat-footer-notices').boundingBox())!.height - collapsedArea), `${label}: the area returns to its height`).toBeLessThanOrEqual(1);
+                }
+            }
+        });
+
+        test(`the compact error row reads what fits and has Details only when it cuts, ${size.width}x${size.height}`, async ({page}) => {
+            test.setTimeout(120_000);
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            const readRow = () => page.evaluate(() => {
+                const area = document.querySelector('[data-testid="chat-footer-notices"]') as HTMLElement;
+                const text = area.querySelector('.chat-error-text') as HTMLElement;
+                return {
+                    height: area.getBoundingClientRect().height, cut: text.scrollHeight > text.clientHeight + 1,
+                    lines: Math.round(text.getBoundingClientRect().height / parseFloat(getComputedStyle(text).lineHeight)),
+                    details: document.querySelectorAll('[data-testid="chat-notices-details"]').length,
+                    transcript: (document.querySelector('[role="log"]') as HTMLElement).clientHeight,
+                };
+            });
+            // The 57-character failed send reads whole wherever two lines hold it, and has Details only where they do not.
+            await failWith(page, SHORT_ERROR);
+            await send(page, 'And which of them are hiring now?');
+            await expect(page.getByTestId('retry-button')).toBeVisible();
+            await settleLayout(page);
+            const short = await readRow();
+            expect(short.height, 'the compact row is at most 56px').toBeLessThanOrEqual(56);
+            expect(short.details, 'Details exists exactly when the text is cut').toBe(short.cut ? 1 : 0);
+            expect(short.lines).toBeLessThanOrEqual(2);
+            if (size.width >= 1024) expect(short.cut, 'the sentence fits in two lines').toBe(false);
+            expect(await page.getByTestId('chat-error').textContent()).toContain(SHORT_ERROR);
+            // 120 and 121 characters (no failed turn, so no Retry) give the same transcript at every size.
+            const heights: number[] = [];
+            for (const length of [120, 121]) {
+                await page.unroute(SEND);
+                await page.reload();
+                await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+                await failWith(page, 'x'.repeat(length).replace(/x{9}/g, 'wordsword '), 429, 'rate_limited');
+                await send(page, 'And which of them are hiring now?');
+                await expect(page.getByTestId('chat-error')).toBeVisible();
+                await settleLayout(page);
+                heights.push((await readRow()).transcript);
+            }
+            expect(heights[0], '120 and 121 characters leave the same transcript').toBe(heights[1]);
+            // The 600-character error is cut and has Details.
+            await page.unroute(SEND);
+            await page.reload();
+            await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+            await failWith(page, LONG_ERROR);
+            await send(page, 'And which of them are hiring now?');
+            await expect(page.getByTestId('chat-error')).toBeVisible();
+            await settleLayout(page);
+            const long = await readRow();
+            expect(long).toMatchObject({cut: true, details: 1});
+            expect(long.height).toBeLessThanOrEqual(56);
+        });
+    }
 });

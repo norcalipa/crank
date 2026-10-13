@@ -1546,7 +1546,11 @@ describe('additional JobSearchChat coverage', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'prefs'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             const notice = await screen.findByText(/preferences updated/i);
-            fireEvent.click(screen.getByLabelText('Dismiss preference notice'));
+            // The banner has the notices' own close button (44px by CSS), not Bootstrap's btn-close.
+            const close = screen.getByLabelText('Dismiss preference notice');
+            expect(close).toHaveClass('pref-change-dismiss');
+            expect(close).not.toHaveClass('btn-close');
+            fireEvent.click(close);
             await waitFor(() => expect(notice).not.toBeInTheDocument());
         });
     });
