@@ -470,7 +470,7 @@ describe('JobSearchChat', () => {
                 expect(cardObserver.disconnect).toHaveBeenCalledTimes(1);
             });
 
-            test('disconnects the footer observer on unmount, and when the footer is mounted again', async () => {
+            test('disconnects the footer observer on unmount', async () => {
                 const made = watchObservers();
                 const {unmount} = await renderInPanel(700);
                 const footerObserver = made.find((o) => o.targets.some((el) => el.classList.contains('chat-footer')))!;
