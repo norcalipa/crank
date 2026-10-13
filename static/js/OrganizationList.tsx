@@ -164,6 +164,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // The store's account went from known to unknown, which only a wipe does:
     // a context cleared by the reader leaves the account as it is.
     private privateStateDropped = false;
+    // The company the view shows or is being opened for. State lags a call by
+    // a render, so two opens in one tick would both see "no view yet" and add
+    // two history entries; this field is up to date the moment an open starts
+    // and is cleared when the results are shown again.
+    private openViewId: number | null = null;
     private lastAccountStatus = getWorkspaceSnapshot().account.status;
 
     // Funding-round and RTO labels come from two choice endpoints. The status
@@ -357,7 +362,22 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         // Switching companies from inside a view: while the next record loads
         // the previous company's context stays. Clearing it would also strip
         // `company` from the URL the switch just wrote.
-        if (this.state.view?.status === 'loading' && this.reportedOrganizationId !== null) {
+        const loading = this.state.view?.status === 'loading' ? this.state.view : null;
+        if (loading && loading.name !== undefined) {
+            // A ranked row: its id and name are known, so the assistant speaks
+            // for the company the heading shows from the first moment, not for
+            // the previous one until the record arrives.
+            this.reportedOrganizationId = loading.id;
+            setWorkspaceContext({
+                surface: 'company',
+                organizationId: loading.id,
+                organizationName: loading.name,
+                ...view,
+            });
+            return;
+        }
+        // An id that is not a row has no name yet: the previous context stays.
+        if (loading && this.reportedOrganizationId !== null) {
             return;
         }
         if (this.reportedOrganizationId !== null
@@ -646,22 +666,23 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         if (!isCompanyId(id)) {
             return false;
         }
-        const current = this.state.view;
-        if (current && current.id === id) {
+        const openId = this.openViewId;
+        if (openId === id) {
             return true;
         }
+        this.openViewId = id;
         const generation = ++this.modalGeneration;
         this.closeRequested = false;
         this.closedAfterPurge = false;
         this.privateStateDropped = false;
         this.askedOrganizationId = null;
-        if (current === null) {
+        if (openId === null) {
             this.openedRowId = id;
         }
         const row = this.state.organizations.find(org => org.id === id) ?? null;
         closeSuggestCompany();
         if (source === 'user') {
-            this.writeViewEntry(id, current !== null);
+            this.writeViewEntry(id, openId !== null);
         }
         if (row && row.url && row.type) {
             this.setState({view: {id, status: 'ready', organization: row}});
@@ -773,6 +794,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const id = this.state.view?.id;
         const openedRowId = this.openedRowId;
         this.openedRowId = null;
+        this.openViewId = null;
         ++this.modalGeneration;
         this.setState({view: null}, () => {
             // After the commit that shows the results again (and any list

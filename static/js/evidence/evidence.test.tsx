@@ -190,9 +190,21 @@ describe('EvidenceDetails', () => {
         expect(screen.getByTestId('field-status-rto_policy')).toHaveTextContent('Verified');
         expect(screen.queryByTestId('field-stale-rto_policy')).toBeNull();
         expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('Re-check every 90 days');
-        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('Scope — countries: US');
+        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('Location: US');
         expect(screen.getByText('fix rto_policy')).toBeInTheDocument();
         expect(screen.getByTestId('field-unverified-funding_round')).toHaveTextContent('No accepted evidence');
+    });
+
+    test('every fact names what it covers in words, never the raw keys (issue #486, AC 19)', () => {
+        render(<EvidenceDetails evidence={evidence({fields: [
+            field({field_key: 'rto_policy', scope: {countries: ['US'], role_families: ['Engineering']}}),
+            field({field_key: 'funding_round', scope: {}}),
+            field({field_key: 'locations', scope: null as unknown as Record<string, unknown>}),
+        ]})}/>);
+        expect(screen.getByTestId('field-scope-rto_policy')).toHaveTextContent('Location: US; Roles: Engineering');
+        expect(screen.getByTestId('field-scope-funding_round')).toHaveTextContent('Company-wide');
+        expect(screen.getByTestId('field-scope-locations')).toHaveTextContent('Company-wide');
+        expect(document.body.textContent).not.toMatch(/countries|role_families/);
     });
 
     test('no link without a validated source_url, long text wraps via class', () => {

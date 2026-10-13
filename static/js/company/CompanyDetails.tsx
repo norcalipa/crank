@@ -4,6 +4,10 @@ import * as React from 'react';
 import {EvidenceStatusKey, FUNDING_ROUND_LABELS, RTO_POLICY_LABELS, fieldKeyLabel} from '../labels';
 import EvidenceBadge from '../evidence/EvidenceBadge';
 import EvidenceDetails, {EvidenceSkeleton} from '../evidence/EvidenceDetails';
+import {openAssistant, setPrioritiesEditorOpen} from '../workspace/store';
+import {prioritiesSurface} from '../priorities/surface';
+import FitSection from './FitSection';
+import JobsSection from './JobsSection';
 import {ScoreDetail, useCompanyData} from './useCompanyData';
 
 export interface CompanyDetailsOrganization {
@@ -124,6 +128,22 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
     } = useCompanyData(organization.id, isAuthenticated, {skipScores: Boolean(organization.avg_scores)});
     const freshnessHeadingRef = React.useRef<HTMLHeadingElement>(null);
     const retryRef = React.useRef<HTMLButtonElement>(null);
+    const jobsHeadingRef = React.useRef<HTMLHeadingElement>(null);
+    const signInUrl = companySignInUrl(signInUrlTemplate, organization.id);
+
+    // "View jobs": the Jobs heading takes focus and scrolls into view.
+    const viewJobs = () => {
+        const heading = jobsHeadingRef.current;
+        if (!heading) return;
+        heading.focus({preventScroll: true});
+        heading.scrollIntoView({block: 'start'});
+    };
+
+    // The editor lives in the assistant panel on this page; open both.
+    const editPriorities = () => {
+        setPrioritiesEditorOpen(prioritiesSurface());
+        openAssistant();
+    };
 
     // A retry the user started that fails again hands focus back to Retry (never on the first failure).
     React.useEffect(() => {
@@ -245,6 +265,10 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
                         </a>
                     )
                 )}
+                <button type="button" className="btn btn-outline-light" data-testid="company-view-jobs"
+                        onClick={viewJobs}>
+                    View jobs
+                </button>
             </div>
             <div className="popup-details-grid" data-testid="popup-details-grid">
                 <div className="popup-details-profile">
@@ -339,6 +363,11 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
                     )}
                 </div>
             </div>
+
+            <FitSection organizationId={organization.id} name={organization.name} isAuthenticated={isAuthenticated}
+                        signInUrl={signInUrl} onEditPriorities={editPriorities}/>
+            <JobsSection ref={jobsHeadingRef} organizationId={organization.id} name={organization.name}
+                         isAuthenticated={isAuthenticated} signInUrl={signInUrl}/>
 
             {/* Data Provenance & Freshness Section */}
             <hr className="my-3" />

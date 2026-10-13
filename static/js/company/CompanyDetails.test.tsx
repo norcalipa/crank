@@ -8,6 +8,7 @@ import * as React from 'react';
 
 import CompanyView from './CompanyView';
 import CompanyDetails, {CompanyDetailsOrganization} from './CompanyDetails';
+import {getWorkspaceSnapshot, resetWorkspaceForTests} from '../workspace/store';
 
 const company = (id: number, overrides: Partial<CompanyDetailsOrganization> = {}): CompanyDetailsOrganization => ({
     id, name: `Company ${id}`, ranking: id, avg_score: 4.2, funding_round: 'S', rto_policy: 'R',
@@ -452,5 +453,91 @@ describe('CompanyDetails', () => {
             expect(screen.getByText('Leadership')).toBeInTheDocument();
             expect(screen.queryByText('Culture')).not.toBeInTheDocument();
         });
+    });
+});
+
+describe('CompanyDetails: fit, jobs and View jobs (issue #486, AC 15-18)', () => {
+    const answer = (body: unknown) => ({ok: true, status: 200, redirected: false, json: () => Promise.resolve(body)});
+    let errorSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        resetWorkspaceForTests();
+        mockFetch([
+            ['/api/organizations/1/scores/', reply([{type__name: 'Culture', avg_score: 4.5}])],
+            ['/api/organizations/1/provenance/', reply(provenance(1))],
+            ['/api/organizations/1/fit/', answer({
+                organization_id: 1, has_preferences: false, fit_score: null, company_score: null, coverage: null,
+                requirements: [],
+            }) as unknown as Reply],
+            ['/api/organizations/1/jobs/', answer({
+                organization_id: 1, inventory: 'available', count: 0, results: [],
+            }) as unknown as Reply],
+            ['/api/company-corrections/', reply({corrections: []})],
+        ]);
+    });
+
+    afterEach(() => {
+        errorSpy.mockRestore();
+        resetWorkspaceForTests();
+    });
+
+    const renderDetails = (props: Partial<React.ComponentProps<typeof CompanyDetails>> = {}) => render(
+        <CompanyDetails organization={company(1)} isAuthenticated onAsk={() => {}} onSuggestCorrection={() => {}}
+                        {...props}/>);
+
+    test('the sections sit between the profile and the evidence, with headings in order', async () => {
+        renderDetails();
+        await screen.findByTestId('fit-no-priorities');
+        await screen.findByTestId('jobs-empty');
+        const order = ['company-handoff-actions', 'popup-details-grid', 'company-fit', 'company-jobs', 'provenance-section'];
+        await screen.findByTestId('provenance-section');
+        const nodes = order.map(id => screen.getByTestId(id));
+        for (let i = 1; i < nodes.length; i += 1) {
+            expect(nodes[i - 1].compareDocumentPosition(nodes[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        }
+        const headings = screen.getAllByRole('heading').map(heading => heading.textContent);
+        expect(headings.indexOf('Fit with your priorities')).toBeLessThan(headings.indexOf('Open jobs'));
+        expect(headings.indexOf('Open jobs')).toBeLessThan(headings.indexOf('Data Freshness & Sources'));
+    });
+
+    test('View jobs moves focus to the Jobs heading and scrolls it into view', async () => {
+        const scrollIntoView = jest.fn();
+        Element.prototype.scrollIntoView = scrollIntoView;
+        renderDetails();
+        fireEvent.click(screen.getByTestId('company-view-jobs'));
+        const heading = screen.getByRole('heading', {name: 'Open jobs'});
+        expect(heading).toHaveFocus();
+        expect(scrollIntoView).toHaveBeenCalledWith({block: 'start'});
+        await screen.findByTestId('jobs-empty');
+        expect(screen.getByTestId('company-view-jobs')).toHaveTextContent('View jobs');
+    });
+
+    test('View jobs is there when signed out and lands on the sign-in prompt, with no request', async () => {
+        Element.prototype.scrollIntoView = jest.fn();
+        renderDetails({isAuthenticated: false, signInUrlTemplate: '/accounts/login/?next=%2F%3Fcompany%3D__COMPANY_ID__'});
+        fireEvent.click(screen.getByTestId('company-view-jobs'));
+        expect(screen.getByRole('heading', {name: 'Open jobs'})).toHaveFocus();
+        expect(screen.getByTestId('jobs-sign-in')).toBeInTheDocument();
+        expect(screen.getByTestId('fit-sign-in').querySelector('a')).toHaveAttribute(
+            'href', '/accounts/login/?next=%2F%3Fcompany%3D1');
+        await screen.findByTestId('provenance-section');
+        const urls = (global.fetch as jest.Mock).mock.calls.map(([url]) => String(url));
+        expect(urls.filter(url => url.includes('/fit/') || url.includes('/jobs/'))).toEqual([]);
+    });
+
+    test('the priorities control opens the editor and the assistant', async () => {
+        renderDetails();
+        fireEvent.click(await screen.findByTestId('fit-set-priorities'));
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        expect(getWorkspaceSnapshot().visibility).toBe('open');
+    });
+
+    test('View jobs does nothing visible without the jobs heading mounted', () => {
+        // Defensive: the handler never throws if the heading is gone.
+        renderDetails();
+        const button = screen.getByTestId('company-view-jobs');
+        screen.getByRole('heading', {name: 'Open jobs'}).remove();
+        expect(() => fireEvent.click(button)).not.toThrow();
     });
 });

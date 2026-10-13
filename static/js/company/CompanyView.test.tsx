@@ -437,7 +437,7 @@ describe('CompanyView', () => {
         expect(screen.getByTestId('field-value-rto_policy')).toHaveTextContent('Remote first');
         expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('example.com');
         expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('last verified');
-        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('countries: US');
+        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('Location: US');
         expect(screen.queryByTestId('field-stale-rto_policy')).not.toBeInTheDocument();
     });
 

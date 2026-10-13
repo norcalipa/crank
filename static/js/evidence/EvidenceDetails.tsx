@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {EvidenceStatusKey, EvidenceSummaryData, fieldKeyLabel, formatEvidenceDate} from '../labels';
+import {EvidenceStatusKey, EvidenceSummaryData, fieldKeyLabel, formatEvidenceDate, formatScopeWords} from '../labels';
 import EvidenceBadge from './EvidenceBadge';
 
 export interface EvidenceField {
@@ -45,16 +45,6 @@ interface EvidenceDetailsProps {
     renderFieldAction?: (fieldKey: string, verb?: string, joiner?: string) => React.ReactNode;
     emptyAction?: React.ReactNode;
 }
-
-const formatScope = (scope: Record<string, unknown>): string => {
-    const parts: string[] = [];
-    for (const [key, value] of Object.entries(scope || {})) {
-        if (Array.isArray(value) && value.length > 0) {
-            parts.push(`${key}: ${value.join(', ')}`);
-        }
-    }
-    return parts.length > 0 ? `Scope — ${parts.join('; ')}` : '';
-};
 
 const dateOrNever = (iso: string | null): string => (iso ? formatEvidenceDate(iso) : 'Never');
 
@@ -121,7 +111,7 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                         const key = field.field_key;
                         const status: EvidenceStatusKey = field.status || (field.stale ? 'stale' : 'verified');
                         const review = field.review && field.review !== 'none' ? field.review : null;
-                        const scope = formatScope(field.scope);
+                        const scope = formatScopeWords(field.scope);
                         const badge = (
                             <EvidenceBadge status={status} fieldLabel={fieldKeyLabel(key)}
                                            lastVerifiedAt={field.last_verified_at}
@@ -157,7 +147,9 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                         {field.policy_days ? (
                                             <span className="text-muted small evidence-meta">Re-check every {field.policy_days} days</span>
                                         ) : null}
-                                        {scope && <span className="text-muted small evidence-meta">{scope}</span>}
+                                        <span className="text-muted small evidence-meta" data-testid={`field-scope-${key}`}>
+                                            <span className="visually-hidden">Covers: </span>{scope}
+                                        </span>
                                         <details className="evidence-timestamps small">
                                             <summary>
                                                 Check history<span className="visually-hidden"> for {fieldKeyLabel(key)}</span>

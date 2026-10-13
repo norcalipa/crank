@@ -4,6 +4,7 @@ import '@testing-library/jest-dom';
 import {render, screen, within} from '@testing-library/react';
 import * as React from 'react';
 
+import {resetWorkspaceForTests, registerCompanyTarget} from '../workspace/store';
 import {OrgCard, ResultCards} from './ResultCards';
 import type {OrganizationResult} from './types';
 
@@ -96,5 +97,71 @@ describe('OrgCard (issue #473)', () => {
         expect(within(evidence).getByTestId('evidence-recorded-label')).toHaveTextContent('Facts as of this reply');
         expect(within(evidence).getByTestId('evidence-facts')).toHaveTextContent('7 verified · 0 stale · 0 unknown');
         expect(within(evidence).getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Sep 1, 2026');
+    });
+});
+
+describe('OrgCard "View company" (issue #486, AC 20)', () => {
+    afterEach(() => resetWorkspaceForTests());
+
+    const click = (element: Element, init: MouseEventInit = {}) => {
+        const event = new MouseEvent('click', {bubbles: true, cancelable: true, button: 0, ...init});
+        element.dispatchEvent(event);
+        return event;
+    };
+
+    test('is a link to /?company=<id> beside a website link named as such', () => {
+        render(<OrgCard org={org({url: 'https://acme.example.test'})}/>);
+        const view = screen.getByTestId('view-company-7');
+        expect(view).toHaveAttribute('href', '/?company=7');
+        expect(view).toHaveAccessibleName('View company Acme Corp');
+        const site = screen.getByRole('link', {name: 'Website of Acme Corp (opens in a new tab)'});
+        expect(site).toHaveAttribute('href', 'https://acme.example.test');
+        expect(site).toHaveAttribute('rel', 'noopener noreferrer');
+        expect(screen.queryByText(/Details/)).toBeNull();
+    });
+
+    test('a plain click opens the view through the typed target and stays on the page', () => {
+        const target = jest.fn().mockReturnValue(true);
+        const unregister = registerCompanyTarget(target);
+        render(<OrgCard org={org()}/>);
+        const event = click(screen.getByTestId('view-company-7'));
+        expect(target).toHaveBeenCalledWith(7);
+        expect(event.defaultPrevented).toBe(true);
+        unregister();
+    });
+
+    test('without a list on the page, or when it does not show the company, the link navigates', () => {
+        render(<OrgCard org={org()}/>);
+        expect(click(screen.getByTestId('view-company-7')).defaultPrevented).toBe(false);
+        const target = jest.fn().mockReturnValue(false);
+        const unregister = registerCompanyTarget(target);
+        expect(click(screen.getByTestId('view-company-7')).defaultPrevented).toBe(false);
+        expect(target).toHaveBeenCalledWith(7);
+        unregister();
+    });
+
+    test('a modified or non-primary click keeps the browser\'s own behaviour', () => {
+        const target = jest.fn().mockReturnValue(true);
+        const unregister = registerCompanyTarget(target);
+        render(<OrgCard org={org()}/>);
+        const link = screen.getByTestId('view-company-7');
+        for (const init of [{ctrlKey: true}, {metaKey: true}, {shiftKey: true}, {altKey: true}, {button: 1}]) {
+            expect(click(link, init).defaultPrevented).toBe(false);
+        }
+        expect(target).not.toHaveBeenCalled();
+        unregister();
+    });
+
+    test('an id that cannot be a company id gets no link and no target call', () => {
+        const target = jest.fn().mockReturnValue(true);
+        const unregister = registerCompanyTarget(target);
+        for (const id of [0, -1, 1.5, Number.NaN, 2 ** 31]) {
+            const {unmount} = render(<OrgCard org={org({id})}/>);
+            expect(screen.queryByRole('link', {name: /View company/})).toBeNull();
+            expect(screen.getByRole('article')).toBeInTheDocument();
+            unmount();
+        }
+        expect(target).not.toHaveBeenCalled();
+        unregister();
     });
 });
