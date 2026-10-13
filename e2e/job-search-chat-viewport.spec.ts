@@ -612,7 +612,16 @@ test.describe('one transcript scroller (issue #483)', () => {
         expect(reading.bodyScrollRange).toBeGreaterThan(1);
         // The composer takes focus on load, so the body is scrolled only by what cuts the composer band off.
         expect(reading.composerInViewport, 'the focused composer is whole').toBe(true);
-        expect(reading.bodyScrollTop).toBeLessThan(40);
+        const cutOff = await page.evaluate(() => {
+            const body = document.querySelector('.assistant-panel-body') as HTMLElement;
+            const form = document.querySelector('#job-search-chat form') as HTMLElement;
+            const saved = body.scrollTop;
+            body.scrollTop = 0;
+            const need = form.getBoundingClientRect().bottom - Math.min(body.getBoundingClientRect().bottom, window.innerHeight);
+            body.scrollTop = saved;
+            return need;
+        });
+        expect(Math.abs(reading.bodyScrollTop - cutOff), `scrolled ${reading.bodyScrollTop}px for a composer cut off by ${cutOff}px`).toBeLessThanOrEqual(2);
         expect(reading.blockHeight, 'the open block keeps 11rem').toBeGreaterThanOrEqual(176);
         expect(reading.logHeight).toBeGreaterThanOrEqual(70);
         expect(reading.positions).not.toContain('sticky');
@@ -866,8 +875,10 @@ test.describe('one transcript scroller (issue #483)', () => {
                 if (notice) await withNotice(page);
                 await loadPanel(page, 'priorities=57');
                 if (notice) await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
-                await settledPanel(page);
-                await setViewport(page, {inset: 250});
+                const plain = await settledPanel(page);
+                // A 250px keyboard leaves the real panel's bars no room beside a status notice: the transcript would
+                // sit wholly under the panel's header. The notice case takes the keyboard that leaves it about 40px.
+                await setViewport(page, {inset: notice ? plain.logHeight - 40 : 250});
                 await expect.poll(async () => (await readPanel(page)).logHeight).toBeLessThan(60);
                 await scrollUpToPill(page);
                 await pressCentre(page);
