@@ -1326,7 +1326,12 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         const failed = await settled(page);
         expect(failed.collapsed).toBe(true);
         expect(failed.noticesHeight).toBeLessThanOrEqual(56);
-        expect(failed.logHeight, `the transcript was ${quiet.logHeight}px before the send`).toBeGreaterThanOrEqual(230);
+        // 230px is the gate where the composer's disclaimer takes one line. CI's wider fallback font wraps it to two
+        // (the transcript is then about 17px shorter before the send), so there the notice may take no more than its line.
+        const disclaimerLines = await page.locator('#job-search-chat .chat-disclaimer').evaluate((el) => (
+            Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))));
+        const floor = disclaimerLines > 1 ? quiet.logHeight - 56 : 230;
+        expect(failed.logHeight, `the transcript was ${quiet.logHeight}px before the send`).toBeGreaterThanOrEqual(floor);
         expect(failed.composerInViewport).toBe(true);
         // The Retry in the line works: it sends the same turn again.
         let posts = 0;

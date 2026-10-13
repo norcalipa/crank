@@ -838,7 +838,12 @@ test.describe('footer notices collapse to one line (issue #483)', () => {
         await expect(page.getByTestId('retry-button')).toBeVisible();
         const failed = await settledLayout(page);
         expect(await noticesHeight(page), 'the notice is one line').toBeLessThanOrEqual(56);
-        expect(failed.transcript, `the transcript was ${quiet.transcript}px before the send`).toBeGreaterThanOrEqual(230);
+        // 230px is the gate where the composer's disclaimer takes one line; with the wider fallback font (the CI image)
+        // it takes two, which is the same case as the 0.47 share gate above, and the notice may take no more than its line.
+        const disclaimerLines = await page.locator('#job-search-chat .chat-disclaimer').evaluate((el) => (
+            Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))));
+        const floor = disclaimerLines > 1 ? quiet.transcript - 56 : 230;
+        expect(failed.transcript, `the transcript was ${quiet.transcript}px before the send`).toBeGreaterThanOrEqual(floor);
         expect(scrollerProblems('failed send', failed)).toEqual([]);
     });
 });
