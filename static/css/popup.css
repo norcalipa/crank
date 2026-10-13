@@ -31,19 +31,6 @@
     --z-mobile-topbar: 1030;
 }
 
-.popup-overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0, 0, 0, 0.7);
-    z-index: var(--z-blocking-dialog);
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-}
-
 /* Suggest-company modal rides Bootstrap's .modal but must also sit above the
    navigation rail (--bs-modal-zindex is 1055, below the 1100 rail). It is
    rendered with `d-block` directly (no Bootstrap JS), so Bootstrap's own
@@ -72,46 +59,6 @@
     margin: 0;
     max-height: 100%;
     overflow-y: auto;
-}
-
-.popup-details {
-    width: 80%;
-    max-width: 900px;
-    max-height: 90vh;
-    display: flex;
-    flex-direction: column;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-    border-radius: 4px;
-    background-color: #212529;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    color: #fff;
-}
-
-.popup-details .card-header {
-    background-color: #212529;
-    padding: 0.75rem 1.25rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    /* Header (title + Close) stays pinned while long content scrolls in the
-       card body below (issue #464). */
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    flex-shrink: 0;
-}
-
-.popup-details .card-header h2 {
-    margin-bottom: 0;
-    font-size: 1.75rem;
-}
-
-.popup-details .card-body {
-    padding: 1.25rem;
-    background-color: #212529;
-    /* Internal scroll container: large content scrolls here, never the whole
-       card, so the header never scrolls out of view (issue #464). */
-    overflow-y: auto;
-    min-height: 0;
-    flex: 1 1 auto;
 }
 
 .popup-details .table {
@@ -824,52 +771,9 @@ body.app-nav-drawer-open {
     min-width: 42rem;
 }
 
-.popup-overlay {
-    --popup-gap-top: clamp(.75rem, 4vh, 2rem);
-    padding: var(--popup-gap-top) .75rem .75rem;
-}
-
-.popup-details {
-    width: min(900px, 100%);
-}
-
-.popup-details .card-header h2 {
-    min-width: 0;
-    overflow-wrap: anywhere;
-}
-
-.popup-details .card-body,
-.popup-details .card-header {
-    padding: 1rem;
-}
-
-/* Blocking-dialog Close controls need a 44×44px touch target (visual
-   critique, issue #464 round 1). The glyph stays visually compact: the
-   button box grows while the background icon keeps its 1rem size, and the
-   header padding-block shrinks so the pinned header keeps its height. */
-.popup-details .card-header {
-    padding-block: .375rem;
-}
-
-.popup-details .card-header .btn-close {
-    inline-size: 44px;
-    block-size: 44px;
-    min-inline-size: 44px;
-    min-block-size: 44px;
-    flex: 0 0 44px;
-    padding: 0;
-    background-position: center;
-    background-size: 1rem;
-    border-radius: .375rem;
-}
-
-.popup-details .card-header .btn-close:focus-visible {
-    outline: 3px solid #93c5fd;
-    outline-offset: 2px;
-}
-
-/* Keep the suggest-company modal's Close target on the same contract so
-   both blocking-dialog patterns stay consistent. */
+/* The suggest-company modal's Close control needs a 44×44px touch target
+   (visual critique, issue #464 round 1). The glyph stays visually compact:
+   the button box grows while the background icon keeps its 1rem size. */
 .modal.blocking-modal .btn-close {
     inline-size: 44px;
     block-size: 44px;
@@ -887,19 +791,16 @@ body.app-nav-drawer-open {
 
 /* Bootstrap's dark-theme filter recolors the outline too (2.3:1); drop it
    and draw the glyph white instead so the amber ring keeps its contrast. */
-[data-bs-theme="dark"] .modal.blocking-modal .btn-close,
-[data-bs-theme="dark"] .popup-details .card-header .btn-close {
+[data-bs-theme="dark"] .modal.blocking-modal .btn-close {
     filter: none;
     background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23fff'%3e%3cpath d='M.293.293a1 1 0 0 1 1.414 0L8 6.586 14.293.293a1 1 0 1 1 1.414 1.414L9.414 8l6.293 6.293a1 1 0 0 1-1.414 1.414L8 9.414l-6.293 6.293a1 1 0 0 1-1.414-1.414L6.586 8 .293 1.707a1 1 0 0 1 0-1.414z'/%3e%3c/svg%3e");
 }
 
-.modal.blocking-modal .btn-close:focus-visible,
-.popup-details .card-header .btn-close:focus-visible {
+.modal.blocking-modal .btn-close:focus-visible {
     box-shadow: none;
 }
 
-.modal.blocking-modal .btn-close:focus:not(:focus-visible),
-.popup-details .card-header .btn-close:focus:not(:focus-visible) {
+.modal.blocking-modal .btn-close:focus:not(:focus-visible) {
     outline: 0;
     box-shadow: none;
 }
@@ -1009,15 +910,6 @@ body.app-nav-drawer-open {
 
     button[data-testid='suggest-company-btn'] {
         min-height: 44px;
-    }
-
-    .popup-details {
-        max-height: calc(100vh - var(--popup-gap-top, .75rem) - .75rem);
-        max-height: calc(100dvh - var(--popup-gap-top, .75rem) - .75rem);
-    }
-
-    .popup-details .card-header h2 {
-        font-size: 1.25rem;
     }
 
     .popup-details .card-body .row > [class*='col-'] {
@@ -2879,23 +2771,10 @@ body.app-nav-drawer-open {
     --assistant-panel-width: clamp(22.5rem, 32vw, 26rem);
 }
 
-/* Details dialog: viewport-safe, header fixed, body scrolls. */
-.popup-details {
-    display: flex;
-    flex-direction: column;
-    max-height: calc(100vh - var(--popup-gap-top, .75rem) - .75rem);
-    max-height: calc(100dvh - var(--popup-gap-top, .75rem) - .75rem);
-}
-
-.popup-details .card-header {
-    flex: 0 0 auto;
-}
-
-/* Positioned so absolutely placed .visually-hidden spans scroll with the body, not the overlay. */
+/* Company view content: positioned so absolutely placed .visually-hidden
+   spans stay inside the card they belong to. */
 .popup-details .card-body {
     position: relative;
-    overflow-y: auto;
-    min-height: 0;
 }
 
 .popup-details .card-body :is(a, button, summary) {
@@ -3193,8 +3072,8 @@ body.assistant-open .app-content .table-responsive,
     }
 }
 
-/* Details dialog: one score card (Rank, Profile Completeness, scores) in
-   the right column; discoverable internal scrolling. */
+/* Company view: one score card (Rank, Profile Completeness, scores) in
+   the right column. */
 .popup-details-scores {
     border: 1px solid var(--bs-border-color);
     border-radius: var(--bs-border-radius);
@@ -3217,29 +3096,6 @@ body.assistant-open .app-content .table-responsive,
 
 .popup-details-scores > p {
     margin: .5rem 0 0;
-}
-
-.popup-details .card-body {
-    overscroll-behavior: contain;
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-    scrollbar-color: #8f9bb0 transparent;
-    background:
-        linear-gradient(#212529 30%, transparent) center top / 100% 1.5rem no-repeat local,
-        linear-gradient(transparent, #212529 70%) center bottom / 100% 1.5rem no-repeat local,
-        linear-gradient(rgba(255, 255, 255, .16), transparent) center top / 100% .75rem no-repeat scroll,
-        linear-gradient(transparent, rgba(255, 255, 255, .16)) center bottom / 100% .75rem no-repeat scroll;
-}
-
-.popup-details .card-body::-webkit-scrollbar {
-    width: 10px;
-}
-
-.popup-details .card-body::-webkit-scrollbar-thumb {
-    background: #8f9bb0;
-    border-radius: 5px;
-    border: 2px solid transparent;
-    background-clip: content-box;
 }
 
 /* Drawer / sheet header: icon-only 44x44 controls and a single-line title
@@ -4955,3 +4811,223 @@ span.priority-chip-button { cursor: default; }
     outline: 3px solid #38bdf8;
     outline-offset: 2px;
 }
+
+/* issue #486 company view */
+/* The company opens in the page's main content, beside the assistant, not
+   over it: an in-flow card that scrolls with the document. The content rules
+   above are scoped under .popup-details, which the view keeps. */
+/* The view's own width decides how its label/value rows lay out: beside an
+   open drawer it can be narrower than a phone at a viewport of 768px or more. */
+.company-view {
+    container-type: inline-size;
+    container-name: company-view;
+    min-width: 0;
+    margin-bottom: 1.5rem;
+    background-color: #212529;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    color: #fff;
+}
+
+.company-view-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem 1rem;
+    padding: .75rem 1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.company-view-header h2 {
+    flex: 1 1 14rem;
+    min-width: 0;
+    margin: 0;
+    font-size: 1.75rem;
+    overflow-wrap: anywhere;
+}
+
+/* The heading takes focus when the view opens; it is not a control. */
+.company-view-header h2:focus {
+    outline: none;
+}
+
+.company-view-back {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    min-height: 44px;
+}
+
+.company-view .card-body {
+    padding: 1.25rem;
+    background-color: transparent;
+}
+
+/* The grid never gets two columns narrower than 22rem, so the label column
+   of the profile keeps room beside the beside-the-assistant main width. */
+.company-view .popup-details-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+}
+
+.company-view .popup-company-actions .btn,
+.company-view .card-body :is(.btn, .btn-link) {
+    min-height: 44px;
+}
+
+.organization-results-region:focus {
+    outline: none;
+}
+
+@media (max-width: 767.98px) {
+    .company-view-header h2 {
+        font-size: 1.25rem;
+    }
+
+    .company-view-back {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .company-view .card-body {
+        padding: 1rem;
+    }
+}
+
+/* A label wraps inside its own column; it never runs over its value. */
+.company-view .text-end {
+    white-space: normal;
+    overflow-wrap: break-word;
+}
+
+/* At 28rem or less every label/value row stacks: label above value, no
+   offset column (the layout phones already get). */
+@container company-view (max-width: 28rem) {
+    .company-view .row > [class*='col-'] {
+        width: 100%;
+    }
+
+    .company-view .row > .offset-5 {
+        margin-left: 0;
+    }
+
+    .company-view .row > .text-end {
+        text-align: left !important;
+    }
+
+    .company-view .popup-details-score-row,
+    .company-view [data-testid^='your-pending-correction-'] {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: .125rem;
+    }
+
+    /* The pending row carries Bootstrap's align-items-center, which is
+       !important, so the stacked row needs the same weight to stay left. */
+    .company-view [data-testid^='your-pending-correction-'] {
+        align-items: flex-start !important;
+    }
+}
+
+/* The evidence text and its "Suggest a correction" link sit side by side only
+   while the view has room for both: the viewport rule above (min-width 992px)
+   was written for a dialog that was never narrower than 744px, and the view
+   can be 456px wide inside a 1000px viewport. Below 46rem of view width the
+   link goes under the text, as it already does below 992px. */
+@container company-view (max-width: 46rem) {
+    .company-view .evidence-row-value {
+        display: flex;
+    }
+
+    .company-view .evidence-row-value > .correction-action {
+        white-space: normal;
+    }
+}
+
+/* "Check history": a date or "Never" is never broken across lines. When the
+   text column is short of room the label column gives way instead and a
+   label wraps at a space. */
+.company-view .evidence-timestamps dl {
+    grid-template-columns: minmax(0, max-content) max-content;
+}
+
+/* A heading in a narrow view is phone-sized whatever the viewport is. */
+@container company-view (max-width: 28rem) {
+    .company-view .company-view-header h2 {
+        font-size: 1.25rem;
+    }
+}
+
+/* While a company is open it is the page's subject: the rankings
+   introduction steps aside so the view starts at the top of the scroll area.
+   The page heading stays in the accessibility tree. */
+.homepage-container:has(.company-view) > h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.homepage-container:has(.company-view) > h1 + p,
+.homepage-container:has(.company-view) > .how-ranking-works {
+    display: none;
+}
+
+/* Phones: a short state (loading, not found, load error) keeps the Assistant
+   bar at the bottom edge. The page is at least as tall as the viewport minus
+   the sticky top bar (.app-mobile-topbar: 48px plus its 1px border) and the
+   bar. The bar's button is 44.5px tall, so the bar is half a pixel taller
+   than the padding expression above (44px + 1rem + 1px): the 2px here keeps
+   the page from being 1px taller than the window. */
+@media (max-width: 767.98px) {
+    body:has(.assistant-dock) .app-content:has(.company-view) {
+        min-height: calc(100vh - 49px - (44px + 1rem + 2px + var(--safe-area-inset-bottom)));
+        min-height: calc(100dvh - 49px - (44px + 1rem + 2px + var(--safe-area-inset-bottom)));
+    }
+}
+
+/* Not found and load error are a compact block, so the sentence, Retry and
+   Back to results sit together on wide screens. */
+.company-view--compact {
+    max-width: 40rem;
+}
+
+/* The ranked line is the message; the empty score line under it is the
+   quiet one. */
+.popup-details-scores .table td[data-testid='no-scores'] {
+    font-weight: 400;
+    text-align: left !important;
+}
+
+/* Action labels are the body size and centred, whatever their length. */
+.company-view .popup-company-actions .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 100%;
+    text-align: center;
+}
+
+/* The sheet's first button names where it goes; a long name stays on one
+   line. */
+.assistant-back-to-results {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .5rem;
+    min-width: 0;
+}
+
+.assistant-back-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* end issue #486 company view */
