@@ -431,6 +431,37 @@ class SeedStagingBaselineTests(TestCase):
             {"present": True, "revision": "staging-baseline-2"},
         )
         self.assertFalse(record["release_verdict"]["production_ready"])
+        self.assertIn("fixtures_present", record["release_verdict"]["blockers"])
+
+    def _revision(self):
+        payload, _ = _run()
+        return _parse(payload)["fixtures"]
+
+    def test_revision_is_read_from_the_data(self):
+        _seed_staging()
+        self.assertEqual(self._revision()["revision"], "staging-baseline-2")
+        # A database seeded only at revision 1 has no field evidence.
+        CompanyFieldEvidence.objects.all().delete()
+        self.assertEqual(
+            self._revision(), {"present": True, "revision": "staging-baseline-1"}
+        )
+        # Fixtures present block the verdict at either revision.
+        payload, _ = _run()
+        self.assertIn("fixtures_present", _parse(payload)["release_verdict"]["blockers"])
+        _seed_staging()
+        self.assertEqual(self._revision()["revision"], "staging-baseline-2")
+
+    def test_revision_is_two_after_a_run_that_added_no_evidence_row(self):
+        _seed_staging()
+        # The organization already holds accepted rows of another writer for
+        # every fixture field; the run keeps them and adds no row.
+        CompanyFieldEvidence.objects.all().update(
+            state=CompanyFieldEvidence.State.ACCEPTED, validation_version="company-profile.v3"
+        )
+        before = set(CompanyFieldEvidence.objects.values_list("pk", flat=True))
+        _seed_staging()
+        self.assertEqual(set(CompanyFieldEvidence.objects.values_list("pk", flat=True)), before)
+        self.assertEqual(self._revision()["revision"], "staging-baseline-2")
 
     def test_seed_is_idempotent(self):
         _seed_staging()

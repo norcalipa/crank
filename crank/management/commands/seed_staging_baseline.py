@@ -58,9 +58,9 @@ from crank.services.company_evidence import field_evidence_payload, resolve_fiel
 from crank.services.preferences import to_markdown
 from crank.settings.base import DEFAULT_ALGORITHM_ID
 
-#: Revision of this fixture set. Emitted by ``readiness_baseline`` as the
-#: fixture-set revision whenever the fixture markers are present; bump when
-#: the fixture rows below change shape or meaning.
+#: Revision of this fixture set. ``readiness_baseline`` reports it when the
+#: fixture markers are present and the example company holds field evidence;
+#: bump when the fixture rows below change shape or meaning.
 FIXTURE_REVISION = "staging-baseline-2"
 
 #: Throwaway staging credential for the *ordinary* (non-privileged) test
