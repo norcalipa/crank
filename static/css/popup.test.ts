@@ -637,7 +637,7 @@ describe('notices in the transcript and collapsing footer notices (issue #483)',
         expect(popupCss).not.toMatch(/\.chat-error-(?:text|alert|row)[^{]*\{[^}]*display:\s*none/);
         const folded = '#job-search-chat .chat-footer-notices.is-collapsed';
         expect(declared(`${folded} .assistant-status-icon, ${folded} .assistant-status-body, ${folded} .assistant-status-notice-actions`))
-            .toMatch(/display:\s*none;/);
+            .toMatch(/display:\s*none !important;/);
         expect(declared(`${folded} [data-testid='assistant-status-notice']`)).not.toMatch(/display:\s*none/);
     });
 

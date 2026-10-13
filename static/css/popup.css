@@ -3522,7 +3522,11 @@ body.assistant-open .app-content .table-responsive,
 #job-search-chat .chat-footer-notices.is-collapsed {
     flex-direction: row;
     align-items: center;
-    gap: .5rem;
+    gap: .25rem;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed > .chat-notices-toggle {
+    padding-inline: .25rem;
 }
 
 #job-search-chat .chat-footer-notices.is-collapsed .chat-notices-body {
@@ -3530,13 +3534,21 @@ body.assistant-open .app-content .table-responsive,
     min-width: 0;
     overflow: visible;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
 }
 
 #job-search-chat .chat-footer-notices.is-collapsed .chat-error-alert {
     grid-row: 2;
     margin-bottom: 0;
-    padding: 0 .5rem;
+    padding: 0 .25rem 0 .5rem;
     min-height: 44px;
+}
+
+/* Retry stays 44px high and gives the row's width to the text. */
+#job-search-chat .chat-footer-notices.is-collapsed .chat-error-alert [data-testid='retry-button'] {
+    padding-inline: .25rem;
+    min-inline-size: 44px;
+    margin-left: .25rem !important;
 }
 
 #job-search-chat .chat-footer-notices.is-collapsed .chat-error-text {
@@ -3561,13 +3573,27 @@ body.assistant-open .app-content .table-responsive,
 }
 
 #job-search-chat .chat-footer-notices.is-collapsed.has-retry [data-testid='assistant-status-notice'] {
-    padding-right: 5.25rem !important;
+    padding-right: 3.25rem !important;
+}
+
+/* The title is one line; it is cut with an ellipsis where the row is narrow. */
+#job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] > .d-flex,
+#job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] > .d-flex > div {
+    min-width: 0;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .assistant-status-title {
+    font-size: .75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 #job-search-chat .chat-footer-notices.is-collapsed .assistant-status-icon,
 #job-search-chat .chat-footer-notices.is-collapsed .assistant-status-body,
 #job-search-chat .chat-footer-notices.is-collapsed .assistant-status-notice-actions {
-    display: none;
+    /* Bootstrap's d-block and d-flex are !important. */
+    display: none !important;
 }
 
 /* With a title above it the text sits under it and Retry reaches up into the
