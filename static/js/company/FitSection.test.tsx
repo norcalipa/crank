@@ -1,11 +1,12 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {act, cleanup, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
+import {act, cleanup, fireEvent, render, renderHook, screen, waitFor, within} from '@testing-library/react';
 import * as React from 'react';
 
 import * as store from '../workspace/store';
 import FitSection, {CompanyFit, FitRequirement, fitGroupOf, observedText} from './FitSection';
+import {useOwnCompanyRead} from './useOwnCompanyRead';
 
 const req = (overrides: Partial<FitRequirement> = {}): FitRequirement => ({
     path: 'funding_stage', status: 'match', hard: false, observed: 'A', scope_ok: true, scope: null,
@@ -270,6 +271,31 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         renderFit({isAuthenticated: false});
         expect(screen.queryByTestId('fit-row-funding_stage')).toBeNull();
         expect(Object.keys(window.__crankWorkspace__ ?? {}).join()).not.toMatch(/fit/i);
+    });
+});
+
+describe('useOwnCompanyRead tags what it holds with the company (issue #486, rule 4)', () => {
+    beforeEach(() => {
+        store.resetWorkspaceForTests();
+        global.fetch = jest.fn().mockResolvedValue(answer(fit()));
+    });
+
+    test('no render for company B, not even the first one, returns company A\'s answer', async () => {
+        const isFit = (data: unknown): data is CompanyFit => true;
+        const renders: {id: number; kind: string}[] = [];
+        const {rerender} = renderHook(({id}) => {
+            const {state} = useOwnCompanyRead<CompanyFit>('fit', id, true, isFit);
+            renders.push({id, kind: state.kind});
+            return state;
+        }, {initialProps: {id: 4}});
+        await waitFor(() => expect(renders[renders.length - 1]).toEqual({id: 4, kind: 'ready'}));
+        const before = renders.length;
+        rerender({id: 5});
+        const after = renders.slice(before).filter(entry => entry.id === 5);
+        expect(after.length).toBeGreaterThan(0);
+        expect(after[0].kind).toBe('loading');
+        for (const entry of after) expect(entry.kind).not.toBe('ready');
+        await waitFor(() => expect(renders[renders.length - 1]).toEqual({id: 5, kind: 'ready'}));
     });
 });
 
