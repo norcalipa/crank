@@ -125,9 +125,10 @@ export function OrgCard({org}: {org: OrganizationResult}) {
                     href={`/?company=${companyId}`}
                     className="org-card-view-company"
                     data-testid={`view-company-${org.id}`}
+                    aria-label={`View company: ${org.name}`}
                     onClick={(event) => openCompany(event, companyId)}
                 >
-                    View company<span className="visually-hidden"> {org.name}</span>
+                    View company
                 </a>
             )}
             {org.url && (

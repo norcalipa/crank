@@ -113,7 +113,7 @@ describe('OrgCard "View company" (issue #486, AC 20)', () => {
         render(<OrgCard org={org({url: 'https://acme.example.test'})}/>);
         const view = screen.getByTestId('view-company-7');
         expect(view).toHaveAttribute('href', '/?company=7');
-        expect(view).toHaveAccessibleName('View company Acme Corp');
+        expect(view).toHaveAccessibleName('View company: Acme Corp');
         const site = screen.getByRole('link', {name: 'Website of Acme Corp (opens in a new tab)'});
         expect(site).toHaveAttribute('href', 'https://acme.example.test');
         expect(site).toHaveAttribute('rel', 'noopener noreferrer');
