@@ -212,6 +212,90 @@ def evaluate_org_requirements(
     )
 
 
+def _scope_of(evidence_row: Any) -> dict[str, list[str]] | None:
+    """The declared scope of an evidence row as ``{key: [values]}``, or ``None``.
+
+    ``None`` means company-wide: the row declares no scope.
+    """
+    scope = getattr(evidence_row, "scope_json", None)
+    if not isinstance(scope, Mapping):
+        return None
+    declared = {
+        str(key): [str(item) for item in (value if isinstance(value, (list, tuple)) else [value]) if item]
+        for key, value in scope.items()
+        if key in ("countries", "role_families") and value
+    }
+    return {key: values for key, values in declared.items() if values} or None
+
+
+def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CONFIG) -> dict[str, Any]:
+    """How *organization* fits *user*'s own saved priorities (issue #486).
+
+    Every requirement the reader set is evaluated against the company alone;
+    the hard filter is NOT applied, so a company the ranked list would
+    exclude still explains itself. A requirement decided by a fact whose scope
+    does not cover the reader is never reported as a match. Reads only
+    *user*'s own preferences; writes nothing.
+    """
+    from crank.agents.jobs.matching import is_hard_requirement
+    from crank.services.company_evidence import annotate_requirement_evidence
+    from crank.services.publication import organization_data_revisions
+
+    org_id = int(organization.pk)
+    criteria, unsupported, preference_revision = _match_context(user)
+    base = {
+        "organization_id": org_id,
+        "has_preferences": False,
+        "fit_score": None,
+        "company_score": None,
+        "coverage": None,
+        "requirements": [],
+        "unsupported": list(unsupported),
+        "revision": {
+            "preference_revision": preference_revision,
+            "ranking_version": config.version,
+            "data_revision": None,
+            "generated_at": None,
+            "stale": False,
+        },
+    }
+    if criteria is None:
+        return base
+    org_evidence = _resolve_evidence([org_id]).get(org_id) or {}
+    outcomes = evaluate_org_requirements(organization, criteria, org_evidence)
+    # An out-of-scope fact cannot satisfy the reader, whatever produced it.
+    outcomes = [
+        replace(o, status="unknown") if (not o.scope_ok and o.status == "match") else o
+        for o in outcomes
+    ]
+    rows = {row.pk: row for row in org_evidence.values() if getattr(row, "pk", None) is not None}
+    requirements = []
+    for outcome, annotated in zip(
+        outcomes, annotate_requirement_evidence([[o.as_dict() for o in outcomes]])[0]
+    ):
+        row = rows.get(outcome.source_id) if outcome.source_kind == "evidence" else None
+        requirements.append(
+            {
+                **annotated,
+                "hard": is_hard_requirement(outcome.path, criteria.importance),
+                "scope": _scope_of(row),
+            }
+        )
+    generated_at = timezone.now()
+    base.update(
+        has_preferences=bool(requirements),
+        fit_score=_score_organization_match(organization, criteria, config),
+        company_score=_company_score(organization),
+        coverage=coverage(outcomes),
+        requirements=requirements,
+    )
+    base["revision"].update(
+        data_revision=organization_data_revisions([org_id]).get(org_id),
+        generated_at=_iso_or_none(generated_at),
+    )
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Organization scoring (independent of job listings)
 # ---------------------------------------------------------------------------

@@ -22,6 +22,15 @@ from crank.models.job_match import JobMatch
 from crank.models.preference import UserPreference
 
 
+def has_enabled_job_source() -> bool:
+    """Whether any job source is enabled, i.e. job inventory can exist.
+
+    The one read-only check behind the ``source_disabled`` state and the
+    company view's jobs answer ("unavailable" differs from an empty list).
+    """
+    return JobSourceCatalog.objects.filter(enabled=True).exists()
+
+
 def _source_catalog_health(*, now, enabled_sources, freshness_window):
     """Count how many *enabled_sources* currently fail to deliver listings.
 
@@ -310,9 +319,8 @@ def derive_state(
 
     # --- inventory-level signals -----------------------------------------
 
-    sources_qs = JobSourceCatalog.objects.all()
-    has_any_source = sources_qs.exists()
-    has_enabled_source = sources_qs.filter(enabled=True).exists()
+    has_any_source = JobSourceCatalog.objects.exists()
+    has_enabled_source = has_enabled_job_source()
 
     if not has_any_source:
         return EmptyState(

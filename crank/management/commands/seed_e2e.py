@@ -122,6 +122,7 @@ def _seed_evidence(
     source_domain,
     verified_at,
     last_checked_at=None,
+    scope=None,
 ):
     """Seed one directly-written evidence row keyed on (org, field, state, version)."""
     values = {
@@ -130,6 +131,8 @@ def _seed_evidence(
         "source_domain": source_domain,
         "extractor_version": EVIDENCE_VERSION,
     }
+    if scope is not None:
+        values["scope_json"] = scope
     # Timestamps are creation-scoped (see module docstring) so reruns stay identical.
     row, _ = CompanyFieldEvidence.objects.get_or_create(
         organization=org,
@@ -483,6 +486,22 @@ class Command(BaseCommand):
             "https://elsewhere.example.net/alpha/locations",
             "e2e.example.test",
             now,
+        )
+        # One accepted fact that covers only part of the reader's world (issue
+        # #486): a US-only funding stage. The company view names the scope in
+        # words, and a reader whose location is unstated gets "does not cover
+        # you" instead of a match. Well-formed and accepted like every row
+        # above, so a "confirmed" requirement still resolves to an accepted
+        # evidence row of its organization.
+        _seed_evidence(
+            alpha,
+            FieldKey.FUNDING_ROUND,
+            State.ACCEPTED,
+            "Public",
+            "https://e2e.example.test/alpha/funding",
+            "e2e.example.test",
+            now,
+            scope={"countries": ["US"]},
         )
         # Key the canonical listing on its own synthetic (source, external_id)
         # identity FIRST — never on canonical_url. A URL-first lookup here made
