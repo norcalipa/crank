@@ -292,9 +292,12 @@ describe('ConversationMenu', () => {
             fireEvent.click(screen.getByTestId(testId));
         };
         const confirmButton = () => screen.getByTestId('confirm-action');
-        // A mouse or touch press: pointerdown, then (a click after) the release.
+        // A mouse or touch press: pointerdown, then (pointerup and a click after) the release.
         const down = () => fireEvent.pointerDown(confirmButton());
-        const release = () => fireEvent.click(confirmButton(), {detail: 1});
+        const release = () => {
+            fireEvent.pointerUp(confirmButton());
+            fireEvent.click(confirmButton(), {detail: 1});
+        };
         const press = () => { down(); release(); };
         // A keyboard or assistive-technology activation: a click with no press (detail 0).
         const activate = () => fireEvent.click(confirmButton());
@@ -381,6 +384,27 @@ describe('ConversationMenu', () => {
             const {props} = setup();
             openConfirm(testId);
             // A frozen page: both presses were made 550 ms apart and are handled 2 ms apart.
+            advance(550);
+            skewHandler(-548);
+            press();
+            expectIgnored(props[called] as jest.Mock);
+        });
+
+        test.each(kinds)('%s: a whole press made early is ignored however late it is handled', (testId, called) => {
+            const {props} = setup();
+            openConfirm(testId);
+            advance(150);
+            // The pointerdown and the click are stamped at 150 ms; the page gets to both 617 ms after opening.
+            skewHandler(467);
+            press();
+            expectIgnored(props[called] as jest.Mock);
+        });
+
+        test.each(kinds)('%s: an opening click handled late, then a press 550 ms after it by event time and 2 ms after it by handler time, is ignored', (testId, called) => {
+            const {props} = setup();
+            // A frozen page: the opening click, made at 0 ms, is handled 600 ms late.
+            skewHandler(600);
+            openConfirm(testId);
             advance(550);
             skewHandler(-548);
             press();
