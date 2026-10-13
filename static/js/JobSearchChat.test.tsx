@@ -445,6 +445,60 @@ describe('JobSearchChat', () => {
             expect(resizeHandlers(viewport.removeEventListener)).toEqual(expect.arrayContaining(resizeHandlers(viewport.addEventListener)));
         });
 
+        describe('lets go of what it set up (issue #546 review items)', () => {
+            // One mock per observer, so a cleanup that is missing for one of them cannot hide behind the other.
+            const watchObservers = () => {
+                const made: Array<{targets: Element[]; disconnect: jest.Mock}> = [];
+                class MockResizeObserver {
+                    targets: Element[] = [];
+                    disconnect = jest.fn();
+                    constructor() { made.push(this); }
+                    observe = (el: Element) => { this.targets.push(el); };
+                }
+                (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
+                return made;
+            };
+
+            test('disconnects the observer of the card and its header on unmount', async () => {
+                const made = watchObservers();
+                const {unmount} = await renderInPanel(700);
+                const chat = screen.getByTestId('job-search-chat');
+                const cardObserver = made.find((o) => o.targets.includes(chat))!;
+                expect(cardObserver.targets).toContain(chat.querySelector('.card-header'));
+                expect(cardObserver.disconnect).not.toHaveBeenCalled();
+                unmount();
+                expect(cardObserver.disconnect).toHaveBeenCalledTimes(1);
+            });
+
+            test('disconnects the footer observer on unmount, and when the footer is mounted again', async () => {
+                const made = watchObservers();
+                const {unmount} = await renderInPanel(700);
+                const footerObserver = made.find((o) => o.targets.some((el) => el.classList.contains('chat-footer')))!;
+                expect(footerObserver.disconnect).not.toHaveBeenCalled();
+                unmount();
+                expect(footerObserver.disconnect).toHaveBeenCalledTimes(1);
+            });
+
+            test('cancels a pending animation frame on unmount', async () => {
+                const frame = jest.spyOn(window, 'requestAnimationFrame').mockReturnValue(4242);
+                const cancel = jest.spyOn(window, 'cancelAnimationFrame');
+                const {unmount} = await renderInPanel(700);
+                fireEvent(window, new Event('resize'));
+                expect(frame).toHaveBeenCalled();
+                cancel.mockClear();
+                unmount();
+                expect(cancel).toHaveBeenCalledWith(4242);
+            });
+
+            test('has no frame to cancel once the measure has run', async () => {
+                const {unmount} = await renderInPanel(700);
+                await act(async () => { await flushRaf(); });
+                const cancel = jest.spyOn(window, 'cancelAnimationFrame');
+                unmount();
+                expect(cancel).not.toHaveBeenCalled();
+            });
+        });
+
         test('coalesces a resize burst into a single queued measure', async () => {
             await renderChat();
             await act(async () => { await flushRaf(); }); // settle mount measure

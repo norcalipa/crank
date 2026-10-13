@@ -449,6 +449,99 @@ describe('useTranscriptScroll', () => {
         });
     });
 
+    describe('what the hook releases when it re-runs and when it unmounts', () => {
+        const watchObservers = () => {
+            const made: Array<{targets: Element[]; disconnect: jest.Mock}> = [];
+            const original = (window as unknown as {ResizeObserver?: unknown}).ResizeObserver;
+            (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
+                targets: Element[] = [];
+                disconnect = jest.fn();
+                constructor() { made.push(this); }
+                observe = (el: Element) => { this.targets.push(el); };
+            };
+            return {made, restore: () => { (window as unknown as {ResizeObserver?: unknown}).ResizeObserver = original; }};
+        };
+        const INPUT_EVENTS = ['wheel', 'touchmove', 'keydown', 'pointerdown', 'focusin'];
+
+        test('removes the scroll listener and the five input listeners when the effect re-runs and on unmount', () => {
+            const {rerender, unmount} = render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            const added = jest.spyOn(log, 'addEventListener');
+            const removed = jest.spyOn(log, 'removeEventListener');
+            rerender(<Harness assistantCount={2}/>);
+            // The old handlers go, the new ones come: the same six events, each way.
+            expect(removed.mock.calls.map(([type]) => type).sort()).toEqual(['scroll', ...INPUT_EVENTS].sort());
+            expect(added.mock.calls.map(([type]) => type).sort()).toEqual(['scroll', ...INPUT_EVENTS].sort());
+            removed.mockClear();
+            unmount();
+            expect(removed.mock.calls.map(([type]) => type).sort()).toEqual(['scroll', ...INPUT_EVENTS].sort());
+        });
+
+        test('a removed scroll listener no longer reacts: one handler is live after a re-run, not two', () => {
+            const {rerender} = render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            rerender(<Harness assistantCount={2}/>);
+            const added = jest.spyOn(log, 'addEventListener');
+            const removed = jest.spyOn(log, 'removeEventListener');
+            rerender(<Harness assistantCount={3}/>);
+            const scrollAdded = added.mock.calls.filter(([type]) => type === 'scroll').map(([, fn]) => fn);
+            const scrollRemoved = removed.mock.calls.filter(([type]) => type === 'scroll').map(([, fn]) => fn);
+            expect(scrollAdded).toHaveLength(1);
+            expect(scrollRemoved).toHaveLength(1);
+            expect(scrollRemoved[0]).not.toBe(scrollAdded[0]);
+        });
+
+        test('disconnects the transcript\'s ResizeObserver when the effect re-runs and on unmount', () => {
+            const {made, restore} = watchObservers();
+            try {
+                const {rerender, unmount} = render(<Harness assistantCount={1}/>);
+                const log = screen.getByTestId('log');
+                const first = made.find((o) => o.targets.includes(log))!;
+                expect(first.disconnect).not.toHaveBeenCalled();
+                rerender(<Harness assistantCount={2}/>);
+                expect(first.disconnect).toHaveBeenCalledTimes(1);
+                const second = made.filter((o) => o.targets.includes(log)).pop()!;
+                expect(second).not.toBe(first);
+                unmount();
+                expect(second.disconnect).toHaveBeenCalledTimes(1);
+            } finally {
+                restore();
+            }
+        });
+    });
+
+    test('the input window ends at 300ms: a scroll 250ms after a wheel is the reader\'s, one 350ms after it is the browser\'s', () => {
+        const callbacks: Array<() => void> = [];
+        const original = (window as unknown as {ResizeObserver?: unknown}).ResizeObserver;
+        (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
+            constructor(cb: () => void) { callbacks.push(cb); }
+            observe() { /* noop */ }
+            disconnect() { /* noop */ }
+        };
+        try {
+            const scrolledAfter = (ms: number): string => {
+                const {unmount} = render(<Harness assistantCount={1}/>);
+                const log = screen.getByTestId('log');
+                log.scrollTo = jest.fn();
+                metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+                callbacks.forEach((cb) => cb());
+                fireEvent.wheel(log);
+                now += ms;
+                // The box shrank and the browser moved the scroll position with it.
+                metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 100});
+                fireEvent.scroll(log);
+                const state = screen.getByTestId('state').textContent ?? '';
+                unmount();
+                callbacks.length = 0;
+                return state;
+            };
+            expect(scrolledAfter(250)).toBe('true:0');
+            expect(scrolledAfter(350)).toBe('false:0');
+        } finally {
+            (window as unknown as {ResizeObserver?: unknown}).ResizeObserver = original;
+        }
+    });
+
     test('falls back to writing scrollTop where scrollTo is missing', () => {
         render(<Harness assistantCount={1}/>);
         const log = screen.getByTestId('log');
@@ -721,6 +814,9 @@ describe('useTranscriptScroll', () => {
         expect(isUnscaledViewport(at(1))).toBe(true);
         expect(isUnscaledViewport(at(1.005))).toBe(true);
         expect(isUnscaledViewport(at(0.995))).toBe(true);
+        // The tolerance is 0.01: two hundredths off is already a zoom.
+        expect(isUnscaledViewport(at(1.02))).toBe(false);
+        expect(isUnscaledViewport(at(0.98))).toBe(false);
         expect(isUnscaledViewport(at(1.1))).toBe(false);
         expect(isUnscaledViewport(at(0.9))).toBe(false);
         expect(isUnscaledViewport(at())).toBe(true);
