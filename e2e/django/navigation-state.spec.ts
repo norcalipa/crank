@@ -4,7 +4,7 @@
 // drafts and result position survive full Django page transitions, never
 // cross accounts, and never appear in URLs or history.state.
 import {chromium, expect, Page, test} from '@playwright/test';
-import {DJANGO_BASE_URL, E2E_PASSWORD, login, requireDjangoTier} from './support';
+import {DJANGO_BASE_URL, E2E_PASSWORD, login, requireDjangoTier, waitForConfirmArmed} from './support';
 
 const COMPANY = 'E2E Alpha Corp';
 const ACCOUNT_DIGEST = /^u:[0-9a-f]{16}$/;
@@ -236,6 +236,7 @@ test.describe('navigation state (issue #479)', () => {
 
         await page.getByRole('button', {name: 'More'}).click();
         await page.getByRole('menuitem', {name: 'New conversation'}).click();
+        await waitForConfirmArmed(page);
         await page.getByRole('button', {name: 'Start new conversation'}).click();
         await expect(page.locator('article[aria-label="Your message"]')).toHaveCount(0);
 
@@ -261,6 +262,7 @@ test.describe('navigation state (issue #479)', () => {
 
         await page.getByRole('button', {name: 'More'}).click();
         await page.getByRole('menuitem', {name: 'Delete conversation…'}).click();
+        await waitForConfirmArmed(page);
         await page.getByRole('button', {name: 'Delete conversation', exact: true}).click();
         await expect(page.locator('article[aria-label="Your message"]')).toHaveCount(0);
 

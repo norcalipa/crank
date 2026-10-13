@@ -4,6 +4,11 @@
 // manual-only viewport/zoom/keyboard/IME verification recorded in
 // docs/rollout-gates.md §4 with automated cross-browser assertions.
 import {test, expect, Page} from '@playwright/test';
+import {CONFIRM_ARM_DELAY_MS} from '../static/js/chat/confirmArmDelay';
+import {
+    expectPressOnConfirm, expectStartedInside, inside, mouseDown, mousePress, readPressGaps, recordPresses, trackDeletes,
+    waitForConfirmArmed, waitUntil,
+} from './django/support';
 
 const CHAT_FIXTURE = '/e2e/fixtures/job-search-chat.html';
 const PANEL_CHAT_FIXTURE = '/e2e/fixtures/job-search-chat-panel.html';
@@ -902,6 +907,7 @@ test.describe('one transcript scroller (issue #483)', () => {
         await page.route('**/api/agent/conversations/*/delete/**', (route) => route.fulfill({status: 500, contentType: 'application/json', body: '{}'}));
         await page.getByTestId('conversation-more').click();
         await page.getByTestId('conversation-delete').click();
+        await waitForConfirmArmed(page);
         await page.getByTestId('confirm-action').click();
         const retry = page.getByTestId('confirm-action');
         await expect(page.getByRole('alert').filter({hasText: /delete/i})).toBeVisible();
@@ -916,5 +922,183 @@ test.describe('one transcript scroller (issue #483)', () => {
             });
         });
         expect(topmost).toEqual([true, true, true]);
+    });
+});
+
+// Issue #568: the confirmation opens under the pointer that chose its item, so
+// the second press of a double press lands on the confirm button. It must be
+// ignored, however late it is released or handled; a deliberate press after the
+// delay still confirms. On this fixture page the confirm button opens under the
+// item at the listed sizes only; at 320x480 and 375x440 the fixture's menu sits 49
+// to 53 px higher than on the real page, so a press on the item cannot land on the
+// button here. 320x568 is not a case because the overlap there depends on the
+// fonts: about 15 px high with some hosts' fonts and none with CI's in Chromium and
+// Firefox (the button opens wholly below the item), which is under the 8 px the
+// cases require. On the real page the centre of the item
+// is on the button at 375x440, 430x440, 375x460 and 412x460 (e2e/django/chat-layout.spec.ts
+// covers 375x440 there), and not at 320x480, 375x380 or 320x420.
+test.describe('a double press on Delete conversation does not delete (issue #568)', () => {
+    test.use({hasTouch: true});
+
+    test.beforeEach(async ({page}) => { await recordPresses(page); });
+
+    const SIZES = [
+        {width: 375, height: 667}, {width: 390, height: 844}, {width: 1024, height: 800}, {width: 1280, height: 800},
+        {width: 375, height: 380}, {width: 320, height: 420},
+    ];
+
+    type Press = (page: Page, x: number, y: number) => Promise<void>;
+    const touchPress: Press = async (page, x, y) => { await page.touchscreen.tap(x, y); };
+
+    const expectNothingDeleted = async (page: Page, deletes: string[], articlesBefore: number, what: string) => {
+        // Give a (wrongly) accepted press the time to send its request.
+        await page.waitForTimeout(150);
+        expect(deletes, `${what} deleted nothing`).toEqual([]);
+        await expect(page.getByTestId('confirm-panel')).toBeVisible();
+        await expect(page.getByRole('log').locator('article')).toHaveCount(articlesBefore);
+        await expect(page.getByRole('alert')).toHaveCount(0);
+    };
+
+    const prepare = async (page: Page, size: {width: number; height: number}) => {
+        await page.setViewportSize(size);
+        await loadPanel(page, 'priorities=57');
+        const deletes = trackDeletes(page);
+        await settledPanel(page);
+        const articlesBefore = await page.getByRole('log').locator('article').count();
+        const openDelete = async () => {
+            await page.getByTestId('conversation-more').click();
+            const item = await page.getByTestId('conversation-delete').boundingBox();
+            expect(item, 'the menu item is on screen').not.toBeNull();
+            return item!;
+        };
+
+        // Where the confirm button opens, and so where a press can land on both the item and the button.
+        const item = await openDelete();
+        await page.getByTestId('conversation-delete').click();
+        const button = (await page.getByTestId('confirm-action').boundingBox())!;
+        await page.getByTestId('confirm-cancel').click();
+        const left = Math.max(item.x, button.x);
+        const right = Math.min(item.x + item.width, button.x + button.width);
+        const top = Math.max(item.y, button.y);
+        const bottom = Math.min(item.y + item.height, button.y + button.height);
+        expect(right - left, 'the confirm button opens under part of the item').toBeGreaterThan(8);
+        expect(bottom - top, 'the confirm button opens under part of the item').toBeGreaterThan(8);
+        return {deletes, articlesBefore, openDelete, x: (left + right) / 2, y: (top + bottom) / 2};
+    };
+
+    for (const size of SIZES) {
+        // 400 is the gap closest to the delay. On an overloaded runner it is the first
+        // to fail, with "the runner was too slow to prove anything"; do not answer that
+        // with a retry or a longer timeout. Lowering it to 300 would lose nothing,
+        // because Jest pins 499 and 500.
+        for (const [input, press, gaps] of [['mouse', mousePress, [80, 150, 400]], ['touch', touchPress, [120]]] as const) {
+            test(`${input} double press is ignored, then a deliberate press deletes, ${size.width}x${size.height}`, async ({page}) => {
+                const {deletes, articlesBefore, openDelete, x, y} = await prepare(page, size);
+
+                for (const gap of gaps) {
+                    expect(inside(await openDelete(), x, y), 'the press point is on the menu item').toBe(true);
+                    await press(page, x, y);
+                    const openedAt = Date.now();
+                    const panel = page.getByTestId('confirm-panel');
+                    await expect(panel).toBeVisible();
+                    await expectPressOnConfirm(page, x, y);
+                    await waitUntil(page, openedAt, gap);
+                    await press(page, x, y);
+                    await expectStartedInside(page, `the second press (gap ${gap} ms)`);
+                    await expectNothingDeleted(page, deletes, articlesBefore, `the second press (gap ${gap} ms)`);
+                    await page.getByTestId('confirm-cancel').click();
+                    await expect(panel).toHaveCount(0);
+                }
+
+                // A deliberate press after the delay still deletes.
+                await openDelete();
+                await page.getByTestId('conversation-delete').click();
+                await expect(page.getByTestId('confirm-panel')).toBeVisible();
+                await waitForConfirmArmed(page);
+                await page.getByTestId('confirm-action').click();
+                await expect.poll(() => deletes.length, {message: 'a press after the delay deletes'}).toBe(1);
+            });
+        }
+    }
+
+    // The finger goes down before the confirmation could be read and comes up after the delay.
+    for (const size of [{width: 375, height: 667}, {width: 1280, height: 800}]) {
+        test(`a mouse press held down from 150 ms to 560 ms is ignored, then a deliberate press deletes, ${size.width}x${size.height}`, async ({page}) => {
+            const {deletes, articlesBefore, openDelete, x, y} = await prepare(page, size);
+            expect(inside(await openDelete(), x, y), 'the press point is on the menu item').toBe(true);
+            await mousePress(page, x, y);
+            const openedAt = Date.now();
+            await expect(page.getByTestId('confirm-panel')).toBeVisible();
+            await expectPressOnConfirm(page, x, y);
+            await waitUntil(page, openedAt, 150);
+            await mouseDown(page, x, y);
+            await waitUntil(page, openedAt, CONFIRM_ARM_DELAY_MS + 60);
+            await page.mouse.up();
+            await expectStartedInside(page, 'the held press');
+            const {end} = await readPressGaps(page);
+            expect(end, 'the held press was released after the delay').toBeGreaterThanOrEqual(CONFIRM_ARM_DELAY_MS);
+            await expectNothingDeleted(page, deletes, articlesBefore, 'the held press');
+
+            await waitForConfirmArmed(page);
+            await page.getByTestId('confirm-action').click();
+            await expect.poll(() => deletes.length, {message: 'a deliberate press deletes'}).toBe(1);
+        });
+    }
+
+    // The confirmation opens when its item is chosen, not when More opens and not when its kind changes.
+    test('a double press 700 ms after More opened is ignored: the delay counts from choosing the item', async ({page}) => {
+        const {deletes, articlesBefore, x, y} = await prepare(page, {width: 375, height: 667});
+        await page.getByTestId('conversation-more').click();
+        const item = await page.getByTestId('conversation-delete').boundingBox();
+        expect(inside(item!, x, y), 'the press point is on the menu item').toBe(true);
+        await page.waitForTimeout(700);
+        await mousePress(page, x, y);
+        const openedAt = Date.now();
+        await expect(page.getByTestId('confirm-panel')).toBeVisible();
+        await expectPressOnConfirm(page, x, y);
+        await waitUntil(page, openedAt, 150);
+        await mousePress(page, x, y);
+        await expectStartedInside(page, 'the second press (gap 150 ms)');
+        await expectNothingDeleted(page, deletes, articlesBefore, 'the second press');
+    });
+
+    test('a double press on the item chosen again while its confirmation is open is ignored', async ({page}) => {
+        const {deletes, articlesBefore, openDelete, x, y} = await prepare(page, {width: 375, height: 667});
+        expect(inside(await openDelete(), x, y), 'the press point is on the menu item').toBe(true);
+        await page.getByTestId('conversation-delete').click();
+        await expect(page.getByTestId('confirm-panel')).toBeVisible();
+        // Long enough that the first confirmation would accept a press.
+        await page.waitForTimeout(CONFIRM_ARM_DELAY_MS + 100);
+        expect(inside(await openDelete(), x, y), 'the press point is on the menu item').toBe(true);
+        await mousePress(page, x, y);
+        const openedAt = Date.now();
+        await expect(page.getByTestId('confirm-panel')).toBeVisible();
+        await expectPressOnConfirm(page, x, y);
+        await waitUntil(page, openedAt, 150);
+        await mousePress(page, x, y);
+        await expectStartedInside(page, 'the second press (gap 150 ms)');
+        await expectNothingDeleted(page, deletes, articlesBefore, 'the second press');
+    });
+
+    // A keyboard activation is judged by its own click; real keys, with focus put on the button directly.
+    test('Enter on the confirm button right after it opens is ignored, then Enter after the delay deletes', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await loadPanel(page, 'priorities=57');
+        const deletes = trackDeletes(page);
+        await settledPanel(page);
+        const articlesBefore = await page.getByRole('log').locator('article').count();
+        await page.getByTestId('conversation-more').focus();
+        await page.keyboard.press('ArrowUp');
+        await expect(page.getByTestId('conversation-delete')).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(page.getByRole('heading', {name: 'Delete conversation?'})).toBeFocused();
+        await page.getByTestId('confirm-action').focus();
+        await page.keyboard.press('Enter');
+        await expectStartedInside(page, 'the Enter on the confirm button');
+        await expectNothingDeleted(page, deletes, articlesBefore, 'the Enter on the confirm button');
+
+        await waitForConfirmArmed(page);
+        await page.keyboard.press('Enter');
+        await expect.poll(() => deletes.length, {message: 'Enter after the delay deletes'}).toBe(1);
     });
 });

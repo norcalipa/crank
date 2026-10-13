@@ -2,6 +2,8 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 
+import {CONFIRM_ARM_DELAY_MS} from './confirmArmDelay';
+
 export const NEW_CONVERSATION_COPY =
     'Your current history will be archived. Your saved priorities are not changed.';
 export const DELETE_CONVERSATION_COPY =
@@ -85,6 +87,12 @@ export function ConversationMenu({
     const exportPanelRef = React.useRef<HTMLDivElement>(null);
     const failureRef = React.useRef<HTMLParagraphElement>(null);
     const focusFirstItemRef = React.useRef(true);
+    // Handler time (performance.now) and event time (the opening click's timeStamp)
+    // are compared only with their own kind: the first catches presses handled
+    // close together, the second presses that were made, or began, early.
+    const confirmOpenedAtRef = React.useRef(0);
+    const confirmOpenedStampRef = React.useRef(0);
+    const confirmPressStartRef = React.useRef<number | null>(null);
 
     const items: MenuItem[] = [
         {id: 'new', label: 'New conversation…', testId: 'conversation-new', disabled: !hasConversation || pending},
@@ -205,7 +213,7 @@ export function ConversationMenu({
         if (!keepFocus) moreRef.current?.focus();
     };
 
-    const handleItem = (item: MenuItem) => {
+    const handleItem = (item: MenuItem, e: React.MouseEvent) => {
         setOpen(false);
         setExportError(null);
         setStatus('');
@@ -220,6 +228,9 @@ export function ConversationMenu({
         }
         setAboutOpen(false);
         setFailure(null);
+        confirmOpenedAtRef.current = performance.now();
+        confirmOpenedStampRef.current = e.timeStamp;
+        confirmPressStartRef.current = null;
         setConfirming(item.id);
     };
 
@@ -234,8 +245,18 @@ export function ConversationMenu({
         moreRef.current?.focus();
     };
 
-    const runConfirm = async () => {
+    const runConfirm = async (e: React.MouseEvent) => {
         if (!confirming || working) return;
+        // A click with detail > 0 is judged by the stored press start, or by its own
+        // time when no pointerdown has reached the button since the confirmation
+        // opened; a click with detail 0 (a key press on the focused button) only by
+        // its own time. Only a new opening (handleItem) clears the stored press start:
+        // not its own click, not pointerup, not Cancel. Firefox sends an accessibility
+        // activation as a detail 1 click with no pointerdown, so after one early
+        // pointer press such activations are ignored until the confirmation is opened again.
+        const began = e.detail > 0 ? confirmPressStartRef.current ?? e.timeStamp : e.timeStamp;
+        if (performance.now() - confirmOpenedAtRef.current < CONFIRM_ARM_DELAY_MS) return;
+        if (began - confirmOpenedStampRef.current < CONFIRM_ARM_DELAY_MS) return;
         setWorking(true);
         setFailure(null);
         const error = await (confirming === 'new' ? onNewConversation() : onDeleteConversation());
@@ -291,7 +312,7 @@ export function ConversationMenu({
                                         disabled={item.disabled}
                                         className={`chat-more-item chat-focus${item.danger ? ' chat-more-item-danger' : ''}`}
                                         data-testid={item.testId}
-                                        onClick={() => handleItem(item)}
+                                        onClick={(e) => handleItem(item, e)}
                                     >
                                         {item.label}
                                     </button>
@@ -337,7 +358,8 @@ export function ConversationMenu({
                             className={`btn btn-sm ${deleting ? 'btn-danger' : 'btn-primary'} chat-focus`}
                             disabled={working}
                             aria-describedby={failure ? 'chat-confirm-copy chat-confirm-failure' : 'chat-confirm-copy'}
-                            onClick={() => void runConfirm()}
+                            onPointerDown={(e) => { confirmPressStartRef.current = e.timeStamp; }}
+                            onClick={(e) => void runConfirm(e)}
                             data-testid="confirm-action"
                         >
                             {working

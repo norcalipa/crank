@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {render, screen, fireEvent, waitFor, act, within} from '@testing-library/react';
+import {render, screen, fireEvent, createEvent, waitFor, act, within} from '@testing-library/react';
 import * as React from 'react';
 
 import {
@@ -14,6 +14,7 @@ import {
 import {accountDigest} from './workspace/persistence';
 import JobSearchChat, {AssistantState, AssistantStatus, ChatMessage} from './JobSearchChat';
 import {useTranscriptScroll} from './chat/useTranscriptScroll';
+import {CONFIRM_ARM_DELAY_MS} from './chat/confirmArmDelay';
 
 // The real hook, watched: the wiring tests read what the chat passes it.
 jest.mock('./chat/useTranscriptScroll', () => {
@@ -30,7 +31,21 @@ const chooseMenuItem = (testId: string) => {
     openMore();
     fireEvent.click(screen.getByTestId(testId));
 };
-const confirmPanelAction = () => fireEvent.click(screen.getByTestId('confirm-action'));
+// A press on the confirm button is ignored until CONFIRM_ARM_DELAY_MS after
+// its confirmation opened (by the clock of its events and by the clock of its
+// handlers), so this press is made after the delay on both.
+const confirmPanelAction = () => {
+    const confirm = screen.getByTestId('confirm-action');
+    const click = createEvent.click(confirm);
+    Object.defineProperty(click, 'timeStamp', {value: click.timeStamp + CONFIRM_ARM_DELAY_MS});
+    const real = performance.now();
+    const clock = jest.spyOn(performance, 'now').mockReturnValue(real + CONFIRM_ARM_DELAY_MS);
+    try {
+        fireEvent(confirm, click);
+    } finally {
+        clock.mockRestore();
+    }
+};
 const startNewConversation = () => { chooseMenuItem('conversation-new'); confirmPanelAction(); };
 const deleteConversation = () => { chooseMenuItem('conversation-delete'); confirmPanelAction(); };
 
