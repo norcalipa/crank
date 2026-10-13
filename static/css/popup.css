@@ -5234,4 +5234,9 @@ span.priority-chip-button { cursor: default; }
     font-weight: 600;
     text-decoration: none;
 }
+/* The fit is being read again after a saved change: what is on screen stays
+   (no change of height) but is dimmed, so it is not taken for current. */
+.company-fit [aria-busy="true"]:not([role="status"]) {
+    opacity: .6;
+}
 /* end issue #486 company view */

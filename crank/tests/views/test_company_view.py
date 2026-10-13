@@ -164,6 +164,67 @@ class FitEndpointTests(CompanyViewTestBase):
             },
         )
 
+    def test_the_observed_values_the_engine_sends_for_every_other_path(self):
+        self.maxDiff = None
+        # Pins the shapes behind the table in FitSection.test.tsx (`observedText`).
+        # The only other value a company can carry today is the reader's own
+        # lower-case country, matched in accepted "locations" evidence. An
+        # organization has no industry, culture, equity, cliff or vesting length of
+        # its own, and the three listing-level paths (pay, region, remote flag)
+        # cannot be decided without a listing, so those carry no value and no
+        # source. When the model gains one of these fields this test fails: add
+        # its shape to the table in FitSection.test.tsx and to `observedText`.
+        evidence(self.org, "locations", "San Francisco, US")
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=prefs(
+                compensation={"minimum_salary": 100000, "equity_minimum_percent": 0.25},
+                work_location={"countries": ["US"]},
+                geography={"regions": ["EMEA"], "remote_friendly": True},
+                industry=["fin tech"],
+                culture=["collaborative"],
+                vesting={"max_cliff_months": 12, "max_vesting_months": 48},
+            ),
+            schema_version=3,
+        )
+        rows = {r["path"]: r for r in self.fit().json()["requirements"]}
+        self.assertEqual(
+            {path: row["observed"] for path, row in rows.items()},
+            {
+                "compensation.minimum_salary": None,
+                "compensation.equity_minimum_percent": None,
+                "work_location.countries": "us",
+                "geography.regions": None,
+                "geography.remote_friendly": None,
+                "industry": None,
+                "culture": None,
+                "vesting.max_cliff_months": None,
+                "vesting.max_vesting_months": None,
+            },
+        )
+        for path in ("compensation.minimum_salary", "geography.regions", "geography.remote_friendly"):
+            self.assertEqual(rows[path]["status"], "unknown")
+            self.assertFalse(rows[path].get("evidence_status"))
+            self.assertFalse(rows[path].get("source_kind"))
+
+    def test_priorities_the_engine_cannot_check_are_sent_by_name(self):
+        document = prefs(work_location={"modes": ["remote"]})
+        document["roles"] = {"titles": ["Engineer"], "families": [], "seniority": []}
+        document["compensation"]["minimum_total_compensation"] = 150000
+        UserPreference.objects.create(user=self.user, preferences=document, schema_version=3)
+        body = self.fit().json()
+        self.assertTrue(body["has_preferences"])
+        self.assertEqual(sorted(body["unsupported"]), ["compensation.minimum_total_compensation", "roles.titles"])
+        self.client.logout()
+        other = User.objects.create_user("only-unsupported", password="secret")
+        only = prefs()
+        only["roles"] = {"titles": ["Engineer"], "families": [], "seniority": []}
+        UserPreference.objects.create(user=other, preferences=only, schema_version=3)
+        self.client.force_login(other)
+        body = self.fit().json()
+        self.assertFalse(body["has_preferences"])
+        self.assertEqual(body["unsupported"], ["roles.titles"])
+
     def test_an_excluded_company_still_explains_itself(self):
         evidence(self.org, "funding_round", "Series A")
         evidence(self.org, "rto_policy", "Hybrid")

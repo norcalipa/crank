@@ -5,7 +5,7 @@ import {act, cleanup, fireEvent, render, screen} from '@testing-library/react';
 import * as React from 'react';
 
 import * as store from '../workspace/store';
-import JobsSection, {CompanyJob, CompanyJobs, jobMeta, payText, postingUrl} from './JobsSection';
+import JobsSection, {CompanyJob, CompanyJobs, MAX_COMPANY_JOBS, jobMeta, payText, postingUrl} from './JobsSection';
 
 const job = (overrides: Partial<CompanyJob> = {}): CompanyJob => ({
     id: 1, title: 'Staff Engineer', location_text: 'Remote (US)', is_remote: true,
@@ -65,6 +65,20 @@ describe('JobsSection (issue #486, AC 17)', () => {
         expect(link).toHaveAttribute('rel', 'noopener noreferrer');
         expect(link).toHaveTextContent('View posting');
         expect(screen.getByRole('heading', {level: 3, name: 'Open jobs'})).toBeInTheDocument();
+    });
+
+    test('a full page of listings says the list is capped; fewer does not', async () => {
+        const many = (count: number) => answer(jobs({
+            count, results: Array.from({length: count}, (_, index) => job({id: index + 1, title: `Role ${index + 1}`})),
+        }));
+        global.fetch = jest.fn().mockResolvedValue(many(MAX_COMPANY_JOBS));
+        renderJobs();
+        expect(await screen.findByTestId('jobs-capped')).toHaveTextContent('Showing the first 25 listings. Acme may have more.');
+        cleanup();
+        global.fetch = jest.fn().mockResolvedValue(many(MAX_COMPANY_JOBS - 1));
+        renderJobs();
+        await screen.findByTestId('jobs-list');
+        expect(screen.queryByTestId('jobs-capped')).toBeNull();
     });
 
     test('a listing with no pay, no location and not remote', async () => {

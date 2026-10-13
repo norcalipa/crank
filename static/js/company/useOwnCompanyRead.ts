@@ -150,10 +150,11 @@ export function useOwnCompanyRead<T>(
 /**
  * A Retry button is replaced by the loading placeholder the moment it is
  * pressed, which would drop the keyboard focus to the page body. Move it to the
- * section's own heading (already focusable, and always on screen) and read again.
+ * section's own heading (already focusable) and read again. The heading is scrolled
+ * into view with the view's scroll margin, so it is on screen, below the top bar.
  */
 export function retryFrom(headingId: string, retry: () => void): void {
-    document.getElementById(headingId)?.focus({preventScroll: true});
+    document.getElementById(headingId)?.focus();
     retry();
 }
 

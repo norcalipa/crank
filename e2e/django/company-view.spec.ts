@@ -1259,12 +1259,12 @@ test.describe('company view fit, jobs and scope (issue #486c)', () => {
         await expect(unknown).toContainText('Industry');
         // One sentence for a fact that does not cover the reader: no value, no status word, the scope said once.
         await expect(page.getByTestId('fit-out-of-scope-industry')).toHaveText(
-            'Not counted for you: the fact on record covers Location: US; Roles: Engineering only.');
+            'Not counted: the fact on record covers Location: US; Roles: Engineering only.');
         await expect(page.getByTestId('fit-scope-industry')).toHaveCount(0);
         // The engine's own values read as words.
         await expect(page.getByTestId('fit-row-funding_stage')).toContainText('Series B');
         await expect(page.getByTestId('fit-row-work_location.max_in_office_days')).toContainText('3 days a week in the office');
-        await expect(page.getByTestId('fit-score')).toHaveText('72.5 / 100');
+        await expect(page.getByTestId('fit-score')).toHaveText('72.5');
         await expect(page.getByTestId('fit-company-score')).toHaveText('4.2 / 5');
         await expect(page.getByTestId('fit-coverage')).toHaveText('50%');
         expect(await view(page).innerText()).not.toMatch(/countries|role_families/);
@@ -1492,7 +1492,7 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
         requireDjangoTier();
     });
 
-    test('real fit rows print words for the engine\'s own values, one sentence for a fact that does not cover the reader, and "No fact on record"', async ({page}) => {
+    test('real fit rows print words for the engine\'s own values, one sentence for a fact that does not cover the reader, and "No accepted evidence"', async ({page}) => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page, PREFS_USER, E2E_PASSWORD);
         try {
@@ -1506,12 +1506,12 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
             await expect(value('vesting.prefer_accelerated')).toHaveText('No');
             // A fact limited to one country does not decide this reader's funding stage: one sentence.
             const notCounted = page.getByTestId('fit-row-funding_stage');
-            await expect(notCounted).toContainText('Not counted for you: the fact on record covers Location: US only.');
+            await expect(notCounted).toContainText('Not counted: the fact on record covers Location: US only.');
             await expect(notCounted.locator('.company-fit-value')).toHaveCount(0);
             await expect(page.getByTestId('fit-group-unknown')).toContainText('Funding stage');
             await expect(page.getByTestId('fit-group-meets')).not.toContainText('Funding stage');
             // No fact behind a requirement is said as such, not "Company-wide".
-            await expect(page.getByTestId('fit-scope-compensation.require_public_company')).toHaveText('No fact on record');
+            await expect(page.getByTestId('fit-scope-compensation.require_public_company')).toHaveText('No accepted evidence');
             // A value is never a bare lower-case code or a bare number, and "In-office days: In-Office" cannot occur.
             const values = await view(page).locator('.company-fit-value').allInnerTexts();
             expect(values.length).toBeGreaterThan(0);
@@ -1525,6 +1525,91 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
             await expect(page.getByTestId('fit-ready')).toBeVisible();
             await expect(value('funding_stage')).toHaveText('Series B');
         } finally {
+            await setPriorities(page, SEEDED);
+        }
+    });
+
+    test('real answers for priorities decided per job, a country, and priorities the engine cannot check', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, {set: {
+                'work_location.modes': ['remote'], 'work_location.countries': ['US'], 'compensation.minimum_salary': 100000,
+                'geography.remote_friendly': true, 'roles.titles': ['Engineer'], 'compensation.minimum_total_compensation': 150000,
+            }});
+            await page.goto('/');
+            await opener(page).click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            // Decided from a job's own pay, place and remote flag, so a company is never given an answer: the row says where.
+            for (const path of ['compensation.minimum_salary', 'geography.remote_friendly']) {
+                await expect(page.getByTestId(`fit-scope-${path}`)).toHaveText('Checked for each job, not for the company. See Open jobs.');
+            }
+            // The reader's own country in capitals, not the engine's lower-case token.
+            await expect(page.getByTestId('fit-row-work_location.countries').locator('.company-fit-value')).not.toHaveText(/^[a-z]+$/);
+            // Priorities the engine cannot check are named, not left out.
+            await expect(page.getByTestId('fit-unsupported'))
+                .toHaveText('Not checked for a company: Role titles, Minimum total compensation.');
+            expect(await view(page).innerText()).not.toContain('No fact on record');
+
+            // A reader who has only priorities of that kind is not told to set priorities.
+            await setPriorities(page, {set: {'roles.titles': ['Engineer']}});
+            await page.reload();
+            await expect(page.getByTestId('fit-unsupported-only')).toContainText('Role titles');
+            await expect(page.getByTestId('fit-no-priorities')).toHaveCount(0);
+            await expect(page.getByRole('button', {name: 'Edit your priorities'})).toBeVisible();
+        } finally {
+            await setPriorities(page, SEEDED);
+        }
+    });
+
+    for (const [kind, button, heading] of [['fit', 'fit-retry', 'company-fit-title'], ['jobs', 'jobs-retry', 'company-jobs-title']]) {
+        test(`Retry loading ${kind} keeps the keyboard focus in the section, on its heading`, async ({page}) => {
+            await page.setViewportSize({width: 375, height: 667});
+            await login(page);
+            let calls = 0;
+            await page.route(`**/api/organizations/*/${kind}/`, (route) => {
+                calls += 1;
+                return calls === 1 ? route.fulfill({status: 500, contentType: 'application/json', body: '{}'}) : route.continue();
+            });
+            await page.goto('/');
+            await opener(page).click();
+            const retry = page.getByTestId(button);
+            await expect(retry).toBeVisible();
+            await retry.focus();
+            await page.keyboard.press('Enter');
+            await expect(page.locator(`#${heading}`)).toBeFocused();
+            await expect(page.getByTestId(kind === 'fit' ? 'fit-ready' : 'company-jobs').first()).toBeVisible();
+            await expect(page.locator(`#${heading}`)).toBeFocused();
+        });
+    }
+
+    test('a reader who scrolled past the fit is not moved when its answer arrives and grows the page', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, SIX);
+            let release: () => void = () => {};
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            await page.route('**/api/organizations/*/fit/', async (route) => {
+                await held;
+                await route.continue();
+            });
+            await page.goto('/');
+            await opener(page).click();
+            await expect(page.getByTestId('fit-loading')).toBeVisible();
+            const evidence = page.getByTestId('field-evidence');
+            await evidence.scrollIntoViewIfNeeded();
+            await evidence.evaluate((el) => el.scrollIntoView({block: 'start'}));
+            await scrollRested(page);
+            const top = () => evidence.evaluate((el) => el.getBoundingClientRect().top);
+            const before = await top();
+            release();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await page.waitForTimeout(300);
+            // The answer is more than 500 px tall; what the reader was looking at stays where it was.
+            expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(40);
+        } finally {
+            await page.unroute('**/api/organizations/*/fit/');
             await setPriorities(page, SEEDED);
         }
     });
@@ -1712,8 +1797,10 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
         await summary.focus();
         await page.keyboard.press('Enter');
         await expect(legend).toHaveAttribute('open', '');
-        await expect(legend).toContainText('Fit is a weighted score out of 100');
-        await expect(legend).toContainText('Why a fact is Verified below and Sourced, not confirmed here');
+        await expect(legend).toContainText('so it cannot reach 100');
+        await expect(legend).toContainText('Why the fit and the rows can disagree');
+        await expect(legend).toContainText('a row built on it Sourced, not confirmed');
+        await expect(legend).not.toContainText('Refresh matches');
         await expect(legend).toContainText('Sourced, not confirmed');
         await expectNoHorizontalOverflow(page);
     });

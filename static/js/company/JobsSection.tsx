@@ -71,6 +71,9 @@ export function jobMeta(job: CompanyJob): string {
     return [place, arrangement, payText(job)].filter(part => part !== '').join(' · ');
 }
 
+// The most listings the endpoint returns (crank.views.company_view.MAX_COMPANY_JOBS).
+export const MAX_COMPANY_JOBS = 25;
+
 export interface JobsSectionProps {
     organizationId: number;
     name: string;
@@ -128,33 +131,40 @@ const JobsSection = React.forwardRef<HTMLHeadingElement, JobsSectionProps>(({
         body = <p className="mb-0" data-testid="jobs-empty">No open roles listed.</p>;
     } else {
         body = (
-            <ul className="list-unstyled company-jobs-list mb-0" data-testid="jobs-list">
-                {state.data.results.map(job => {
-                    const href = postingUrl(job.canonical_url);
-                    return (
-                        <li key={job.id} className="company-job-row" data-testid={`job-row-${job.id}`}>
-                            <strong className="company-job-title text-break">{job.title}</strong>
-                            <span className="company-job-meta small text-body-secondary">{jobMeta(job)}</span>
-                            {href ? (
-                                <a href={href} target="_blank" rel="noopener noreferrer" className="company-job-link"
-                                   data-testid={`job-link-${job.id}`}>
-                                    <span className="text-nowrap">
-                                        View posting{' '}
-                                        <i className="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+            <>
+                <ul className="list-unstyled company-jobs-list mb-0" data-testid="jobs-list">
+                    {state.data.results.map(job => {
+                        const href = postingUrl(job.canonical_url);
+                        return (
+                            <li key={job.id} className="company-job-row" data-testid={`job-row-${job.id}`}>
+                                <strong className="company-job-title text-break">{job.title}</strong>
+                                <span className="company-job-meta small text-body-secondary">{jobMeta(job)}</span>
+                                {href ? (
+                                    <a href={href} target="_blank" rel="noopener noreferrer" className="company-job-link"
+                                       data-testid={`job-link-${job.id}`}>
+                                        <span className="text-nowrap">
+                                            View posting{' '}
+                                            <i className="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                        </span>
+                                        <span className="visually-hidden"> for {job.title}</span>
+                                        {' '}<span className="evidence-external-note">(opens in a new tab)</span>
+                                    </a>
+                                ) : (
+                                    <span className="company-job-no-link small text-body-secondary"
+                                          data-testid={`job-no-link-${job.id}`}>
+                                        No link to the posting
                                     </span>
-                                    <span className="visually-hidden"> for {job.title}</span>
-                                    {' '}<span className="evidence-external-note">(opens in a new tab)</span>
-                                </a>
-                            ) : (
-                                <span className="company-job-no-link small text-body-secondary"
-                                      data-testid={`job-no-link-${job.id}`}>
-                                    No link to the posting
-                                </span>
-                            )}
-                        </li>
-                    );
-                })}
-            </ul>
+                                )}
+                            </li>
+                        );
+                    })}
+                </ul>
+                {state.data.results.length >= MAX_COMPANY_JOBS && (
+                    <p className="small text-body-secondary mt-2 mb-0" data-testid="jobs-capped">
+                        Showing the first {MAX_COMPANY_JOBS} listings. {target} may have more.
+                    </p>
+                )}
+            </>
         );
     }
 
