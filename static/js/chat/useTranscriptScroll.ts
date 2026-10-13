@@ -8,6 +8,9 @@ const NEAR_BOTTOM_PX = 48;
 const PROGRAMMATIC_WINDOW_MS = 1000;
 // A scroll this soon after the reader's own input is the reader's, whatever the box did.
 const INPUT_WINDOW_MS = 300;
+// The band at the bottom of the transcript that the jump pill occupies.
+const PILL_BAND_REM = 4.5;
+const NOTICE_TOP_GAP_PX = 8;
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 
 // A pinch zoom shrinks the visual viewport too; only an unscaled one can be an on-screen keyboard.
@@ -16,7 +19,7 @@ export const isUnscaledViewport = (viewport: VisualViewport): boolean => Math.ab
 // Exactly one element scrolls the conversation: the transcript, at every
 // size. The assistant panel's body only scrolls as a last resort, when the
 // chat's own bars do not fit in it (issue #483).
-export function useTranscriptScroll({messagesLength, assistantCount, pending, loading, contentKey = '', footerKey}: {
+export function useTranscriptScroll({messagesLength, assistantCount, pending, loading, contentKey = '', noticeKey = '', footerKey}: {
     messagesLength: number;
     assistantCount: number;
     pending: boolean;
@@ -24,6 +27,11 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     // Changes when content arrives in the transcript without a new message
     // (a notice under the last reply, a failed-turn card).
     contentKey?: string;
+    // The identity of the notice in the transcript ('' when there is none): its
+    // anchor and its kind, not the states inside it. A notice that appears or is
+    // replaced by another kind arrives with its top on screen; a change inside
+    // the same notice (an apply or undo error) keeps the reader at the end.
+    noticeKey?: string;
     // Changes when the footer is mounted again (it is gone while the init error shows).
     footerKey?: unknown;
 }) {
@@ -66,6 +74,25 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         const history = historyRef.current;
         if (!history) return true;
         return history.scrollHeight - history.scrollTop - history.clientHeight <= NEAR_BOTTOM_PX;
+    };
+
+    // The jump pill floats over the last stretch of the transcript. It is not
+    // shown while a control of the notice is in that band, nor at all while the
+    // notice is the newest item and partly on screen: the reader is at the newest
+    // thing, and the pill would take the press meant for the notice's control.
+    const pillWouldCoverNotice = (): boolean => {
+        const history = historyRef.current;
+        const notice = history?.querySelector<HTMLElement>('[data-testid="transcript-notice"]');
+        if (!history || !notice) return false;
+        const box = history.getBoundingClientRect();
+        const rect = notice.getBoundingClientRect();
+        if (rect.top >= box.bottom || rect.bottom <= box.top) return false;
+        if (!notice.nextElementSibling) return true;
+        const bandTop = box.bottom - PILL_BAND_REM * (parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16);
+        return Array.from(notice.querySelectorAll('button, a[href]')).some((el) => {
+            const r = el.getBoundingClientRect();
+            return r.bottom > bandTop && r.top < box.bottom;
+        });
     };
 
     const settleAtBottom = () => {
@@ -142,7 +169,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
                 && Date.now() - lastInputRef.current > INPUT_WINDOW_MS;
             const nearBottom = atBottom || ((ownScroll || resizing) && nearBottomRef.current);
             nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
+            setShowJumpToLatest(!nearBottom && !pillWouldCoverNotice());
             if (nearBottom) {
                 seenAssistantRef.current = assistantCount;
                 setUnreadCount(0);
@@ -199,7 +226,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         }
         if (loading || !nearBottomRef.current) {
             if (!nearBottomRef.current) {
-                setShowJumpToLatest(true);
+                setShowJumpToLatest(!pillWouldCoverNotice());
                 // Only replies that landed while the reader was away are unread.
                 const arrived = assistantCount - seenAssistantRef.current;
                 if (arrived > 0) setUnreadCount((n) => n + arrived);
@@ -214,12 +241,31 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     // the last reply, a failed-turn card) is followed once, by a jump: a smooth
     // scroll started for the message itself would stop short of it.
     const contentKeyRef = React.useRef(contentKey);
+    const noticeKeyRef = React.useRef(noticeKey);
     React.useEffect(() => {
         if (contentKeyRef.current === contentKey) return;
         contentKeyRef.current = contentKey;
+        const noticeArrived = noticeKeyRef.current !== noticeKey && noticeKey !== '';
+        noticeKeyRef.current = noticeKey;
         if (messagesLength === 0 || loading || !nearBottomRef.current) return;
+        // A notice that is taller than the room left at the end arrives with its
+        // top on screen; the reader scrolls on to its buttons.
+        const scroller = getScroller();
+        const notice = noticeArrived && scroller ? scroller.querySelector<HTMLElement>('[data-testid="transcript-notice"]') : null;
+        if (scroller && notice) {
+            const end = scroller.scrollHeight - scroller.clientHeight;
+            const top = scroller.scrollTop + notice.getBoundingClientRect().top - scroller.getBoundingClientRect().top - NOTICE_TOP_GAP_PX;
+            if (top < end) {
+                markProgrammatic(scroller, top);
+                scroller.scrollTop = top;
+                // Parked at the notice's top: not following, and no pill for it.
+                nearBottomRef.current = false;
+                setShowJumpToLatest(false);
+                return;
+            }
+        }
         scrollToLatest('auto');
-    }, [contentKey, messagesLength, loading]);
+    }, [contentKey, noticeKey, messagesLength, loading]);
 
     // Visual viewport changes cover mobile keyboards and orientation changes. Preserve
     // the reader's position when they are browsing older messages.
@@ -264,7 +310,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             }
             const nearBottom = isNearBottom();
             nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
+            setShowJumpToLatest(!nearBottom && !pillWouldCoverNotice());
             if (nearBottom) scrollToLatest('auto');
         };
         window.addEventListener('resize', handleViewportResize);

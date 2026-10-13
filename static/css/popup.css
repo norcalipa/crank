@@ -3388,6 +3388,12 @@ body.assistant-open .app-content .table-responsive,
     padding: .75rem;
 }
 
+/* The plain banner has the notices' own 44px close button, like the other four. */
+#job-search-chat .chat-transcript-notice .alert.chat-pref-alert {
+    min-height: 44px;
+    padding: 0 0 0 .75rem;
+}
+
 #job-search-chat .chat-transcript-notice .pref-change-item {
     display: flex;
     flex-direction: column;
@@ -3396,6 +3402,21 @@ body.assistant-open .app-content .table-responsive,
 
 #job-search-chat .chat-transcript-notice .pref-change-values {
     min-width: 0;
+}
+
+/* A wrapped value keeps its arrow: the arrow is drawn in front of the new value
+   (inline, no break between them), not as a flex item that can end a line. */
+#job-search-chat .chat-transcript-notice .pref-change-arrow {
+    display: none;
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-new::before {
+    content: "\f061";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    font-size: .75rem;
+    color: #7d948a;
+    margin-right: .375rem;
 }
 
 /* The transcript is narrower than the notice used to be: the actions wrap
@@ -3425,6 +3446,8 @@ body.assistant-open .app-content .table-responsive,
     min-height: 0;
     overflow-y: auto;
     margin-bottom: .25rem;
+    /* A control reached with Tab is scrolled clear of the jump pill's band. */
+    scroll-padding-bottom: 4.5rem;
 }
 
 @media (min-width: 768px) {
@@ -3459,34 +3482,32 @@ body.assistant-open .app-content .table-responsive,
     z-index: 2;
 }
 
-/* Footer notices (status plus a long error) never take more than 40% of the
-   card (--chat-notices-max, measured against the card or the panel); they
-   scroll inside instead of pushing the composer out (issue #483). */
+/* Footer notices (a status notice, the error of the last send) never take more
+   than 40% of the card (--chat-notices-max, measured against the card or the
+   panel); the details scroll inside instead of pushing the composer out
+   (issue #483). */
 .chat-footer-notices {
+    display: flex;
+    flex-direction: column;
     max-height: 40vh;
     max-height: var(--chat-notices-max, 40dvh);
+}
+
+.chat-footer-notices .chat-notices-body {
+    flex: 0 1 auto;
+    min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
 }
 
-/* The error, with a Details button when the notices would take the composer's
-   room (a status notice beside it, or a long text). Collapsed it is one line:
-   the error with an ellipsis, its Retry and Details. The error stays one
-   element holding its whole text; only the clamp is CSS (issue #483). */
-#job-search-chat .chat-error-row {
-    display: flex;
-    align-items: flex-start;
-    gap: .5rem;
+/* The error. Until the reader asks for more it is a compact row: up to two
+   lines of text, its Retry, and a Details button when something is hidden. The
+   error stays one element holding its whole text; only the clamp is CSS. */
+#job-search-chat .chat-error-alert {
     margin-bottom: 1rem;
 }
 
-#job-search-chat .chat-error-row .chat-error-alert {
-    flex: 1 1 auto;
-    min-width: 0;
-    margin-bottom: 0;
-}
-
-#job-search-chat .chat-error-row .chat-error-text {
+#job-search-chat .chat-error-alert .chat-error-text {
     min-width: 0;
     overflow-wrap: anywhere;
 }
@@ -3497,35 +3518,85 @@ body.assistant-open .app-content .table-responsive,
     min-inline-size: 44px;
 }
 
-#job-search-chat .chat-footer-notices.is-collapsed .chat-error-row {
+/* Compact: one row, the toggle beside the text, never taller than 56px. */
+#job-search-chat .chat-footer-notices.is-collapsed {
+    flex-direction: row;
     align-items: center;
-    margin-bottom: 0;
+    gap: .5rem;
 }
 
-/* Expanded, the text takes the row's whole width and the toggle sits under it. */
-#job-search-chat .chat-footer-notices.is-collapsible:not(.is-collapsed) .chat-error-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: .25rem;
+#job-search-chat .chat-footer-notices.is-collapsed .chat-notices-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: visible;
+    display: grid;
 }
 
-#job-search-chat .chat-footer-notices.is-collapsible:not(.is-collapsed) .chat-notices-toggle {
-    align-self: flex-end;
-}
-
-/* The Details toggle and Retry are 44px targets: the row is exactly that tall and the alert adds no padding. */
 #job-search-chat .chat-footer-notices.is-collapsed .chat-error-alert {
+    grid-row: 2;
+    margin-bottom: 0;
     padding: 0 .5rem;
+    min-height: 44px;
 }
 
 #job-search-chat .chat-footer-notices.is-collapsed .chat-error-text {
-    white-space: nowrap;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: .8125rem;
+    line-height: 1.25;
 }
 
+/* A status notice that is folded lends the row its title (its own element,
+   not a copy) above the error; the rest of it shows when expanded. */
 #job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] {
+    grid-row: 1;
+    margin: 0;
+    padding: .25rem .5rem 0 !important;
+    border-bottom: 0;
+    border-radius: .375rem .375rem 0 0;
+    font-size: .8125rem;
+    line-height: 1.25;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed.has-retry [data-testid='assistant-status-notice'] {
+    padding-right: 5.25rem !important;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .assistant-status-icon,
+#job-search-chat .chat-footer-notices.is-collapsed .assistant-status-body,
+#job-search-chat .chat-footer-notices.is-collapsed .assistant-status-notice-actions {
     display: none;
+}
+
+/* With a title above it the text sits under it and Retry reaches up into the
+   title's row, so the whole block stays inside 56px. */
+#job-search-chat .chat-footer-notices.is-collapsed.has-status .chat-error-alert {
+    min-height: 0;
+    border-top: 0;
+    border-radius: 0 0 .375rem .375rem;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed.has-status .chat-error-alert [data-testid='retry-button'] {
+    align-self: flex-start;
+    margin-top: -1rem;
+}
+
+/* Expanded: the details scroll above the toggle, which is the last row of the
+   area, right-aligned, where Details was, and does not scroll. The error comes
+   first with its Retry at its top, then the status notice. */
+#job-search-chat .chat-footer-notices:not(.is-collapsed) .chat-notices-body {
+    flex: 0 1 auto;
+}
+
+#job-search-chat .chat-footer-notices:not(.is-collapsed) .chat-error-alert {
+    align-items: flex-start !important;
+}
+
+#job-search-chat .chat-footer-notices:not(.is-collapsed) > .chat-notices-toggle {
+    align-self: flex-end;
+    margin-top: .25rem;
 }
 
 #job-search-chat .chat-jump-row .btn {

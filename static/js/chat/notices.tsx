@@ -267,10 +267,10 @@ export function AssistantStatusNotice({status, onRetry, checking}: {
             aria-label="Assistant availability"
         >
             <div className="d-flex align-items-start gap-2">
-                <i className="fa-solid fa-circle-exclamation mt-1" aria-hidden="true"></i>
+                <i className="fa-solid fa-circle-exclamation mt-1 assistant-status-icon" aria-hidden="true"></i>
                 <div>
-                    <strong className="d-block">{text.title}</strong>
-                    <span className="d-block small">{text.body}</span>
+                    <strong className="d-block assistant-status-title">{text.title}</strong>
+                    <span className="d-block small assistant-status-body">{text.body}</span>
                 </div>
             </div>
             {(browseRankings || canRetry) && (

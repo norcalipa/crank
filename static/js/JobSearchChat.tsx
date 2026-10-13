@@ -444,6 +444,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const prefNoticeKey = hasPrefNotice
         ? [prefNoticeAnchorId, !!prefProposal, prefProposalState, prefSearchApplied !== null, prefChanges !== null, prefUndoState, revealingPrefs].join('.')
         : '';
+    // Which notice it is: its anchor and its kind, without the states inside it.
+    const noticeIdentity = hasPrefNotice
+        ? [prefNoticeAnchorId, !!prefProposal, prefSearchApplied !== null, prefChanges !== null, prefUndoState === 'done', revealingPrefs].join('.')
+        : '';
     const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: messages.length,
@@ -452,6 +456,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         loading,
         // What can arrive under the last message after it has been followed.
         contentKey: [availability?.state ?? '', newestActionsId ?? '', lastMessage?.delivery_state ?? '', retryKey ?? '', prefNoticeKey].join('|'),
+        noticeKey: noticeIdentity,
         footerKey: initError,
     });
 
@@ -1600,8 +1605,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     <span id="preference-update-help" className="visually-hidden">
                         You can correct or remove a preference by telling the assistant what to change.
                     </span>
-                    <button type="button" className="btn-close" aria-label="Dismiss preference notice"
-                            onClick={() => setPrefDismissed(true)}></button>
+                    <button type="button" className="pref-change-dismiss" aria-label="Dismiss preference notice"
+                            onClick={() => setPrefDismissed(true)}>
+                        <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
                 </div>
             )}
         </>
