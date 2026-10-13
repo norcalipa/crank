@@ -33,7 +33,7 @@ Record shape (staff-only evidence; not a public contract):
 | `frontend_build_id` | Webpack contenthash of the served bundle | `crank.release.frontend_build_id()` |
 | `migrations` | `{applied_count, pending_count, status}`; `pending` ⇒ missing schema | `crank.release.migration_status_summary()` |
 | `migration_leaves` | Exact deployed revision: bounded per-app applied leaf migrations plus the exact pending leaves (`{applied, applied_count, pending, pending_count, truncated, status}`) | `readiness_baseline.migration_leaves()` (bounded by 25 identifiers per list) |
-| `fixtures` | `{present, revision}` — whether the staging fixture set is loaded (detected via its unique marker rows) and its revision, read from the data: `staging-baseline-2` when `Staging Example Corp` holds field-level evidence of any version (every run of the revision-2 command leaves some; revision 1 wrote none), `staging-baseline-1` when the markers are present without it | `readiness_baseline.fixture_set()` |
+| `fixtures` | `{present, revision}` — whether the staging fixture set is loaded (detected via its unique marker rows) and its revision, read from the data: `staging-baseline-2` when the command's own ordinary match of `Staging Example Corp` (`ranker_version` `staging-baseline`, `preference_version` 1) stores requirements (every run of the revision-2 command writes them; revision 1 stored none; evidence rows of the company can come from any writer and prove nothing), `staging-baseline-1` when the markers are present without it | `readiness_baseline.fixture_set()` |
 | `readiness_gates` | Individually named, non-secret gate booleans: `adapter_registered`, `adapter_count`, `adapters`, `usajobs_adapter_registered`, `firecrawl_adapter_registered`, `credentials_configured`, `usajobs_credentials_configured`, `firecrawl_credentials_configured`, `pipeline_enabled`, `scheduler_enabled` | `readiness_baseline.readiness_gates()` (mirrors `crank.admin_dashboard._readiness_gates()`; reads the code-owned job adapter registry, never credential values) |
 | `job_search_provider` | Selected job-search provider token (safe-token validated) | `crank.release._safe_job_search_provider()` |
 | `capabilities` | Non-secret capability configuration (enabled flags + issues; secrets reduced to presence booleans) | `crank.capability.capability_report().to_dict()` |
@@ -194,9 +194,22 @@ row reads stale and no requirement reads verified.
 
 **Resetting the fixture states on purpose.** Delete the
 `CompanyFieldEvidence` rows of `Staging Example Corp` and run the command again:
-the fresh-seed states come back and the match cites the new rows. The same
-procedure refreshes an aged fixture. The command still refuses `ENV=prod` and
-still gives the staff account no repository-known password.
+the fresh-seed states come back and the command's own match cites the new rows.
+The same procedure refreshes an aged fixture. If the account already has a
+match that the real matcher published (one refresh does that) and it cites a row
+the reset deleted, the command republishes the account's matches with one forced
+refresh and prints a line saying so; without that the published match would
+read `missing` for both evidence-backed requirements and a scheduled refresh
+would answer `current`. If the refresh does not publish, the line says what it
+answered and the published match is not repaired. The command still refuses
+`ENV=prod` and still gives the staff account no repository-known password.
+
+**Resetting the saved priorities on purpose.** Delete the account's saved
+priorities row and run the command: it is created again equal to the fixture's
+document, one revision above the results already published for the account, so
+the account's next refresh publishes instead of being discarded as stale. (The
+other way back is to delete the `staging_user` account and run the command; the
+account, its priorities and both fixture matches are created again.)
 
 ## 5. Staging replay procedure
 
@@ -247,7 +260,11 @@ From a **fresh** staging database (no fixtures loaded):
      requirements of the ordinary match show Verified (public company), Stale
      (funding stage) and two mismatches; the conflicted RTO claim and the
      unknown accelerated-vesting field show in the company's evidence, not in
-     the match.
+     the match. Once a refresh has published a match for the account, the list
+     holds three cards for the one listing (the published match and the two
+     fixture rows) with committed reads off, and only the published match with
+     committed reads on (`MATCH_RESULTS_READ_ENABLED`); in that case the
+     unknown-requirement fixture card is no longer listed.
 4. `python manage.py readiness_baseline --out baseline-after-replay.json` —
    archive the after-state as evidence for the rollout review.
 
