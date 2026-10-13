@@ -15,6 +15,11 @@ export interface TranscriptProps {
     turnActions: Record<number, TurnActions>;
     newestActionsId: number | null;
     lastAssistantId: number | null;
+    // Preference notices (proposal, applied, undo, banner) live in the log, right
+    // after the reply that produced them: the article with this id, or the last
+    // one when the id is null or no longer in the history (issue #483).
+    notice?: React.ReactNode;
+    noticeAfterId?: number | null;
     availability: AvailabilityPayload | null;
     retryKey: string | null;
     pending: boolean;
@@ -28,14 +33,20 @@ export interface TranscriptProps {
 }
 
 export function Transcript({
-    historyRef, messages, staleNotes, turnActions, newestActionsId, lastAssistantId, availability, retryKey, pending, loading,
-    authenticated, workspaceMode, onAskFirstQuestion,
+    historyRef, messages, staleNotes, turnActions, newestActionsId, lastAssistantId, notice = null, noticeAfterId = null,
+    availability, retryKey, pending, loading, authenticated, workspaceMode, onAskFirstQuestion,
     onCheckResponse, onRetryMessage, onEditAsNew,
 }: TranscriptProps) {
+    const anchored = noticeAfterId !== null && messages.some((m) => m.id === noticeAfterId);
+    const noticeId = anchored ? noticeAfterId : (messages.length > 0 ? messages[messages.length - 1].id : null);
+    const noticeBlock = notice ? (
+        <div className="chat-transcript-notice" data-testid="transcript-notice">{notice}</div>
+    ) : null;
     return (
         <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
             <div className="bg-dark chat-transcript rounded p-3"
-                 ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
+                 ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}
+                 data-notice-anchor={noticeAfterId ?? undefined}>
                 {authenticated && loading && (
                     <div className="text-muted chat-loading-status" role="status" aria-live="polite"
                          data-testid="chat-loading">
@@ -62,7 +73,8 @@ export function Transcript({
                     </div>
                 )}
                 {messages.map((m) => (
-                    <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
+                    <React.Fragment key={m.id}>
+                    <article aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
                              tabIndex={-1}
                              className={`d-flex flex-column ${m.role === 'user' ? 'align-items-end' : 'align-items-start'} mb-2`}>
                         <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
@@ -155,7 +167,10 @@ export function Transcript({
                             </div>
                         )}
                     </article>
+                    {m.id === noticeId && noticeBlock}
+                    </React.Fragment>
                 ))}
+                {noticeId === null && noticeBlock}
                 {pending && (
                     <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
                         <i className="fa-solid fa-spinner fa-spin me-1"></i>Assistant is typing…

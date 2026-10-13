@@ -3376,6 +3376,27 @@ body.assistant-open .app-content .table-responsive,
     margin-bottom: .5rem;
 }
 
+/* Preference notices sit in the log, under the reply that produced them. The
+   diff rows stack (name above values) whatever the width, so a value is never
+   squeezed into a sliver beside the name. */
+#job-search-chat .chat-transcript-notice {
+    margin: .25rem 0 .5rem;
+}
+
+#job-search-chat .chat-transcript-notice .alert {
+    margin-bottom: 0;
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-item {
+    display: flex;
+    flex-direction: column;
+    gap: .125rem;
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-values {
+    min-width: 0;
+}
+
 #job-search-chat .chat-transcript-wrap {
     position: relative;
     display: flex;
@@ -3434,6 +3455,53 @@ body.assistant-open .app-content .table-responsive,
     max-height: var(--chat-notices-max, 40dvh);
     overflow-y: auto;
     overscroll-behavior: contain;
+}
+
+/* The error, with a Details button when the notices would take the composer's
+   room (a status notice beside it, or a long text). Collapsed it is one line:
+   the error with an ellipsis, its Retry and Details. The error stays one
+   element holding its whole text; only the clamp is CSS (issue #483). */
+#job-search-chat .chat-error-row {
+    display: flex;
+    align-items: flex-start;
+    gap: .5rem;
+    margin-bottom: 1rem;
+}
+
+#job-search-chat .chat-error-row .chat-error-alert {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-bottom: 0;
+}
+
+#job-search-chat .chat-error-row .chat-error-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+#job-search-chat .chat-notices-toggle {
+    flex: 0 0 auto;
+    min-block-size: 44px;
+    min-inline-size: 44px;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .chat-error-row {
+    align-items: center;
+    margin-bottom: .25rem;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .chat-error-alert {
+    padding: .25rem .5rem;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .chat-error-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] {
+    display: none;
 }
 
 #job-search-chat .chat-jump-row .btn {

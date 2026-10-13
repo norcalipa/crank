@@ -45,8 +45,8 @@ import {
 } from './chat/storage';
 import type {InFlightTurn} from './chat/storage';
 import {hasResults} from './chat/ResultCards';
+import {FooterNotices} from './chat/FooterNotices';
 import {
-    AssistantStatusNotice,
     isGatedState,
     PreferenceChangeNotice,
     PreferenceProposalNotice,
@@ -125,6 +125,13 @@ export interface JobSearchChatProps {
     autoFocusComposer?: boolean;
 }
 
+const lastAssistantIdOf = (messages: ChatMessage[]): number | null => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'assistant') return messages[i].id;
+    }
+    return null;
+};
+
 const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const {
         isAuthenticated = true,
@@ -185,6 +192,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const [prefProposalErrorType, setPrefProposalErrorType] = React.useState<string | null>(null);
     // Confirmation for an applied this-search-only proposal (never saved).
     const [prefSearchApplied, setPrefSearchApplied] = React.useState<number | null>(null);
+    // The reply the preference notices sit under in the transcript (issue #483):
+    // the one that produced them, or the last reply when history reports a change.
+    const [prefNoticeAnchorId, setPrefNoticeAnchorId] = React.useState<number | null>(null);
     // Advisory assistant availability (issue #457). null means the status is
     // unknown — e.g. the fetch failed — and the chat stays fully usable.
     const [assistantStatus, setAssistantStatus] = React.useState<AssistantStatus | null>(null);
@@ -327,12 +337,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     // The notice explains the most recent reply only; historical messages
     // without results stay quiet.
-    const lastAssistantId = React.useMemo(() => {
-        for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i].role === 'assistant') return messages[i].id;
-        }
-        return null;
-    }, [messages]);
+    const lastAssistantId = React.useMemo(() => lastAssistantIdOf(messages), [messages]);
 
     const cardRef = React.useRef<HTMLElement>(null);
     // Room between the header and the composer band: inline panels scroll
@@ -425,6 +430,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         } as React.CSSProperties;
     }, [stackMax, noticesMax, keyboardInset]);
 
+    const revealingPrefs = preferencesChanged && !prefDismissed;
+    // Issue #466: the detailed diff notice supersedes the plain banner when
+    // the turn surfaced a field-level diff; the plain banner remains the
+    // fallback for legacy providers (and post-reload turns, where the diff
+    // is not persisted in the message history).
+    const revealingPrefChanges = !prefDismissed && (prefChanges !== null || prefUndoState === 'done');
+
+    const hasPrefNotice = (!!prefProposal && !prefDismissed)
+        || (prefSearchApplied !== null && !prefDismissed && !prefProposal)
+        || revealingPrefChanges || revealingPrefs;
+    // What a notice's arrival, or a change of its state, adds under the reply (issue #483).
+    const prefNoticeKey = hasPrefNotice
+        ? [prefNoticeAnchorId ?? '', !!prefProposal, prefProposalState, prefSearchApplied !== null, prefChanges !== null, prefUndoState, revealingPrefs].join('.')
+        : '';
     const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: messages.length,
@@ -432,7 +451,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         pending,
         loading,
         // What can arrive under the last message after it has been followed.
-        contentKey: [availability?.state ?? '', newestActionsId ?? '', lastMessage?.delivery_state ?? '', retryKey ?? ''].join('|'),
+        contentKey: [availability?.state ?? '', newestActionsId ?? '', lastMessage?.delivery_state ?? '', retryKey ?? '', prefNoticeKey].join('|'),
         footerKey: initError,
     });
 
@@ -574,6 +593,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setConversationId(data.id);
                 setMessages(data.messages);
                 setPreferencesChanged(data.preferences_changed);
+                if (data.preferences_changed) setPrefNoticeAnchorId(lastAssistantIdOf(data.messages));
                 reconcileDurableState(data);
                 adoptPendingDraft(data.id);
                 setLoading(false);
@@ -637,6 +657,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefProposalError(null);
         setPrefProposalErrorType(null);
         setPrefSearchApplied(null);
+        setPrefNoticeAnchorId(null);
         setPrioritiesEditorOpen(null);
         if (effectiveAuthenticated) {
             // Force the resume effect to re-run so the (possibly different)
@@ -649,7 +670,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Announce new assistant content to assistive tech.
     React.useEffect(() => {
         if (historyRef.current) {
-            const last = historyRef.current.lastElementChild;
+            // The newest article, not the log's last child: a notice may follow it.
+            const articles = Array.from(historyRef.current.children).filter((el) => el.tagName === 'ARTICLE');
+            const last = articles[articles.length - 1];
             if (last instanceof HTMLElement) {
                 last.setAttribute('aria-live', 'polite');
             }
@@ -740,6 +763,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             const data = (await res.json()) as Conversation;
             setMessages(data.messages);
             setPreferencesChanged(data.preferences_changed);
+            if (data.preferences_changed) setPrefNoticeAnchorId(lastAssistantIdOf(data.messages));
             const known = data.messages.some(
                 (m) => m.role === 'user' && m.idempotency_key === turnKey,
             );
@@ -1092,6 +1116,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             if (data.preferences_changed) {
                 setPreferencesChanged(true);
                 setPrefDismissed(false);
+                setPrefNoticeAnchorId(data.message.id);
             }
             // Issue #466 review: adopt the read-only proposal when the server
             // surfaced one; the user applies or dismisses it explicitly.
@@ -1102,6 +1127,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setPrefProposalErrorType(null);
                 setPrefSearchApplied(null);
                 setPrefDismissed(false);
+                setPrefNoticeAnchorId(data.message.id);
             }
             clearInflightTurn(turnConversationId, key);
             writeComposerDraft(turnConversationId, '');
@@ -1311,6 +1337,21 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
+    // A new or deleted conversation leaves none of the old one's notices behind.
+    const clearPrefNotices = () => {
+        setPrefChanges(null);
+        setPrefUndoToken(null);
+        setPrefUndoState('idle');
+        setPrefUndoError(null);
+        setPrefUndoErrorType(null);
+        setPrefProposal(null);
+        setPrefProposalState('idle');
+        setPrefProposalError(null);
+        setPrefProposalErrorType(null);
+        setPrefSearchApplied(null);
+        setPrefNoticeAnchorId(null);
+    };
+
     const handleReset = async (): Promise<string | null> => {
         if (!conversationId) return null;  // # pragma: no cover - menu item is disabled without a conversation
         try {
@@ -1328,6 +1369,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setMessages([]);
             setPreferencesChanged(false);
             setPrefDismissed(false);
+            clearPrefNotices();
             setError(null);
             focusAfterHistoryAction();
             return null;
@@ -1349,6 +1391,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setMessages([]);
             setPreferencesChanged(false);
             setPrefDismissed(false);
+            clearPrefNotices();
             setError(null);
             focusAfterHistoryAction();
             return null;
@@ -1481,12 +1524,92 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
-    const revealingPrefs = preferencesChanged && !prefDismissed;
-    // Issue #466: the detailed diff notice supersedes the plain banner when
-    // the turn surfaced a field-level diff; the plain banner remains the
-    // fallback for legacy providers (and post-reload turns, where the diff
-    // is not persisted in the message history).
-    const revealingPrefChanges = !prefDismissed && (prefChanges !== null || prefUndoState === 'done');
+    const prefNotice = (
+        <>
+            {prefProposal && !prefDismissed && (
+                <PreferenceProposalNotice
+                    proposal={prefProposal}
+                    state={prefProposalState}
+                    error={prefProposalError}
+                    errorType={prefProposalErrorType}
+                    onDecision={handlePreferenceProposalDecision}
+                    onReview={() => {
+                        // Stale-conflict recovery: reopen the proposal in the
+                        // inline editor, to re-review against the latest (issue #480).
+                        setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
+                    }}
+                    onEdit={() => {
+                        setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
+                        // Keep the proposal while part of it cannot be shown in the editor.
+                        if (patchFitsEditor(prefProposal.token.patch)) setPrefProposal(null);
+                    }}
+                    onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
+                />
+            )}
+
+            {prefSearchApplied !== null && !prefDismissed && !prefProposal && (
+                <div className="alert alert-info pref-change-notice" role="status"
+                     aria-label="Temporary search filter applied" data-testid="preference-search-applied">
+                    <div className="pref-change-header">
+                        <span className="pref-change-summary">
+                            <i className="fa-solid fa-filter me-1" aria-hidden="true"></i>
+                            Applied to this search only — not saved to your preferences
+                            {prefSearchApplied > 0 ? ` (${prefSearchApplied}${prefSearchApplied >= MATCH_CAP ? '+' : ''} matches)` : ''}.
+                        </span>
+                        <button type="button" className="pref-change-dismiss" aria-label="Dismiss search filter notice"
+                                onClick={() => {
+                                    setPrefSearchApplied(null);
+                                    setPrefDismissed(true);
+                                }}>
+                            <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {revealingPrefChanges && (
+                <PreferenceChangeNotice
+                    changes={prefChanges || []}
+                    undoState={prefUndoState}
+                    undoError={prefUndoError}
+                    undoErrorType={prefUndoErrorType}
+                    onUndo={handleUndoPreferenceChange}
+                    onDismiss={() => {
+                        setPrefDismissed(true);
+                        setPrefChanges(null);
+                        setPrefUndoToken(null);
+                        setPrefUndoState('idle');
+                        setPrefUndoError(null);
+                        setPrefUndoErrorType(null);
+                    }}
+                    onReview={() => {
+                        // Stale-conflict recovery: review the current
+                        // priorities in the inline editor (issue #480).
+                        setPrioritiesEditorOpen(prioritiesSurface());
+                    }}
+                />
+            )}
+
+            {!revealingPrefChanges && revealingPrefs && (
+                <div className="alert alert-success chat-pref-alert d-flex justify-content-between align-items-center"
+                     role="status" aria-label="Preference update" aria-describedby="preference-update-help">
+                    <span>
+                        <i className="fa-solid fa-circle-check me-1"></i>
+                        Preferences updated.
+                    </span>
+                    <span id="preference-update-help" className="visually-hidden">
+                        You can correct or remove a preference by telling the assistant what to change.
+                    </span>
+                    <button type="button" className="btn-close" aria-label="Dismiss preference notice"
+                            onClick={() => setPrefDismissed(true)}></button>
+                </div>
+            )}
+        </>
+    );
+    // The anchor goes with the last notice.
+    React.useEffect(() => {
+        if (!hasPrefNotice) setPrefNoticeAnchorId(null);
+    }, [hasPrefNotice]);
 
     return (
         <section className="card bg-dark d-flex flex-column" data-testid="job-search-chat"
@@ -1506,85 +1629,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             </div>
 
             <div className="card-body d-flex flex-column" style={{minHeight: 0}}>
-                {prefProposal && !prefDismissed && (
-                    <PreferenceProposalNotice
-                        proposal={prefProposal}
-                        state={prefProposalState}
-                        error={prefProposalError}
-                        errorType={prefProposalErrorType}
-                        onDecision={handlePreferenceProposalDecision}
-                        onReview={() => {
-                            // Stale-conflict recovery: reopen the proposal in the
-                            // inline editor, to re-review against the latest (issue #480).
-                            setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
-                        }}
-                        onEdit={() => {
-                            setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
-                            // Keep the proposal while part of it cannot be shown in the editor.
-                            if (patchFitsEditor(prefProposal.token.patch)) setPrefProposal(null);
-                        }}
-                        onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
-                    />
-                )}
-
-                {prefSearchApplied !== null && !prefDismissed && !prefProposal && (
-                    <div className="alert alert-info pref-change-notice" role="status"
-                         aria-label="Temporary search filter applied" data-testid="preference-search-applied">
-                        <div className="pref-change-header">
-                            <span className="pref-change-summary">
-                                <i className="fa-solid fa-filter me-1" aria-hidden="true"></i>
-                                Applied to this search only — not saved to your preferences
-                                {prefSearchApplied > 0 ? ` (${prefSearchApplied}${prefSearchApplied >= MATCH_CAP ? '+' : ''} matches)` : ''}.
-                            </span>
-                            <button type="button" className="pref-change-dismiss" aria-label="Dismiss search filter notice"
-                                    onClick={() => {
-                                        setPrefSearchApplied(null);
-                                        setPrefDismissed(true);
-                                    }}>
-                                <i className="fa-solid fa-xmark" aria-hidden="true"></i>
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {revealingPrefChanges && (
-                    <PreferenceChangeNotice
-                        changes={prefChanges || []}
-                        undoState={prefUndoState}
-                        undoError={prefUndoError}
-                        undoErrorType={prefUndoErrorType}
-                        onUndo={handleUndoPreferenceChange}
-                        onDismiss={() => {
-                            setPrefDismissed(true);
-                            setPrefChanges(null);
-                            setPrefUndoToken(null);
-                            setPrefUndoState('idle');
-                            setPrefUndoError(null);
-                            setPrefUndoErrorType(null);
-                        }}
-                        onReview={() => {
-                            // Stale-conflict recovery: review the current
-                            // priorities in the inline editor (issue #480).
-                            setPrioritiesEditorOpen(prioritiesSurface());
-                        }}
-                    />
-                )}
-
-                {!revealingPrefChanges && revealingPrefs && (
-                    <div className="alert alert-success chat-pref-alert d-flex justify-content-between align-items-center"
-                         role="status" aria-label="Preference update" aria-describedby="preference-update-help">
-                        <span>
-                            <i className="fa-solid fa-circle-check me-1"></i>
-                            Preferences updated.
-                        </span>
-                        <span id="preference-update-help" className="visually-hidden">
-                            You can correct or remove a preference by telling the assistant what to change.
-                        </span>
-                        <button type="button" className="btn-close" aria-label="Dismiss preference notice"
-                                onClick={() => setPrefDismissed(true)}></button>
-                    </div>
-                )}
-
                 {!effectiveAuthenticated && (
                     // Signed-out introduction (issue #465 AC-2/AC-6): mirrors
                     // the server-rendered block above the card (present
@@ -1628,6 +1672,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     turnActions={turnActions}
                     newestActionsId={newestActionsId}
                     lastAssistantId={lastAssistantId}
+                    notice={hasPrefNotice ? prefNotice : null}
+                    noticeAfterId={prefNoticeAnchorId}
                     availability={availability}
                     retryKey={retryKey}
                     pending={pending}
@@ -1647,29 +1693,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     {showJumpToLatest && (
                         <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
                     )}
-                    <div className="chat-footer-notices">
-                        {assistantStatus && (
-                            <AssistantStatusNotice
-                                status={assistantStatus}
-                                checking={statusChecking}
-                                onRetry={() => { void refreshStatus(); }}
-                            />
-                        )}
-
-                        {error && (
-                            <div className="alert alert-danger d-flex justify-content-between align-items-center"
-                                 role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
-                                <span className="flex-grow-1 me-2">{error}</span>
-                                {retrying && (
-                                    <button type="button"
-                                            className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap chat-focus"
-                                            onClick={handleRetry} disabled={pending} data-testid="retry-button">
-                                        Retry
-                                    </button>
-                                )}
-                            </div>
-                        )}
-                    </div>
+                    <FooterNotices
+                        status={assistantStatus}
+                        statusChecking={statusChecking}
+                        onStatusRetry={() => { void refreshStatus(); }}
+                        error={error}
+                        errorType={errorType}
+                        retrying={retrying}
+                        pending={pending}
+                        onRetry={handleRetry}
+                    />
 
                     <Composer
                         textareaRef={composerRef}
