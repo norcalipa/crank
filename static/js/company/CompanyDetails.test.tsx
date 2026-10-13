@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {fireEvent, render, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as React from 'react';
@@ -539,5 +539,109 @@ describe('CompanyDetails: fit, jobs and View jobs (issue #486, AC 15-18)', () =>
         const button = screen.getByTestId('company-view-jobs');
         screen.getByRole('heading', {name: 'Open jobs'}).remove();
         expect(() => fireEvent.click(button)).not.toThrow();
+    });
+    test('"See your fit" comes first in the action row, before "View jobs", and focuses the fit heading', async () => {
+        const scrollIntoView = jest.fn();
+        Element.prototype.scrollIntoView = scrollIntoView;
+        renderDetails();
+        const jumps = screen.getByTestId('company-see-fit').parentElement as HTMLElement;
+        expect(Array.from(jumps.querySelectorAll('button')).map(button => button.textContent))
+            .toEqual(['See your fit', 'View jobs']);
+        fireEvent.click(screen.getByTestId('company-see-fit'));
+        expect(screen.getByRole('heading', {name: 'Fit with your priorities'})).toHaveFocus();
+        expect(scrollIntoView).toHaveBeenCalledWith({block: 'start'});
+        await screen.findByTestId('fit-no-priorities');
+    });
+
+    describe('a late fit answer and the heading a jump focused (F7)', () => {
+        let release: () => void;
+        let scrollIntoView: jest.Mock;
+        const holdFit = () => {
+            const fitAnswer = answer({
+                organization_id: 1, has_preferences: false, fit_score: null, company_score: null, coverage: null,
+                requirements: [],
+            });
+            const held = new Promise<Reply>(resolve => {
+                release = () => resolve(fitAnswer as unknown as Reply);
+            });
+            mockFetch([
+                ['/api/organizations/1/scores/', reply([])],
+                ['/api/organizations/1/provenance/', reply(provenance(1))],
+                ['/api/organizations/1/fit/', held],
+                ['/api/organizations/1/jobs/', answer({
+                    organization_id: 1, inventory: 'available', count: 0, results: [],
+                }) as unknown as Reply],
+                ['/api/company-corrections/', reply({corrections: []})],
+            ]);
+        };
+        beforeEach(() => {
+            scrollIntoView = jest.fn();
+            Element.prototype.scrollIntoView = scrollIntoView;
+            holdFit();
+        });
+
+        const settle = async () => {
+            await act(async () => {
+                release();
+            });
+            await screen.findByTestId('fit-no-priorities');
+        };
+
+        test('the heading is brought back into view when the answer lands and the reader has not moved', async () => {
+            renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            expect(scrollIntoView).toHaveBeenCalledTimes(1);
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(2);
+            expect(scrollIntoView).toHaveBeenLastCalledWith({block: 'start'});
+        });
+
+        test.each([
+            ['a wheel', () => fireEvent.wheel(window)],
+            ['a touch drag', () => fireEvent.touchMove(window)],
+            ['a pointer press', () => fireEvent.pointerDown(window)],
+            ['Page Down', () => fireEvent.keyDown(window, {key: 'PageDown'})],
+        ])('%s since the jump: the page is not moved', async (_name, move) => {
+            renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            move();
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        });
+
+        test('a key that does not scroll leaves the guard on', async () => {
+            renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            fireEvent.keyDown(window, {key: 'a'});
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(2);
+        });
+
+        test('focus elsewhere: the page is not moved', async () => {
+            renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            screen.getByTestId('company-see-fit').focus();
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        });
+
+        test('a second jump replaces the first; leaving the view releases the listeners', async () => {
+            const view = renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            fireEvent.click(screen.getByTestId('company-see-fit'));
+            expect(scrollIntoView).toHaveBeenCalledTimes(2);
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(3);
+            view.unmount();
+            const before = scrollIntoView.mock.calls.length;
+            fireEvent.wheel(window);
+            expect(scrollIntoView).toHaveBeenCalledTimes(before);
+        });
+
+        test('without a jump the answer moves nothing', async () => {
+            renderDetails();
+            await settle();
+            expect(scrollIntoView).not.toHaveBeenCalled();
+        });
     });
 });

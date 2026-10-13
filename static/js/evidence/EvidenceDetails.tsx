@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {EvidenceStatusKey, EvidenceSummaryData, fieldKeyLabel, formatEvidenceDate, formatScopeWords} from '../labels';
+import {COMPANY_WIDE_LABEL, EvidenceStatusKey, EvidenceSummaryData, fieldKeyLabel, formatEvidenceDate, partialScopeWords} from '../labels';
 import EvidenceBadge from './EvidenceBadge';
 
 export interface EvidenceField {
@@ -80,6 +80,12 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
     const unverified = evidence.unverified_fields || [];
     const pending = evidence.pending_review || [];
     const summary = evidence.summary;
+    // A fact with a value on record that covers only part of the company is
+    // counted as unknown (the server's rule); the summary says which ones.
+    const partial = fields.flatMap(field => {
+        const scope = partialScopeWords(field.scope);
+        return scope === null ? [] : [`${fieldKeyLabel(field.field_key)} (${scope})`];
+    });
     const action = (key: string, verb?: string, joiner?: string) =>
         renderFieldAction ? renderFieldAction(key, verb, joiner) : null;
     return (
@@ -93,6 +99,11 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                             <span className="d-block small text-muted">
                                 {summary.verified} verified · {summary.stale} stale · {summary.unknown} unknown
                             </span>
+                            {partial.length > 0 && (
+                                <span className="d-block small evidence-scope-limited" data-testid="coverage-scoped">
+                                    Counted as unknown because it covers only part of the company: {partial.join('; ')}.
+                                </span>
+                            )}
                         </div>
                     </div>
                 )}
@@ -111,7 +122,7 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                         const key = field.field_key;
                         const status: EvidenceStatusKey = field.status || (field.stale ? 'stale' : 'verified');
                         const review = field.review && field.review !== 'none' ? field.review : null;
-                        const scope = formatScopeWords(field.scope);
+                        const limit = partialScopeWords(field.scope);
                         const badge = (
                             <EvidenceBadge status={status} fieldLabel={fieldKeyLabel(key)}
                                            lastVerifiedAt={field.last_verified_at}
@@ -147,9 +158,15 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                         {field.policy_days ? (
                                             <span className="text-muted small evidence-meta">Re-check every {field.policy_days} days</span>
                                         ) : null}
-                                        <span className="text-muted small evidence-meta" data-testid={`field-scope-${key}`}>
-                                            <span className="visually-hidden">Covers: </span>{scope}
-                                        </span>
+                                        {limit === null ? (
+                                            <span className="text-muted small evidence-meta" data-testid={`field-scope-${key}`}>
+                                                <span className="visually-hidden">Covers: </span>{COMPANY_WIDE_LABEL}
+                                            </span>
+                                        ) : (
+                                            <span className="small evidence-meta evidence-scope-limited" data-testid={`field-scope-${key}`}>
+                                                Covers only {limit}
+                                            </span>
+                                        )}
                                         <details className="evidence-timestamps small">
                                             <summary>
                                                 Check history<span className="visually-hidden"> for {fieldKeyLabel(key)}</span>

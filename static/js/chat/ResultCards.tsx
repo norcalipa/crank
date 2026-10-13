@@ -138,7 +138,7 @@ export function OrgCard({org}: {org: OrganizationResult}) {
                     rel="noopener noreferrer"
                     aria-label={`Website of ${org.name} (opens in a new tab)`}
                 >
-                    Website ↗
+                    Website <i className="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
                 </a>
             )}
             <button

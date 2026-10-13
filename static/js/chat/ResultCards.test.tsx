@@ -118,6 +118,12 @@ describe('OrgCard "View company" (issue #486, AC 20)', () => {
         expect(site).toHaveAttribute('href', 'https://acme.example.test');
         expect(site).toHaveAttribute('rel', 'noopener noreferrer');
         expect(screen.queryByText(/Details/)).toBeNull();
+        // The arrow is an icon from the set the view uses, not a glyph.
+        expect(site.querySelector('i.fa-arrow-up-right-from-square')).toHaveAttribute('aria-hidden', 'true');
+        expect(site.textContent).not.toContain('↗');
+        // The in-app action is the one shaped as the main action.
+        expect(view).toHaveClass('org-card-view-company');
+        expect(site).not.toHaveClass('org-card-view-company');
     });
 
     test('a plain click opens the view through the typed target and stays on the page', () => {

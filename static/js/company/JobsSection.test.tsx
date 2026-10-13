@@ -5,7 +5,7 @@ import {act, cleanup, fireEvent, render, screen} from '@testing-library/react';
 import * as React from 'react';
 
 import * as store from '../workspace/store';
-import JobsSection, {CompanyJob, CompanyJobs, payText, postingUrl} from './JobsSection';
+import JobsSection, {CompanyJob, CompanyJobs, jobMeta, payText, postingUrl} from './JobsSection';
 
 const job = (overrides: Partial<CompanyJob> = {}): CompanyJob => ({
     id: 1, title: 'Staff Engineer', location_text: 'Remote (US)', is_remote: true,
@@ -58,7 +58,7 @@ describe('JobsSection (issue #486, AC 17)', () => {
         });
         const row = await screen.findByTestId('job-row-1');
         expect(row).toHaveTextContent('Staff Engineer');
-        expect(row).toHaveTextContent('Remote (US) · Remote · USD 150,000–190,000 per year');
+        expect(row).toHaveTextContent('Remote (US) · USD 150,000–190,000 per year');
         const link = screen.getByTestId('job-link-1');
         expect(link).toHaveAttribute('href', 'https://jobs.example.test/1');
         expect(link).toHaveAttribute('target', '_blank');
@@ -190,5 +190,41 @@ describe('postingUrl and payText', () => {
         expect(payText(job({compensation_min: '100', compensation_max: '100', compensation_currency: '', compensation_interval: ''}))).toBe('100');
         expect(payText(job({compensation_min: null, compensation_max: null}))).toBe('Pay not published');
         expect(payText(job({compensation_min: 'abc', compensation_max: ''}))).toBe('Pay not published');
+    });
+});
+
+describe('a job row says each thing once (issue #486, round 2)', () => {
+    afterEach(cleanup);
+
+    test('the arrangement is not printed twice', () => {
+        expect(jobMeta(job())).toBe('Remote (US) · USD 150,000–190,000 per year');
+        expect(jobMeta(job({location_text: 'Remote'}))).toBe('Remote · USD 150,000–190,000 per year');
+        expect(jobMeta(job({location_text: 'Austin, TX'}))).toBe('Austin, TX · Remote · USD 150,000–190,000 per year');
+        expect(jobMeta(job({location_text: '', is_remote: true}))).toBe('Remote · USD 150,000–190,000 per year');
+        expect(jobMeta(job({location_text: 'Remote', is_remote: false, compensation_min: null, compensation_max: null})))
+            .toBe('Remote · Not listed as remote · Pay not published');
+    });
+
+    test('a listing without an http(s) address says there is no link; one with an address names the new tab', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(jobs({count: 2, results: [
+            job({id: 1}), job({id: 2, title: 'Designer', canonical_url: 'javascript:alert(1)'}),
+        ]})));
+        renderJobs();
+        await screen.findByTestId('job-row-2');
+        expect(screen.getByTestId('job-no-link-2')).toHaveTextContent('No link to the posting');
+        expect(screen.queryByTestId('job-link-2')).toBeNull();
+        expect(screen.queryByTestId('job-no-link-1')).toBeNull();
+        const link = screen.getByTestId('job-link-1');
+        expect(link).toHaveTextContent('View posting for Staff Engineer (opens in a new tab)');
+        expect(link.querySelector('i.fa-arrow-up-right-from-square')).toHaveAttribute('aria-hidden', 'true');
+        expect(link.textContent).not.toContain('↗');
+    });
+
+    test('the failure alert names what Retry retries, and the heading is a jump target', async () => {
+        global.fetch = jest.fn().mockRejectedValue(new Error('boom'));
+        renderJobs();
+        const alert = await screen.findByTestId('jobs-error');
+        expect(alert).toHaveTextContent('Retry loading open jobs');
+        expect(document.getElementById('company-jobs-title')).toHaveClass('company-jump-heading');
     });
 });

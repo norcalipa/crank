@@ -62,6 +62,16 @@ export function payText(job: CompanyJob): string {
     return `${currency}${range}${period}`;
 }
 
+/** Where it is, whether it is remote (once), and the pay. */
+export function jobMeta(job: CompanyJob): string {
+    const place = job.location_text || '';
+    // A location that already says "Remote" is not followed by the same word.
+    const arrangement = job.is_remote
+        ? (/\bremote\b/i.test(place) ? '' : 'Remote')
+        : 'Not listed as remote';
+    return [place, arrangement, payText(job)].filter(part => part !== '').join(' · ');
+}
+
 export interface JobsSectionProps {
     organizationId: number;
     name: string;
@@ -101,7 +111,9 @@ const JobsSection = React.forwardRef<HTMLHeadingElement, JobsSectionProps>(({
         body = (
             <div className="alert alert-warning mb-0" role="alert" data-testid="jobs-error">
                 <p className="mb-2">Open jobs could not be loaded.</p>
-                <button type="button" className="btn btn-outline-light" data-testid="jobs-retry" onClick={retry}>Retry</button>
+                <button type="button" className="btn btn-outline-light" data-testid="jobs-retry" onClick={retry}>
+                    Retry<span className="visually-hidden"> loading open jobs</span>
+                </button>
             </div>
         );
     } else if (state.data.inventory === 'unavailable') {
@@ -121,18 +133,19 @@ const JobsSection = React.forwardRef<HTMLHeadingElement, JobsSectionProps>(({
                     return (
                         <li key={job.id} className="company-job-row" data-testid={`job-row-${job.id}`}>
                             <strong className="company-job-title text-break">{job.title}</strong>
-                            <span className="company-job-meta small text-body-secondary">
-                                {job.location_text ? `${job.location_text} · ` : ''}
-                                {job.is_remote ? 'Remote' : 'Not listed as remote'}
-                                {' · '}
-                                {payText(job)}
-                            </span>
-                            {href && (
+                            <span className="company-job-meta small text-body-secondary">{jobMeta(job)}</span>
+                            {href ? (
                                 <a href={href} target="_blank" rel="noopener noreferrer" className="company-job-link"
                                    data-testid={`job-link-${job.id}`}>
-                                    View posting<span className="visually-hidden"> for {job.title} (opens in a new tab)</span>
-                                    <span aria-hidden="true"> ↗</span>
+                                    View posting<span className="visually-hidden"> for {job.title}</span>
+                                    {' '}<span className="evidence-external-note">(opens in a new tab)</span>
+                                    {' '}<i className="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
                                 </a>
+                            ) : (
+                                <span className="company-job-no-link small text-body-secondary"
+                                      data-testid={`job-no-link-${job.id}`}>
+                                    No link to the posting
+                                </span>
                             )}
                         </li>
                     );
@@ -143,7 +156,7 @@ const JobsSection = React.forwardRef<HTMLHeadingElement, JobsSectionProps>(({
 
     return (
         <section className="company-jobs mt-3" data-testid="company-jobs" aria-labelledby={titleId}>
-            <h3 id={titleId} ref={headingRef} tabIndex={-1} className="h5 mb-2">Open jobs</h3>
+            <h3 id={titleId} ref={headingRef} tabIndex={-1} className="h5 mb-2 company-jump-heading">Open jobs</h3>
             {body}
         </section>
     );

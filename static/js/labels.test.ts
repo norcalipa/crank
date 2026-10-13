@@ -1,6 +1,6 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
-import {FUNDING_ROUND_LABELS, RTO_POLICY_LABELS, formatScopeWords, fundingRoundLabel, requirementLabel, rtoPolicyLabel} from './labels';
+import {FUNDING_ROUND_LABELS, RTO_POLICY_LABELS, formatScopeWords, fundingRoundLabel, partialScopeWords, requirementLabel, rtoPolicyLabel} from './labels';
 
 describe('shared funding-round and RTO labels (issue #473)', () => {
     test('known codes map to the model words', () => {
@@ -43,6 +43,15 @@ describe('scope in words (issue #486, AC 19)', () => {
         expect(text).not.toMatch(/countries|role_families/);
         expect(text).toBe('Location: US; Roles: Engineering; Limited scope');
         expect(formatScopeWords({level: 'role', value: 'Engineering'})).toBe('Limited scope');
+    });
+
+    test('a crawler\'s claimed domain is attribution, not a limit on what a fact covers', () => {
+        expect(formatScopeWords({claimed_domain: 'example.com'})).toBe('Company-wide');
+        expect(formatScopeWords({claimed_domain: 'example.com', countries: ['US']})).toBe('Location: US');
+        expect(partialScopeWords({claimed_domain: 'example.com'})).toBeNull();
+        expect(partialScopeWords({})).toBeNull();
+        expect(partialScopeWords(null)).toBeNull();
+        expect(partialScopeWords({countries: ['US']})).toBe('Location: US');
     });
 });
 

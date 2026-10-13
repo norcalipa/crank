@@ -201,10 +201,57 @@ describe('EvidenceDetails', () => {
             field({field_key: 'funding_round', scope: {}}),
             field({field_key: 'locations', scope: null as unknown as Record<string, unknown>}),
         ]})}/>);
-        expect(screen.getByTestId('field-scope-rto_policy')).toHaveTextContent('Location: US; Roles: Engineering');
+        expect(screen.getByTestId('field-scope-rto_policy')).toHaveTextContent('Covers only Location: US; Roles: Engineering');
         expect(screen.getByTestId('field-scope-funding_round')).toHaveTextContent('Company-wide');
         expect(screen.getByTestId('field-scope-locations')).toHaveTextContent('Company-wide');
         expect(document.body.textContent).not.toMatch(/countries|role_families/);
+    });
+
+    test('the summary names the facts counted as unknown because they cover only part of the company (issue #486, F3)', () => {
+        const one = evidence({fields: [
+            field({field_key: 'funding_round', scope: {countries: ['US']}}),
+            field({field_key: 'rto_policy', scope: {}}),
+        ]});
+        const {rerender} = render(<EvidenceDetails evidence={one}/>);
+        const line = screen.getByTestId('coverage-scoped');
+        expect(line).toHaveTextContent(
+            'Counted as unknown because it covers only part of the company: Funding Round (Location: US).');
+        expect(line).toHaveClass('evidence-scope-limited');
+        expect(line).not.toHaveClass('text-muted');
+        // Where the badge is read, the limit is said in the same colour, not as another muted line.
+        const scoped = screen.getByTestId('field-scope-funding_round');
+        expect(scoped).toHaveTextContent('Covers only Location: US');
+        expect(scoped).toHaveClass('evidence-scope-limited');
+        expect(scoped).not.toHaveClass('text-muted');
+        expect(screen.getByTestId('field-scope-rto_policy')).toHaveClass('text-muted');
+        expect(screen.getByTestId('field-scope-rto_policy')).toHaveTextContent('Company-wide');
+
+        rerender(<EvidenceDetails evidence={evidence({fields: [
+            field({field_key: 'funding_round', scope: {countries: ['US']}}),
+            field({field_key: 'rto_policy', scope: {countries: ['US', 'CA'], role_families: ['Engineering']}}),
+        ]})}/>);
+        expect(screen.getByTestId('coverage-scoped')).toHaveTextContent(
+            'Counted as unknown because it covers only part of the company: Funding Round (Location: US); '
+            + 'RTO Policy (Location: US, CA; Roles: Engineering).');
+    });
+
+    test('no such line when every fact covers the whole company, and a crawler\'s claimed domain is not a limit', () => {
+        render(<EvidenceDetails evidence={evidence({fields: [
+            field({field_key: 'funding_round', scope: {}}),
+            field({field_key: 'rto_policy', scope: {claimed_domain: 'example.com'}}),
+            field({field_key: 'locations', scope: null as unknown as Record<string, unknown>}),
+        ]})}/>);
+        expect(screen.queryByTestId('coverage-scoped')).toBeNull();
+        expect(screen.getByTestId('field-scope-rto_policy')).toHaveTextContent('Company-wide');
+        expect(screen.getByTestId('coverage-facts')).toHaveTextContent('1 of 7 tracked facts');
+    });
+
+    test('no summary line without a summary', () => {
+        render(<EvidenceDetails evidence={evidence({summary: undefined, fields: [
+            field({field_key: 'funding_round', scope: {countries: ['US']}}),
+        ]})}/>);
+        expect(screen.queryByTestId('coverage-scoped')).toBeNull();
+        expect(screen.getByTestId('field-scope-funding_round')).toHaveTextContent('Covers only Location: US');
     });
 
     test('no link without a validated source_url, long text wraps via class', () => {

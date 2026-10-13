@@ -2,9 +2,10 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 import {
-    COMPANY_WIDE_LABEL, EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS, formatScopeWords, fundingRoundLabel,
-    requirementLabel, rtoPolicyLabel,
+    EVIDENCE_CHANGED_MARKER, EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS, formatScopeWords, fundingRoundLabel,
+    partialScopeWords, requirementLabel, rtoPolicyLabel,
 } from '../labels';
+import EvidenceBadge from '../evidence/EvidenceBadge';
 import {useOwnCompanyRead} from './useOwnCompanyRead';
 
 export interface FitRequirement {
@@ -15,6 +16,7 @@ export interface FitRequirement {
     scope_ok?: boolean;
     scope?: Record<string, unknown> | null;
     evidence_status?: {state?: string; last_verified_at?: string | null} | null;
+    source_kind?: string | null;
 }
 
 export interface CompanyFit {
@@ -42,10 +44,10 @@ interface FitGroupMeta {
 }
 
 export const FIT_GROUPS: FitGroupMeta[] = [
-    {key: 'meets', title: 'Meets', empty: 'None of your priorities are confirmed as met.'},
-    {key: 'tradeoffs', title: 'Tradeoffs', empty: 'No preferences are missed.'},
-    {key: 'does-not-meet', title: 'Does not meet', empty: 'No hard requirements are missed.'},
-    {key: 'unknown', title: 'Unknown', empty: 'Every priority could be decided.'},
+    {key: 'meets', title: 'Meets', empty: 'No priority is confirmed as met.'},
+    {key: 'tradeoffs', title: 'Tradeoffs', empty: 'No preference is unmet.'},
+    {key: 'does-not-meet', title: 'Does not meet', empty: 'No requirement is unmet.'},
+    {key: 'unknown', title: 'Unknown', empty: 'Nothing is undecided.'},
 ];
 
 /**
@@ -134,27 +136,118 @@ function Figures({fit}: {fit: CompanyFit}) {
 function FitRow({requirement}: {requirement: FitRequirement}) {
     const group = fitGroupOf(requirement);
     const mark = REQUIREMENT_MARKS[requirement.status] || REQUIREMENT_MARKS.unknown;
+    const label = (
+        <span className="company-fit-label">
+            <span aria-hidden="true">{mark.marker}</span> {requirementLabel(requirement.path)}
+        </span>
+    );
+    const rowProps = {
+        className: 'company-fit-row', 'data-testid': `fit-row-${requirement.path}`, 'data-group': group,
+        'data-status': requirement.status,
+    };
+    if (requirement.scope_ok === false) {
+        // One sentence: no value, no status word, and the scope is said once.
+        return (
+            <li {...rowProps}>
+                {label}
+                <span className="company-fit-out-of-scope small" data-testid={`fit-out-of-scope-${requirement.path}`}>
+                    Not counted for you: the fact on record covers {partialScopeWords(requirement.scope) ?? 'part of the company'} only.
+                </span>
+            </li>
+        );
+    }
     const evidence = evidenceText(requirement);
-    const outOfScope = requirement.scope_ok === false;
-    const scope = requirement.scope ? formatScopeWords(requirement.scope) : COMPANY_WIDE_LABEL;
+    const noFact = !requirement.evidence_status && !requirement.source_kind;
     return (
-        <li className="company-fit-row" data-testid={`fit-row-${requirement.path}`} data-group={group}
-            data-status={requirement.status}>
-            <span className="company-fit-label">
-                <span aria-hidden="true">{mark.marker}</span> {requirementLabel(requirement.path)}
-            </span>
+        <li {...rowProps}>
+            {label}
             <span className="company-fit-value">{observedText(requirement)}</span>
             <span className="company-fit-meta small text-muted">
-                {evidence && <span data-testid={`fit-evidence-${requirement.path}`}>{evidence}</span>}
-                {evidence && ' · '}
-                <span data-testid={`fit-scope-${requirement.path}`}><span className="visually-hidden">Covers: </span>{scope}</span>
+                {noFact ? (
+                    <span data-testid={`fit-scope-${requirement.path}`}>No fact on record</span>
+                ) : (
+                    <>
+                        {evidence && <span data-testid={`fit-evidence-${requirement.path}`}>{evidence}</span>}
+                        {evidence && ' · '}
+                        <span data-testid={`fit-scope-${requirement.path}`}>
+                            <span className="visually-hidden">Covers: </span>{formatScopeWords(requirement.scope)}
+                        </span>
+                    </>
+                )}
             </span>
-            {outOfScope && (
-                <span className="company-fit-out-of-scope small" data-testid={`fit-out-of-scope-${requirement.path}`}>
-                    Not counted: this fact covers {scope}, which does not include you.
-                </span>
-            )}
         </li>
+    );
+}
+
+const LEGEND_STATUSES = ['verified', 'stale', 'profile'] as const;
+const LEGEND_MARKS = ['match', 'mismatch', 'unknown'] as const;
+
+/**
+ * The words on the three numbers, the marks and the status words, in the
+ * visible page and not only in `title` attributes. Built from the constants the
+ * job-match panel's legend reads, so the two cannot drift.
+ */
+function FitLegend() {
+    return (
+        <details className="how-ranking-works company-fit-legend" data-testid="fit-legend">
+            <summary className="how-ranking-works-summary">What these labels mean</summary>
+            <div className="how-ranking-works-content">
+                <dl className="ranking-definitions mb-0">
+                    {[MATCH_TERMS.fit, MATCH_TERMS.companyScore, MATCH_TERMS.requirementCoverage].map(term => (
+                        <React.Fragment key={term.label}>
+                            <dt>{term.label}</dt>
+                            <dd>{term.meaning}</dd>
+                        </React.Fragment>
+                    ))}
+                    <dt>Why every priority can be met and the fit still be low</dt>
+                    <dd>
+                        Fit is a weighted score out of 100, not the share of your priorities that are met. Coverage
+                        only says how many of your priorities could be decided, so it can be 100% while the fit is low.
+                    </dd>
+                    <dt>Requirement and preference</dt>
+                    <dd>
+                        A requirement is a priority you marked as a requirement: when it is not met it is listed under
+                        Does not meet. A preference is one you marked as a preference: when it is not met it is listed
+                        under Tradeoffs.
+                    </dd>
+                    <dt>Marks</dt>
+                    <dd>
+                        <ul className="evidence-legend list-unstyled mb-0" data-testid="fit-mark-legend">
+                            {LEGEND_MARKS.map(key => (
+                                <li key={key}>
+                                    <span className="evidence-badge">
+                                        <span className="evidence-badge-marker" aria-hidden="true">{REQUIREMENT_MARKS[key].marker}</span>
+                                        {' '}{REQUIREMENT_MARKS[key].label}
+                                    </span>: {REQUIREMENT_MARKS[key].meaning}
+                                </li>
+                            ))}
+                        </ul>
+                    </dd>
+                    <dt>Evidence behind a row</dt>
+                    <dd>
+                        <ul className="evidence-legend list-unstyled mb-0">
+                            {LEGEND_STATUSES.map(status => (
+                                <li key={status}><EvidenceBadge status={status}/>: {EVIDENCE_STATUS_META[status].meaning}</li>
+                            ))}
+                            <li><span className="evidence-badge">{MATCH_TERMS.sourced.label}</span>: {MATCH_TERMS.sourced.meaning}</li>
+                            <li>
+                                <span className="evidence-badge">
+                                    <span className="evidence-badge-marker" aria-hidden="true">{EVIDENCE_CHANGED_MARKER}</span>
+                                    {' '}{MATCH_TERMS.changed.label}
+                                </span>: {MATCH_TERMS.changed.meaning}
+                            </li>
+                        </ul>
+                    </dd>
+                    <dt>Why a fact is {EVIDENCE_STATUS_META.verified.label} below and {MATCH_TERMS.sourced.label} here</dt>
+                    <dd>
+                        "Data Freshness &amp; Sources" says whether the fact itself was accepted and re-checked. A row
+                        here says how this priority was decided from it: read from a source's wording, inferred, or
+                        taken from a source that covers only part of the company, a priority is {MATCH_TERMS.sourced.label}
+                        even when the fact is {EVIDENCE_STATUS_META.verified.label}.
+                    </dd>
+                </dl>
+            </div>
+        </details>
     );
 }
 
@@ -166,6 +259,9 @@ export interface FitSectionProps {
     signInUrl: string | null;
     // Opens the priorities editor.
     onEditPriorities: () => void;
+    // The read finished (or a re-read replaced what is shown). The view uses it
+    // to keep a jump heading on screen when the content above it changed height.
+    onSettled?: () => void;
 }
 
 /**
@@ -174,12 +270,16 @@ export interface FitSectionProps {
  * and coverage as three separately labelled numbers. It reads the reader's own
  * evaluation, so nothing here is kept outside the component.
  */
-const FitSection: React.FC<FitSectionProps> = ({
-    organizationId, name, isAuthenticated, signInUrl, onEditPriorities,
-}) => {
+const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
+    organizationId, name, isAuthenticated, signInUrl, onEditPriorities, onSettled,
+}, headingRef) => {
     const {state, retry, refreshing} = useOwnCompanyRead<CompanyFit>('fit', organizationId, isAuthenticated, isCompanyFit, true);
     const target = name.length > 40 ? 'this company' : name;
     const titleId = 'company-fit-title';
+
+    React.useLayoutEffect(() => {
+        if (state.kind !== 'loading') onSettled?.();
+    }, [state, onSettled]);
 
     let body: React.ReactNode;
     if (!isAuthenticated || state.kind === 'signed-out') {
@@ -201,7 +301,9 @@ const FitSection: React.FC<FitSectionProps> = ({
         body = (
             <div className="alert alert-warning mb-0" role="alert" data-testid="fit-error">
                 <p className="mb-2">Fit could not be loaded.</p>
-                <button type="button" className="btn btn-outline-light" data-testid="fit-retry" onClick={retry}>Retry</button>
+                <button type="button" className="btn btn-outline-light" data-testid="fit-retry" onClick={retry}>
+                    Retry<span className="visually-hidden"> loading fit</span>
+                </button>
             </div>
         );
     } else if (!state.data.has_preferences) {
@@ -219,6 +321,7 @@ const FitSection: React.FC<FitSectionProps> = ({
         body = (
             <div data-testid="fit-ready" aria-busy={refreshing || undefined}>
                 <Figures fit={fit}/>
+                <FitLegend/>
                 {FIT_GROUPS.map(group => {
                     const rows = fit.requirements.filter(item => fitGroupOf(item) === group.key);
                     const headingId = `company-fit-${group.key}`;
@@ -243,10 +346,13 @@ const FitSection: React.FC<FitSectionProps> = ({
 
     return (
         <section className="company-fit mt-3" data-testid="company-fit" aria-labelledby={titleId}>
-            <h3 id={titleId} className="h5 mb-2">Fit with your priorities</h3>
+            <h3 id={titleId} ref={headingRef} tabIndex={-1} className="h5 mb-2 company-jump-heading">
+                Fit with your priorities
+            </h3>
             {body}
         </section>
     );
-};
+});
+FitSection.displayName = 'FitSection';
 
 export default FitSection;

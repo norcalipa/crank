@@ -143,6 +143,8 @@ export const formatScopeWords = (scope: Record<string, unknown> | null | undefin
     const parts: string[] = [];
     let other = false;
     for (const [key, value] of Object.entries(scope || {})) {
+        // Attribution (which domain a crawler claimed), not a limit on what the fact covers.
+        if (key === 'claimed_domain') continue;
         const values = (Array.isArray(value) ? value : [value])
             .filter(item => typeof item === 'string' || typeof item === 'number')
             .map(String)
@@ -156,6 +158,12 @@ export const formatScopeWords = (scope: Record<string, unknown> | null | undefin
     }
     if (other) parts.push('Limited scope');
     return parts.length > 0 ? parts.join('; ') : COMPANY_WIDE_LABEL;
+};
+
+/** The limit of a fact that covers only part of the company, in words; null for a company-wide one. */
+export const partialScopeWords = (scope: Record<string, unknown> | null | undefined): string | null => {
+    const words = formatScopeWords(scope);
+    return words === COMPANY_WIDE_LABEL ? null : words;
 };
 
 // The reader's own requirements, by canonical path (the labels the match

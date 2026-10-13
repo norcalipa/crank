@@ -5,6 +5,7 @@ import {act, cleanup, fireEvent, render, renderHook, screen, waitFor, within} fr
 import * as React from 'react';
 
 import * as store from '../workspace/store';
+import {MATCH_TERMS, REQUIREMENT_MARKS} from '../labels';
 import FitSection, {CompanyFit, FitRequirement, fitGroupOf, observedText} from './FitSection';
 import {useOwnCompanyRead} from './useOwnCompanyRead';
 
@@ -121,7 +122,74 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(row.getAttribute('data-group')).toBe('unknown');
         expect(screen.getByTestId('fit-group-meets')).not.toContainElement(row);
         expect(screen.getByTestId('fit-out-of-scope-funding_stage'))
-            .toHaveTextContent('Not counted: this fact covers Location: US, which does not include you.');
+            .toHaveTextContent('Not counted for you: the fact on record covers Location: US only.');
+        // One sentence: no value, no status word, and the scope is not said twice.
+        expect(row).toHaveTextContent(/^\S* ?Funding stageNot counted for you: the fact on record covers Location: US only\.$/);
+        expect(screen.queryByTestId('fit-scope-funding_stage')).toBeNull();
+        expect(screen.queryByTestId('fit-evidence-funding_stage')).toBeNull();
+        expect(row).not.toHaveTextContent('Unknown');
+    });
+
+    test('an out-of-scope fact with no scope on record still says so in one sentence', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({requirements: [
+            req({status: 'unknown', scope_ok: false, scope: null, observed: null}),
+        ]})));
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.getByTestId('fit-out-of-scope-funding_stage'))
+            .toHaveTextContent('Not counted for you: the fact on record covers part of the company only.');
+    });
+
+    test('a requirement with no fact behind it reads "No fact on record", not "Company-wide"', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({requirements: [
+            req({path: 'industry', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
+            req({path: 'funding_stage', status: 'match', evidence_status: null, source_kind: 'field'}),
+        ]})));
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.getByTestId('fit-scope-industry')).toHaveTextContent('No fact on record');
+        expect(screen.getByTestId('fit-row-industry')).not.toHaveTextContent('Company-wide');
+        // A field-sourced value is a fact on record, company-wide.
+        expect(screen.getByTestId('fit-scope-funding_stage')).toHaveTextContent('Company-wide');
+    });
+
+    test('the disclosure explains the numbers, the marks and the status words from the shared constants', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        const legend = screen.getByTestId('fit-legend');
+        expect(legend.tagName).toBe('DETAILS');
+        expect(legend).not.toHaveAttribute('open');
+        const text = legend.textContent || '';
+        for (const term of [MATCH_TERMS.fit, MATCH_TERMS.companyScore, MATCH_TERMS.requirementCoverage,
+            MATCH_TERMS.sourced, MATCH_TERMS.changed]) {
+            expect(text).toContain(term.label);
+            expect(text).toContain(term.meaning);
+        }
+        for (const mark of Object.values(REQUIREMENT_MARKS)) expect(text).toContain(mark.meaning);
+        expect(text).toContain('Fit is a weighted score out of 100');
+        expect(text).toContain('Coverage only says how many of your priorities could be decided');
+        expect(text).toContain('A requirement is a priority you marked as a requirement');
+        expect(text).toContain('Why a fact is Verified below and Sourced, not confirmed here');
+        expect(within(legend).getByText('What these labels mean').tagName).toBe('SUMMARY');
+    });
+
+    test('the heading takes focus (a jump target) and the settle callback runs when the read lands', async () => {
+        const onSettled = jest.fn();
+        const ref = React.createRef<HTMLHeadingElement>();
+        render(<FitSection ref={ref} organizationId={4} name="Acme" isAuthenticated={true} signInUrl={null}
+                           onEditPriorities={() => {}} onSettled={onSettled}/>);
+        expect(onSettled).not.toHaveBeenCalled();
+        await screen.findByTestId('fit-ready');
+        expect(onSettled).toHaveBeenCalledTimes(1);
+        expect(ref.current).toBe(document.getElementById('company-fit-title'));
+        expect(ref.current).toHaveAttribute('tabindex', '-1');
+    });
+
+    test('the failure alert names what Retry retries', async () => {
+        global.fetch = jest.fn().mockRejectedValue(new Error('boom'));
+        renderFit();
+        const alert = await screen.findByTestId('fit-error');
+        expect(within(alert).getByRole('button', {name: 'Retry loading fit'})).toBeInTheDocument();
     });
 
     test('empty groups say so', async () => {
@@ -132,10 +200,13 @@ describe('FitSection (issue #486, AC 15-16)', () => {
             expect(screen.getByTestId(`fit-empty-${key}`)).toBeInTheDocument();
         }
         expect(screen.queryByTestId('fit-empty-meets')).toBeNull();
+        expect(screen.getByTestId('fit-empty-tradeoffs')).toHaveTextContent('No preference is unmet.');
+        expect(screen.getByTestId('fit-empty-does-not-meet')).toHaveTextContent('No requirement is unmet.');
+        expect(screen.getByTestId('fit-empty-unknown')).toHaveTextContent('Nothing is undecided.');
         global.fetch = jest.fn().mockResolvedValue(answer(fit({requirements: [req({status: 'unknown', observed: null})]})));
         cleanup();
         renderFit();
-        await screen.findByTestId('fit-empty-meets');
+        expect(await screen.findByTestId('fit-empty-meets')).toHaveTextContent('No priority is confirmed as met.');
     });
 
     test('figures show a dash when a number is not known', async () => {
