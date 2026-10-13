@@ -1645,6 +1645,9 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
                 await route.continue();
             });
             await page.goto('/');
+            // The browser's own scroll anchoring would keep a fully visible heading in place by itself; this
+            // case is about what the page does when it does not (a heading under the bar, a browser without it).
+            await page.addStyleTag({content: '* { overflow-anchor: none !important; }'});
             await opener(page).click();
             await expect(page.getByTestId('fit-loading')).toBeVisible();
             await page.getByTestId('company-view-jobs').click();
@@ -1657,9 +1660,12 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
             expect(before.top).toBeGreaterThanOrEqual(49);
             release();
             await expect(page.getByTestId('fit-ready')).toBeVisible();
+            // While the answer is out the page is short, so the heading can only reach where the page ends; once
+            // the answer lands the heading is brought to its scroll margin (4.5rem below the top), not left
+            // wherever the grown page put it.
             await expect.poll(async () => {
                 const after = await position();
-                return after.top >= 49 && after.bottom <= after.inner;
+                return after.top >= 49 && after.top <= 110 && after.bottom <= after.inner;
             }).toBe(true);
             await page.unroute('**/api/organizations/*/fit/');
         }
