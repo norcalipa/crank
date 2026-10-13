@@ -12,6 +12,10 @@ Loads the acceptance fixtures described in
 - accepted / stale / conflicting ``CompanyProfileObservation`` evidence, with
   the accepted observation strictly the latest so the ordinary provenance
   surface returns it;
+- field-level ``CompanyFieldEvidence`` for the example company in every state
+  a usability session probes: accepted and fresh (``public_status``),
+  accepted but stale (``funding_round``), conflicted (``rto_policy``), and
+  one correctable field with no evidence at all (``accelerated_vesting``);
 - active / expired ``JobListing`` rows under an approved+enabled source;
 - ordinary and unknown-requirement ``JobMatch`` cases for a test account;
 - an ordinary test account (throwaway credential, documented in the baseline
@@ -20,7 +24,10 @@ Loads the acceptance fixtures described in
   explicit ``--staff-password`` provisioning flag, so no privileged
   credential is ever repo-known or reset implicitly.
 
-The command is idempotent (``get_or_create`` everywhere), refuses to run with
+The command is idempotent (``get_or_create`` everywhere; evidence timestamps
+are creation-scoped so a rerun changes nothing, and a ``staging-baseline-1``
+database is upgraded in place by adding the evidence rows and the ordinary
+match's stored requirements), refuses to run with
 ``ENV=prod``, and never touches approval policy of pre-existing sources other
 than creating its own approved+enabled fixture source.
 
@@ -39,18 +46,21 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from crank.agents.jobs.matching import evaluate_requirements, project_criteria
 from crank.management.commands.seed_job_sources import SEED_SOURCES
-from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
+from crank.models.preference import SCHEMA_VERSION, default_preferences
+from crank.services.company_evidence import resolve_field_evidence
 from crank.settings.base import DEFAULT_ALGORITHM_ID
 
 #: Revision of this fixture set. Emitted by ``readiness_baseline`` as the
 #: fixture-set revision whenever the fixture markers are present; bump when
 #: the fixture rows below change shape or meaning.
-FIXTURE_REVISION = "staging-baseline-1"
+FIXTURE_REVISION = "staging-baseline-2"
 
 #: Throwaway staging credential for the *ordinary* (non-privileged) test
 #: account only. Never a real credential; documented in the baseline doc.
@@ -76,6 +86,26 @@ EXPIRED_LISTING_DAYS = 30
 #: ``organization_provenance`` surface (latest observation only) returns the
 #: accepted row, as the documented ordinary replay claims.
 CONFLICTED_OBSERVATION_HOURS_AGO = 1
+
+#: Field-level evidence rows (revision 2) are keyed on this validation version,
+#: so a rerun finds them and a ``staging-baseline-1`` database, which has none,
+#: gains them. ``public_status`` is the fresh accepted field (180-day window),
+#: ``funding_round`` is accepted but verified longer ago than its window,
+#: ``rto_policy`` is a conflicted claim awaiting review and
+#: ``accelerated_vesting`` deliberately has no evidence.
+EVIDENCE_VERSION = "staging-baseline-2"
+STALE_EVIDENCE_DAYS = 200
+
+#: What the ordinary match asks of the example company. The stored
+#: requirements come from the real evaluator over this document, so which
+#: requirement is verified, stale, profile-backed or unknown is decided by the
+#: product and the evidence rows above, not written by hand.
+MATCH_PREFERENCES = {
+    "compensation": {"require_public_company": True},
+    "funding_stage": ["public"],
+    "work_location": {"modes": ["hybrid"]},
+    "vesting": {"prefer_accelerated": True},
+}
 
 
 class Command(BaseCommand):
@@ -205,7 +235,7 @@ class Command(BaseCommand):
             observed_name=TARGET_ORG_NAME,
             extraction_version="staging-baseline-1",
         )
-        _, created["observation_accepted"] = CompanyProfileObservation.objects.get_or_create(
+        observation_accepted, created["observation_accepted"] = CompanyProfileObservation.objects.get_or_create(
             fingerprint="staging-accepted",
             defaults={
                 **obs_defaults,
@@ -214,7 +244,7 @@ class Command(BaseCommand):
                 "description": "Fresh accepted profile evidence.",
             },
         )
-        _, created["observation_stale"] = CompanyProfileObservation.objects.get_or_create(
+        observation_stale, created["observation_stale"] = CompanyProfileObservation.objects.get_or_create(
             fingerprint="staging-stale",
             defaults={
                 **obs_defaults,
@@ -224,7 +254,7 @@ class Command(BaseCommand):
                 "description": "Stale evidence: observed_at is far in the past.",
             },
         )
-        _, created["observation_conflicted"] = CompanyProfileObservation.objects.get_or_create(
+        observation_conflicted, created["observation_conflicted"] = CompanyProfileObservation.objects.get_or_create(
             fingerprint="staging-conflicted",
             defaults={
                 **obs_defaults,
@@ -238,6 +268,47 @@ class Command(BaseCommand):
                 "rto_evidence": "One source says remote; another says in-office.",
             },
         )
+
+        # ── Field-level evidence: fresh, stale, conflicted, and none ──
+        # Timestamps live in ``defaults`` (creation-scoped), so a rerun, or an
+        # upgrade of a revision-1 database, never rewrites an existing row.
+        evidence_url = "https://jobs.example.test/profile"
+        field_key = CompanyFieldEvidence.FieldKey
+        evidence_state = CompanyFieldEvidence.State
+        evidence_rows = (
+            (
+                "evidence_fresh", field_key.PUBLIC_STATUS, evidence_state.ACCEPTED,
+                "Public company", observation_accepted, now, now,
+            ),
+            (
+                "evidence_stale", field_key.FUNDING_ROUND, evidence_state.ACCEPTED,
+                "Public", observation_stale,
+                now - timedelta(days=STALE_EVIDENCE_DAYS),
+                now - timedelta(days=STALE_EVIDENCE_DAYS),
+            ),
+            (
+                "evidence_conflicted", field_key.RTO_POLICY, evidence_state.CONFLICTED,
+                "In office", observation_conflicted,
+                now - timedelta(hours=CONFLICTED_OBSERVATION_HOURS_AGO), None,
+            ),
+        )
+        for label, key, state, value, observation, observed_at, verified_at in evidence_rows:
+            _, created[label] = CompanyFieldEvidence.objects.get_or_create(
+                organization=target_org,
+                field_key=key,
+                state=state,
+                validation_version=EVIDENCE_VERSION,
+                defaults={
+                    "value_text": value,
+                    "source_url": evidence_url,
+                    "source_domain": "jobs.example.test",
+                    "observation": observation,
+                    "observed_at": observed_at,
+                    "extractor_version": EVIDENCE_VERSION,
+                    "last_checked_at": observed_at,
+                    "last_verified_at": verified_at,
+                },
+            )
 
         # ── Approved+enabled fixture source with active/expired listings ──
         usajobs = next(
@@ -327,7 +398,27 @@ class Command(BaseCommand):
         staff.save()
 
         # ── Ordinary + unknown-requirement match cases ──
-        _, created["match_ordinary"] = JobMatch.objects.get_or_create(
+        # The ordinary match stores the requirements the real evaluator
+        # reports for this listing and company, so it carries a requirement
+        # confirmed by the fresh evidence row, one resting on stale evidence,
+        # and the unknown / profile-backed cases.
+        preferences = default_preferences()
+        preferences["compensation"].update(MATCH_PREFERENCES["compensation"])
+        preferences["work_location"].update(MATCH_PREFERENCES["work_location"])
+        preferences["vesting"].update(MATCH_PREFERENCES["vesting"])
+        preferences["funding_stage"] = list(MATCH_PREFERENCES["funding_stage"])
+        evidence = resolve_field_evidence(target_org)
+        outcomes = evaluate_requirements(
+            active_listing,
+            project_criteria(preferences, SCHEMA_VERSION),
+            organization=target_org,
+            evidence=evidence,
+        )
+        requirements = [outcome.as_dict() for outcome in outcomes]
+        evidence_ids = sorted(
+            {o.source_id for o in outcomes if o.source_kind == "evidence"}
+        )
+        match_ordinary, created["match_ordinary"] = JobMatch.objects.get_or_create(
             user=ordinary,
             listing=active_listing,
             preference_version=1,
@@ -347,10 +438,20 @@ class Command(BaseCommand):
                         "detail": "salary_min=120000 USD/year",
                     },
                 ],
+                "requirements": requirements,
+                "evidence_ids": evidence_ids,
                 "first_matched_at": now - timedelta(days=1),
                 "last_matched_at": now,
             },
         )
+        # Upgrade a revision-1 match in place; a no-op when already current.
+        if (match_ordinary.requirements, match_ordinary.evidence_ids) != (
+            requirements,
+            evidence_ids,
+        ):
+            match_ordinary.requirements = requirements
+            match_ordinary.evidence_ids = evidence_ids
+            match_ordinary.save(update_fields=["requirements", "evidence_ids"])
         _, created["match_unknown_requirement"] = JobMatch.objects.get_or_create(
             user=ordinary,
             listing=active_listing,

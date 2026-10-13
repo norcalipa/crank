@@ -33,7 +33,7 @@ Record shape (staff-only evidence; not a public contract):
 | `frontend_build_id` | Webpack contenthash of the served bundle | `crank.release.frontend_build_id()` |
 | `migrations` | `{applied_count, pending_count, status}`; `pending` ⇒ missing schema | `crank.release.migration_status_summary()` |
 | `migration_leaves` | Exact deployed revision: bounded per-app applied leaf migrations plus the exact pending leaves (`{applied, applied_count, pending, pending_count, truncated, status}`) | `readiness_baseline.migration_leaves()` (bounded by 25 identifiers per list) |
-| `fixtures` | `{present, revision}` — whether the staging fixture set is loaded (detected via its unique marker rows) and its revision (`staging-baseline-1`) | `readiness_baseline.fixture_set()` |
+| `fixtures` | `{present, revision}` — whether the staging fixture set is loaded (detected via its unique marker rows) and its revision (`staging-baseline-2`) | `readiness_baseline.fixture_set()` |
 | `readiness_gates` | Individually named, non-secret gate booleans: `adapter_registered`, `adapter_count`, `adapters`, `usajobs_adapter_registered`, `firecrawl_adapter_registered`, `credentials_configured`, `usajobs_credentials_configured`, `firecrawl_credentials_configured`, `pipeline_enabled`, `scheduler_enabled` | `readiness_baseline.readiness_gates()` (mirrors `crank.admin_dashboard._readiness_gates()`; reads the code-owned job adapter registry, never credential values) |
 | `job_search_provider` | Selected job-search provider token (safe-token validated) | `crank.release._safe_job_search_provider()` |
 | `capabilities` | Non-secret capability configuration (enabled flags + issues; secrets reduced to presence booleans) | `crank.capability.capability_report().to_dict()` |
@@ -105,7 +105,7 @@ of the target checkout with deployed contracts:
 ## 4. Staging fixture set
 
 `seed_staging_baseline` (dev/staging only; refuses `ENV=prod`, idempotent,
-fixture-set revision `staging-baseline-1` — reported by `readiness_baseline`
+fixture-set revision `staging-baseline-2` — reported by `readiness_baseline`
 under `fixtures.revision`) loads the acceptance fixtures:
 
 - **Rankings dependencies** — the default `ScoreAlgorithm`
@@ -122,6 +122,26 @@ under `fixtures.revision`) loads the acceptance fixtures:
   (`accepted` but `observed_at` 45 days old), `conflicted`
   (`conflict_fields=["rto_evidence"]`, one hour older than the accepted row so
   the ordinary provenance surface returns the accepted row).
+- **Field-level evidence (revision 2)** — `CompanyFieldEvidence` rows on
+  `Staging Example Corp`, one per state a moderated session has to probe.
+  The rows link to the observations above and are keyed on validation
+  version `staging-baseline-2`:
+
+  | Field | State | What a moderator can probe |
+  | --- | --- | --- |
+  | Public status (`Public company`) | accepted, verified today | The "Verified" requirement chip, the source and date in the company dialog, and that the company-wide public requirement is confirmed by this row. |
+  | Funding round (`Public`) | accepted, last verified 200 days ago (window: 180) | The "Stale" chip: the value is shown with its date, and a reason that rests only on it is withheld rather than stated as fact. |
+  | RTO policy (`In office`) | conflicted claim, no accepted row | "Conflicting sources" and the review marker: a conflicted claim never counts as verification, so the requirement falls back to the company's own Hybrid field. |
+  | Accelerated vesting | no evidence | The "Unknown" case and a field a session can correct or add a source for (`unverified_fields`). |
+
+  The ordinary match (`preference_version` 1) stores the requirements the
+  real matcher reports for the active listing and company against a fixed
+  preference document (public company, public funding stage, hybrid, accelerated
+  vesting), so the verified, stale, profile-backed and unknown cases are
+  decided by the product rather than written by hand.
+  `crank/tests/management/test_acceptance_fixture_evidence.py` proves that
+  every requirement the product reports as verified resolves to an accepted
+  `CompanyFieldEvidence` row of the same company.
 - **Jobs** — `Staging Baseline Source` (approved + enabled, usajobs adapter)
   with one `active` and one `expired` `JobListing`.
 - **Match cases** — two `JobMatch` rows for the ordinary test account: one
@@ -142,6 +162,17 @@ under `fixtures.revision`) loads the acceptance fixtures:
 python manage.py seed_staging_baseline            # or: --password 'custom-throwaway'
 python manage.py readiness_baseline               # baseline now reflects the fixtures
 ```
+
+**Upgrading a `staging-baseline-1` database.** Run the same command. Revision 1
+had no field-level evidence and stored no requirements on the ordinary match;
+revision 2 adds the three evidence rows and fills in the ordinary match's
+`requirements` and `evidence_ids` in place (same match, same primary key). A
+second run changes nothing: evidence timestamps are set when a row is created
+and never rewritten, so the fresh row keeps the date it was loaded and turns
+stale after its 180-day window. To refresh it, delete that
+`CompanyFieldEvidence` row (validation version `staging-baseline-2`) and rerun.
+The command still refuses `ENV=prod` and still gives the staff account no
+repository-known password.
 
 ## 5. Staging replay procedure
 

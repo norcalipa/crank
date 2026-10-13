@@ -28,7 +28,7 @@ from crank.management.commands.readiness_baseline import (
     migration_leaves,
 )
 from crank.models.agent_run import AgentRun
-from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
@@ -428,8 +428,9 @@ class SeedStagingBaselineTests(TestCase):
         self.assertGreaterEqual(record["source_counts"]["enabled"], 1)
         self.assertEqual(
             record["fixtures"],
-            {"present": True, "revision": "staging-baseline-1"},
+            {"present": True, "revision": "staging-baseline-2"},
         )
+        self.assertFalse(record["release_verdict"]["production_ready"])
 
     def test_seed_is_idempotent(self):
         _seed_staging()
@@ -438,6 +439,7 @@ class SeedStagingBaselineTests(TestCase):
         self.assertEqual(ScoreAlgorithm.objects.count(), 1)
         self.assertEqual(ScoreAlgorithmWeight.objects.count(), 1)
         self.assertEqual(CompanyProfileObservation.objects.count(), 3)
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 3)
         self.assertEqual(JobSourceCatalog.objects.count(), 1)
         self.assertEqual(
             JobListing.all_objects.count(),
