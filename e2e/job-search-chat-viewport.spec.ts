@@ -928,15 +928,15 @@ test.describe('one transcript scroller (issue #483)', () => {
 // Issue #568: the confirmation opens under the pointer that chose its item, so
 // the second press of a double press lands on the confirm button. It must be
 // ignored, however late it is released or handled; a deliberate press after the
-// delay still confirms. On this fixture page the confirm button opens under the
-// item at the listed sizes only; at 320x480 and 375x440 the fixture's menu sits 49
-// to 53 px higher than on the real page, so a press on the item cannot land on the
-// button here. 320x568 is not a case because the overlap there depends on the
-// fonts: about 15 px high with some hosts' fonts and none with CI's in Chromium and
-// Firefox (the button opens wholly below the item), which is under the 8 px the
-// cases require. On the real page the centre of the item
-// is on the button at 375x440, 430x440, 375x460 and 412x460 (e2e/django/chat-layout.spec.ts
-// covers 375x440 there), and not at 320x480, 375x380 or 320x420.
+// delay still confirms. The fixture carries the real panel header and the real
+// collapsed row (issue #483), so its menu sits where the real page's does and the
+// confirm button opens under the item at the listed sizes: on the real page the
+// centre of the item is on the button at 375x440, 430x440, 375x460 and 412x460
+// (e2e/django/chat-layout.spec.ts covers 375x440 there), and not at 320x480,
+// 375x380 or 320x420, which are therefore not cases here. 320x568 is not a case
+// either: the overlap there depends on the fonts (about 15 px high with some
+// hosts' fonts and none with CI's in Chromium and Firefox), which is under the
+// 8 px the cases require.
 test.describe('a double press on Delete conversation does not delete (issue #568)', () => {
     test.use({hasTouch: true});
 
@@ -944,7 +944,7 @@ test.describe('a double press on Delete conversation does not delete (issue #568
 
     const SIZES = [
         {width: 375, height: 667}, {width: 390, height: 844}, {width: 1024, height: 800}, {width: 1280, height: 800},
-        {width: 375, height: 380}, {width: 320, height: 420},
+        {width: 375, height: 440}, {width: 412, height: 460},
     ];
 
     type Press = (page: Page, x: number, y: number) => Promise<void>;
@@ -1100,5 +1100,248 @@ test.describe('a double press on Delete conversation does not delete (issue #568
         await waitForConfirmArmed(page);
         await page.keyboard.press('Enter');
         await expect.poll(() => deletes.length, {message: 'Enter after the delay deletes'}).toBe(1);
+    });
+});
+
+// Notices live in the transcript, and the footer notices collapse to one line (issue #483). Runs in Chromium,
+// Firefox and WebKit on the fixture page, where the chat sits in the same panel markup the app uses.
+test.describe('notices in the transcript and collapsing footer notices (issue #483)', () => {
+    const CHANGES = [
+        {path: 'compensation.minimum_salary', old: null, new: 150000},
+        {path: 'work_location.modes', old: [], new: ['remote']},
+        {path: 'notes', old: '', new: 'prefers remote-first teams'},
+    ];
+    const PROPOSAL = {
+        id: 'prop-483', scope: 'account', changes: CHANGES, change_count: 3, base_revision: 2, unsupported_criteria: [], currency: 'USD',
+        token: {patch: {set: {notes: 'prefers remote-first teams'}}, scope: 'account', base_revision: 2},
+    };
+    const LONG_ERROR = `${'The assistant could not finish this reply because the provider stopped answering. '.repeat(8)}`.slice(0, 600);
+    const jsonRoute = (page: Page, url: string | RegExp, body: unknown, status = 200) => page.route(url, (route) => {
+        if (route.request().method() === 'GET' && String(url).includes('conversations')) return route.fallback();
+        return route.fulfill({status, contentType: 'application/json', body: JSON.stringify(body)});
+    });
+    const replyWith = (page: Page, extra: Record<string, unknown>, content = 'I can save these as your priorities.') => page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
+        ? route.fulfill({status: 201, contentType: 'application/json', body: JSON.stringify({
+            message: {id: 9000 + Math.floor(Math.random() * 900), role: 'assistant', content, preferences_changed: false, created: null, results: null},
+            preferences_changed: false, ...extra,
+        })})
+        : route.fallback()));
+    const send = async (page: Page, text: string) => {
+        await page.locator('textarea[aria-label="Message"]').fill(text);
+        await page.getByRole('button', {name: 'Send message'}).click();
+    };
+    // Everything the checks need, read in one evaluate.
+    const read = (page: Page) => page.evaluate(() => {
+        const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+        const body = document.querySelector('.assistant-panel-body') as HTMLElement;
+        const log = document.querySelector('[role="log"]') as HTMLElement;
+        const notices = document.querySelector('[data-testid="chat-footer-notices"]') as HTMLElement | null;
+        const form = document.querySelector('#job-search-chat form') as HTMLElement;
+        const notice = document.querySelector('[data-testid="transcript-notice"]') as HTMLElement | null;
+        const formRect = form.getBoundingClientRect();
+        const item = notice?.querySelector('.pref-change-item') ?? null;
+        const path = item?.querySelector('.pref-change-path') ?? null;
+        const values = item?.querySelector('.pref-change-values') ?? null;
+        const before = notice?.previousElementSibling ?? null;
+        const alerts = Array.from(document.querySelectorAll('#job-search-chat [data-testid="chat-error"]'));
+        return {
+            bodyScrollRange: body.scrollHeight - body.clientHeight,
+            logHeight: log.clientHeight,
+            noticesHeight: notices ? notices.getBoundingClientRect().height : 0,
+            collapsed: !!notices?.classList.contains('is-collapsed'),
+            collapsible: !!notices?.classList.contains('is-collapsible'),
+            composerInViewport: formRect.top >= -0.5 && formRect.bottom <= window.innerHeight + 0.5,
+            noticeInLog: !!notice && log.contains(notice),
+            noticeAfter: before ? before.getAttribute('aria-label') : null,
+            noticeAfterText: before ? (before.textContent ?? '') : null,
+            valuesRem: values ? values.getBoundingClientRect().width / rem : null,
+            stacked: values && path ? values.getBoundingClientRect().top >= path.getBoundingClientRect().bottom - 1 : null,
+            valuesFitName: values && path ? values.getBoundingClientRect().right <= (values.closest('.pref-change-notice') as HTMLElement).getBoundingClientRect().right + 1 : null,
+            alertCount: alerts.length,
+            alertText: alerts.length === 1 ? (alerts[0].textContent ?? '').replace(/Retry$/, '').trim() : null,
+        };
+    });
+    const settled = async (page: Page) => {
+        await page.evaluate(() => document.fonts.ready.then(() => undefined));
+        let previous = '';
+        let reading = await read(page);
+        await expect.poll(async () => {
+            reading = await read(page);
+            const now = JSON.stringify(reading);
+            const same = now === previous;
+            previous = now;
+            return same;
+        }, {message: 'the layout settles'}).toBe(true);
+        return reading;
+    };
+
+    for (const size of [{width: 1280, height: 900}, {width: 1024, height: 800}]) {
+        test(`the proposal, the applied notice, the search-only notice and the banner are in the transcript and take no height from it, ${size.width}x${size.height}`, async ({page}) => {
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            const quiet = await settled(page);
+            expect(quiet.noticeInLog).toBe(false);
+
+            const expectInTranscript = (shown: Awaited<ReturnType<typeof settled>>, label: string, rows = true) => {
+                expect(shown.noticeInLog, `${label}: the notice is inside the transcript`).toBe(true);
+                expect(shown.noticeAfter, `${label}: the notice follows the assistant's reply`).toBe('Assistant message');
+                expect(shown.noticeAfterText, `${label}: the notice follows the reply that made it`).toContain('I can save these');
+                expect(shown.logHeight, `${label}: the transcript keeps its height`).toBe(quiet.logHeight);
+                expect(shown.bodyScrollRange, `${label}: the panel body does not scroll`).toBeLessThanOrEqual(1);
+                // AC 10: the values column is at least 8rem wide, or the values stack under the name.
+                if (!rows) return;
+                expect(shown.valuesRem! >= 8 || shown.stacked, `${label}: values ${shown.valuesRem}rem wide, stacked ${shown.stacked}`).toBe(true);
+                expect(shown.valuesFitName, `${label}: values stay inside the notice`).toBe(true);
+            };
+
+            // The proposal, then apply it for the account.
+            await replyWith(page, {preference_proposal: PROPOSAL});
+            await send(page, 'Please keep it remote.');
+            await expect(page.getByTestId('preference-proposal-notice')).toBeVisible();
+            expectInTranscript(await settled(page), 'proposal');
+            await jsonRoute(page, '**/api/agent/preferences/apply/', {applied: true, scope: 'account', revision: 3, changes: CHANGES, undo: {expected_revision: 3, document: {}}});
+            await page.getByTestId('preference-apply-button').click();
+            await expect(page.getByTestId('preference-change-notice')).toBeVisible();
+            expectInTranscript(await settled(page), 'applied with undo');
+            // Dismissing changes neither the transcript's height nor the body's scroll range.
+            await page.getByRole('button', {name: 'Dismiss preference notice'}).first().click();
+            await expect(page.getByTestId('transcript-notice')).toHaveCount(0);
+            expect(await settled(page)).toMatchObject({logHeight: quiet.logHeight, bodyScrollRange: quiet.bodyScrollRange});
+
+            // This search only.
+            await page.unroute(/\/api\/agent\/conversations\/\d+\/$/);
+            await mockJobSearchApi(page, 'long');
+            await replyWith(page, {preference_proposal: PROPOSAL});
+            await send(page, 'Only for this search.');
+            await expect(page.getByTestId('preference-proposal-notice')).toBeVisible();
+            await jsonRoute(page, '**/api/agent/preferences/apply/', {applied: false, scope: 'search', matches: {job_matches: [{listing_id: 1}], organization_matches: []}});
+            await page.getByTestId('preference-proposal-search-only-button').click();
+            await expect(page.getByTestId('preference-search-applied')).toBeVisible();
+            expectInTranscript(await settled(page), 'this search only', false);
+            await page.getByRole('button', {name: 'Dismiss search filter notice'}).click();
+
+            // The plain banner.
+            await page.unroute(/\/api\/agent\/conversations\/\d+\/$/);
+            await mockJobSearchApi(page, 'long');
+            await replyWith(page, {preferences_changed: true});
+            await send(page, 'One more thing.');
+            const banner = page.getByRole('status', {name: 'Preference update'});
+            await expect(banner).toBeVisible();
+            const shown = await settled(page);
+            expect(shown.noticeInLog).toBe(true);
+            expect(shown.logHeight).toBe(quiet.logHeight);
+            expect(shown.bodyScrollRange).toBeLessThanOrEqual(1);
+        });
+    }
+
+    for (const size of [{width: 1280, height: 900}, {width: 1024, height: 800}, {width: 375, height: 667}, {width: 320, height: 640}]) {
+        test(`a status notice and a 600-character error collapse to one line behind Details, ${size.width}x${size.height}`, async ({page}) => {
+            await page.setViewportSize(size);
+            await page.route('**/api/agent/assistant-status/', (route) => route.fulfill({
+                status: 200, contentType: 'application/json',
+                body: JSON.stringify({state: 'temporarily_unavailable', actions: ['retry'], checked_at: '2026-10-13T00:00:00Z'}),
+            }));
+            await loadPanel(page, 'priorities=57');
+            await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
+            const statusOnly = await settled(page);
+            expect(statusOnly.collapsible).toBe(false);
+
+            await page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
+                ? route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: {type: 'assistant_unavailable', message: LONG_ERROR}})})
+                : route.fallback()));
+            await send(page, 'And which of them are hiring now?');
+            await expect(page.getByTestId('chat-error')).toBeVisible();
+            const details = page.getByTestId('chat-notices-details');
+            await expect(details).toHaveText('Details');
+            await expect(details).toHaveAttribute('aria-expanded', 'false');
+            const collapsed = await settled(page);
+            expect(collapsed.collapsed).toBe(true);
+            expect(collapsed.noticesHeight, 'the collapsed notice area is one line').toBeLessThanOrEqual(56);
+            expect(collapsed.composerInViewport, 'collapsed: the composer is inside the viewport').toBe(true);
+            expect(collapsed.bodyScrollRange).toBeLessThanOrEqual(1);
+            // One alert holds the whole text, collapsed.
+            expect(collapsed.alertCount).toBe(1);
+            expect(collapsed.alertText).toBe(LONG_ERROR);
+            await expect(page.getByTestId('assistant-status-notice')).toBeHidden();
+            // The error is clipped by CSS only: its box is one line, its text is whole.
+            const clipped = await page.getByTestId('chat-error').locator('.chat-error-text').evaluate((el) => ({
+                overflows: el.scrollWidth > el.clientWidth, lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+            }));
+            expect(clipped).toEqual({overflows: true, lines: 1});
+
+            await details.click();
+            await expect(details).toHaveText('Hide details');
+            await expect(details).toHaveAttribute('aria-expanded', 'true');
+            await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
+            const expanded = await settled(page);
+            expect(expanded.collapsed).toBe(false);
+            expect(expanded.composerInViewport, 'expanded: the composer is inside the viewport').toBe(true);
+            expect(expanded.bodyScrollRange).toBeLessThanOrEqual(1);
+            expect(expanded.alertCount).toBe(1);
+            expect(expanded.alertText).toBe(LONG_ERROR);
+            // The expanded notices stop at the existing cap and scroll inside it.
+            const capped = await page.getByTestId('chat-footer-notices').evaluate((el) => ({
+                cap: parseFloat(getComputedStyle(el).maxHeight), height: el.getBoundingClientRect().height, scrolls: getComputedStyle(el).overflowY,
+            }));
+            expect(capped.height).toBeLessThanOrEqual(capped.cap + 1);
+            expect(capped.scrolls).toBe('auto');
+
+            await details.click();
+            await expect(details).toHaveText('Details');
+            expect((await settled(page)).collapsed).toBe(true);
+
+            // A new error starts collapsed, even after the last one was expanded.
+            await details.click();
+            await page.unroute(/\/api\/agent\/conversations\/\d+\/$/);
+            await page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
+                ? route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: {type: 'assistant_unavailable', message: `Second failure. ${LONG_ERROR}`}})})
+                : route.fallback()));
+            await page.getByTestId('retry-button').click();
+            await expect(page.getByTestId('chat-error')).toContainText('Second failure.');
+            await expect(page.getByTestId('chat-notices-details')).toHaveAttribute('aria-expanded', 'false');
+            expect((await settled(page)).collapsed).toBe(true);
+        });
+    }
+
+    test('a failed send at 320x640 leaves the transcript at least 230px tall, and its Retry is in the one line', async ({page}) => {
+        await page.setViewportSize({width: 320, height: 640});
+        await loadPanel(page, 'priorities=57');
+        const quiet = await settled(page);
+        await page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
+            ? route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: {type: 'assistant_unavailable', message: 'The assistant is not available right now. Please try again later.'}})})
+            : route.fallback()));
+        await send(page, 'And which of them are hiring now?');
+        await expect(page.getByTestId('retry-button')).toBeVisible();
+        const failed = await settled(page);
+        expect(failed.collapsed).toBe(true);
+        expect(failed.noticesHeight).toBeLessThanOrEqual(56);
+        expect(failed.logHeight, `the transcript was ${quiet.logHeight}px before the send`).toBeGreaterThanOrEqual(230);
+        expect(failed.composerInViewport).toBe(true);
+        // The Retry in the line works: it sends the same turn again.
+        let posts = 0;
+        await page.unroute(/\/api\/agent\/conversations\/\d+\/$/);
+        await page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => {
+            if (route.request().method() !== 'POST') return route.fallback();
+            posts += 1;
+            return route.fulfill({status: 201, contentType: 'application/json', body: JSON.stringify({
+                message: {id: 9100, role: 'assistant', content: 'Here you go.', preferences_changed: false, created: null, results: null}, preferences_changed: false,
+            })});
+        });
+        await page.getByTestId('retry-button').click();
+        await expect(page.getByTestId('chat-error')).toHaveCount(0);
+        expect(posts).toBe(1);
+    });
+
+    test('an error alone is not collapsed unless it is long, and a short one has no Details button', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await loadPanel(page, 'priorities=57');
+        await page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
+            ? route.fulfill({status: 429, contentType: 'application/json', body: JSON.stringify({error: {type: 'rate_limited', message: 'Too many messages. Wait a minute.'}})})
+            : route.fallback()));
+        await send(page, 'Hello again');
+        await expect(page.getByTestId('chat-error')).toHaveText('Too many messages. Wait a minute.');
+        const reading = await settled(page);
+        expect(reading.collapsible).toBe(false);
+        await expect(page.getByTestId('chat-notices-details')).toHaveCount(0);
     });
 });

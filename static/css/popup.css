@@ -3497,10 +3497,6 @@ body.assistant-open .app-content .table-responsive,
     min-inline-size: 44px;
 }
 
-#job-search-chat .chat-footer-notices.is-collapsed {
-    margin-bottom: .25rem;
-}
-
 #job-search-chat .chat-footer-notices.is-collapsed .chat-error-row {
     align-items: center;
     margin-bottom: 0;
@@ -3517,8 +3513,9 @@ body.assistant-open .app-content .table-responsive,
     align-self: flex-end;
 }
 
+/* The Details toggle and Retry are 44px targets: the row is exactly that tall and the alert adds no padding. */
 #job-search-chat .chat-footer-notices.is-collapsed .chat-error-alert {
-    padding: .25rem .5rem;
+    padding: 0 .5rem;
 }
 
 #job-search-chat .chat-footer-notices.is-collapsed .chat-error-text {
