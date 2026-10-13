@@ -1323,7 +1323,7 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         });
     }
 
-    test('a failed send at 320x640 leaves the transcript at least 230px tall (less the disclaimer\'s extra lines), and its Retry is in the compact row', async ({page}) => {
+    test('a failed send at 320x640 leaves the transcript at least 230px tall, and its Retry is in the compact row', async ({page}) => {
         await page.setViewportSize({width: 320, height: 640});
         await loadPanel(page, 'priorities=57');
         const quiet = await settled(page);
@@ -1335,13 +1335,11 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         const failed = await settled(page);
         expect(failed.collapsed).toBe(true);
         expect(failed.noticesHeight).toBeLessThanOrEqual(56);
-        // 230px is the gate where the composer's disclaimer takes one line; where the font wraps it, the gate falls by
-        // the extra height, and the send may cost the transcript no more than the compact row.
+        // 230px, whatever the font: at 340px and under the disclaimer is 11px type and stays on one line.
         const disclaimerLines = await page.locator('#job-search-chat .chat-disclaimer').evaluate((el) => (
             Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))));
-        const extra = await page.locator('#job-search-chat .chat-disclaimer').evaluate((el) => Math.max(0, el.getBoundingClientRect().height - parseFloat(getComputedStyle(el).lineHeight)));
         expect(disclaimerLines).toBeGreaterThan(0);
-        expect(failed.logHeight, `the transcript was ${quiet.logHeight}px before the send`).toBeGreaterThanOrEqual(230 - extra);
+        expect(failed.logHeight, `the transcript was ${quiet.logHeight}px before the send`).toBeGreaterThanOrEqual(230);
         expect(quiet.logHeight - failed.logHeight, 'the failed send costs the transcript at most the compact row').toBeLessThanOrEqual(56);
         expect(failed.composerInViewport).toBe(true);
         // The Retry in the line works: it sends the same turn again.
@@ -1371,6 +1369,110 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         expect(reading.collapsible).toBe(false);
         await expect(page.getByTestId('chat-notices-details')).toHaveCount(0);
     });
+
+    // Visual review round 2: what takes a press, not what is drawn. A folded status notice used to be painted over
+    // Retry's top 16px, and the expanded toggle's left third was where Retry appears after a collapse.
+    const SHORT_ERROR = 'The assistant is unavailable right now. Please try again.';
+    const failSendsWith = async (page: Page, message: string, counter: {posts: number}) => {
+        await page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => {
+            if (route.request().method() !== 'POST') return route.fallback();
+            counter.posts += 1;
+            return route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: {type: 'assistant_unavailable', message}})});
+        });
+    };
+    const statusUnavailable = (page: Page) => page.route('**/api/agent/assistant-status/', (route) => route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({state: 'temporarily_unavailable', actions: ['retry'], checked_at: '2026-10-13T00:00:00Z'}),
+    }));
+    for (const size of [
+        {width: 1280, height: 900}, {width: 1024, height: 800}, {width: 800, height: 600}, {width: 768, height: 1024},
+        {width: 375, height: 667}, {width: 320, height: 640},
+    ]) {
+        for (const error of [{name: '57-character', text: SHORT_ERROR}, {name: '600-character', text: LONG_ERROR}]) {
+            test(`with a folded status notice the whole of Retry and Details takes a press, ${error.name} error, ${size.width}x${size.height}`, async ({page}) => {
+                await page.setViewportSize(size);
+                const counter = {posts: 0};
+                await statusUnavailable(page);
+                await loadPanel(page, 'priorities=57');
+                await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
+                await failSendsWith(page, error.text, counter);
+                await send(page, 'And which of them are hiring now?');
+                await expect(page.getByTestId('retry-button')).toBeVisible();
+                await expect(page.getByTestId('chat-notices-details')).toBeVisible();
+                await settled(page);
+                for (const id of ['retry-button', 'chat-notices-details']) {
+                    const box = (await page.getByTestId(id).boundingBox())!;
+                    // Which element is under a point 4px inside each edge, over the whole width of the button.
+                    for (const y of [box.y + 4, box.y + box.height - 4]) {
+                        for (const x of [box.x + 4, box.x + box.width / 2, box.x + box.width - 4]) {
+                            const owner = await page.evaluate(([px, py]) => {
+                                const hit = document.elementFromPoint(px, py);
+                                return hit?.closest('[data-testid]')?.getAttribute('data-testid') ?? null;
+                            }, [x, y]);
+                            expect(owner, `${id}: the element under (${Math.round(x)}, ${Math.round(y)}) of its ${Math.round(box.height)}px box`).toBe(id);
+                        }
+                    }
+                }
+                // A real press 4px under Retry's top edge sends the turn again.
+                const retry = (await page.getByTestId('retry-button').boundingBox())!;
+                const before = counter.posts;
+                await page.mouse.click(retry.x + retry.width / 2, retry.y + 4);
+                await expect.poll(() => counter.posts, {message: 'a press at the top edge of Retry sends the request'}).toBe(before + 1);
+            });
+        }
+    }
+
+    for (const size of [
+        {width: 1280, height: 900}, {width: 800, height: 600}, {width: 768, height: 1024}, {width: 375, height: 667}, {width: 320, height: 640},
+    ]) {
+        test(`a second press where Hide details was never presses Retry, ${size.width}x${size.height}`, async ({page}) => {
+            await page.setViewportSize(size);
+            const counter = {posts: 0};
+            await loadPanel(page, 'priorities=57');
+            await failSendsWith(page, LONG_ERROR, counter);
+            await send(page, 'And which of them are hiring now?');
+            await expect(page.getByTestId('chat-notices-details')).toBeVisible();
+            await settled(page);
+            const details = page.getByTestId('chat-notices-details');
+            const collapsedBox = (await details.boundingBox())!;
+            await details.click();
+            await expect(details).toHaveText('Hide details');
+            await settled(page);
+            const expandedBox = (await details.boundingBox())!;
+            // The expanded toggle stays inside the box Details had (a pixel or two for the wrapped label's padding).
+            expect(expandedBox.x, 'the toggle does not reach left of where Details was').toBeGreaterThanOrEqual(collapsedBox.x - 4);
+            expect(expandedBox.x + expandedBox.width).toBeCloseTo(collapsedBox.x + collapsedBox.width, 0);
+            expect(expandedBox.y + expandedBox.height).toBeCloseTo(collapsedBox.y + collapsedBox.height, 0);
+            const sent = counter.posts;
+            // Two presses at one point, 10px inside the toggle's left edge, 180ms apart: collapse, then expand again.
+            const x = expandedBox.x + 10;
+            const y = expandedBox.y + expandedBox.height / 2;
+            await page.mouse.click(x, y);
+            await page.waitForTimeout(180);
+            await page.mouse.click(x, y);
+            await page.waitForTimeout(250);
+            expect(counter.posts, 'the second press reached no Retry').toBe(sent);
+            await expect(details).toHaveText('Hide details');
+        });
+    }
+
+    for (const size of [{width: 768, height: 1024}, {width: 800, height: 600}]) {
+        test(`in the 300px drawer a one-sentence error reads whole with no Details, ${size.width}x${size.height}`, async ({page}) => {
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            await failSendsWith(page, SHORT_ERROR, {posts: 0});
+            await send(page, 'And which of them are hiring now?');
+            await expect(page.getByTestId('chat-error')).toContainText('Please try again.');
+            const reading = await settled(page);
+            expect(reading.noticesHeight, 'the compact row stays inside 56px').toBeLessThanOrEqual(56);
+            const text = await page.getByTestId('chat-error').locator('.chat-error-text').evaluate((el) => ({
+                cut: el.scrollHeight > el.clientHeight + 1, lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+            }));
+            expect(text.cut, 'nothing of the sentence is cut').toBe(false);
+            expect(text.lines).toBeLessThanOrEqual(3);
+            await expect(page.getByTestId('chat-notices-details')).toHaveCount(0);
+        });
+    }
 });
 
 // Visual review round 1 of #483b-2: where a notice arrives, the jump pill against a notice's controls, the footer's

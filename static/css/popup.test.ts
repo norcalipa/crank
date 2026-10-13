@@ -675,6 +675,23 @@ describe('notices in the transcript and collapsing footer notices (issue #483)',
         expect(declared('.chat-footer-notices')).toMatch(/flex-direction:\s*column;/);
     });
 
+    it('leaves the folded status notice unpositioned so it is never painted over Retry (no z-index: the layer tokens stay the contract)', () => {
+        const folded = declared('#job-search-chat .chat-footer-notices.is-collapsed [data-testid=\'assistant-status-notice\']');
+        expect(folded).toMatch(/(?:^|[\s;])position:\s*static;/);
+        expect(folded).not.toMatch(/z-index/);
+    });
+
+    it('keeps the expanded toggle inside the box Details had, so a second press cannot reach Retry', () => {
+        const toggle = declared('#job-search-chat .chat-footer-notices:not(.is-collapsed) > .chat-notices-toggle');
+        expect(toggle).toMatch(/inline-size:\s*min-content;/);
+        expect(toggle).toMatch(/white-space:\s*normal;/);
+    });
+
+    it('lets the error take a third line in the 300-340px drawer only, and sets the disclaimer in 11px type on the narrowest phones', () => {
+        expect(popupCss).toMatch(/@media \(min-width: 768px\) \{\s*@container assistant-panel \(max-width: 21\.5rem\) \{\s*#job-search-chat \.chat-footer-notices\.is-collapsed:not\(\.has-status\) \.chat-error-text \{\s*-webkit-line-clamp:\s*3;/);
+        expect(popupCss).toMatch(/@media \(max-width: 340px\) \{\s*#job-search-chat form \.chat-disclaimer \{\s*font-size:\s*\.6875rem;/);
+    });
+
     it('keeps the expanded notices under the existing cap with an inner scroll', () => {
         const notices = declared('.chat-footer-notices');
         expect(notices).toMatch(/max-height:\s*var\(--chat-notices-max, 40dvh\);/);

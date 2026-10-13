@@ -3670,6 +3670,32 @@ body.assistant-open .app-content .table-responsive,
 #job-search-chat .chat-footer-notices:not(.is-collapsed) > .chat-notices-toggle {
     align-self: flex-end;
     margin-top: .25rem;
+    /* As wide as its longest word ("Hide" over "details"): it stays inside the
+       box "Details" had, so a second press at the same point reaches the
+       toggle again and never the compact row's Retry. */
+    inline-size: min-content;
+    padding-inline: .25rem;
+    white-space: normal;
+    line-height: 1.15;
+}
+
+/* Retry reaches up into the folded status notice's row. Bootstrap makes every
+   alert position: relative and the status notice comes later in the DOM, so
+   it was painted over Retry's top 16px and took their presses. Unpositioned
+   it is painted under the error alert and its Retry. */
+#job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] {
+    position: static;
+}
+
+/* The 300-340px drawer (windows 768-999px wide): the row's text column is
+   about 105px beside Retry and Details, so a third line lets a one-sentence
+   error read whole; three 13px lines are 49px, inside the 56px limit. */
+@media (min-width: 768px) {
+    @container assistant-panel (max-width: 21.5rem) {
+        #job-search-chat .chat-footer-notices.is-collapsed:not(.has-status) .chat-error-text {
+            -webkit-line-clamp: 3;
+        }
+    }
 }
 
 #job-search-chat .chat-jump-row .btn {
@@ -4742,6 +4768,14 @@ span.priority-chip-button { cursor: default; }
 #job-search-chat form .chat-disclaimer {
     margin: .5rem 0 0;
     padding-inline: .25rem;
+}
+
+/* The narrowest phones: 11px keeps the sentence on one line in the wider
+   font, which gives the transcript back the 16px of a second line. */
+@media (max-width: 340px) {
+    #job-search-chat form .chat-disclaimer {
+        font-size: .6875rem;
+    }
 }
 
 /* Short panels (a keyboard up, a phone on its side): the transcript gets the
