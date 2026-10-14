@@ -8,6 +8,9 @@ const NEAR_BOTTOM_PX = 48;
 const PROGRAMMATIC_WINDOW_MS = 1000;
 // A scroll this soon after the reader's own input is the reader's, whatever the box did.
 const INPUT_WINDOW_MS = 300;
+// A scroll this soon after the transcript's content changed, with no input behind it, can be the
+// browser's own scroll anchoring (something above the reader's place went or grew).
+const COMMIT_WINDOW_MS = 100;
 // The band at the bottom of the transcript that the jump pill occupies.
 const PILL_BAND_REM = 4.5;
 const NOTICE_TOP_GAP_PX = 8;
@@ -43,6 +46,9 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     // The transcript's height as its resize step last saw it, and when the reader last gave input.
     const boxHeightRef = React.useRef<number | null>(null);
     const lastInputRef = React.useRef(0);
+    // When the content last changed in a commit; the browser's scroll for it can come before our effects run.
+    const committedAtRef = React.useRef(Number.NEGATIVE_INFINITY);
+    const mountedRef = React.useRef(false);
     const emptyRef = React.useRef(messagesLength === 0);
     emptyRef.current = messagesLength === 0;
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
@@ -134,6 +140,11 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         scroller.scrollTop = scroller.scrollHeight;
     }, [messagesLength, pending]);
 
+    React.useLayoutEffect(() => {
+        if (mountedRef.current) committedAtRef.current = Date.now();
+        mountedRef.current = true;
+    }, [messagesLength, pending, contentKey, noticeKey]);
+
     // Keep the latest content visible only while the reader is already at the bottom.
     React.useEffect(() => {
         const scroller = getScroller();
@@ -169,7 +180,9 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             // comes with the new size is the browser's, not the reader scrolling away.
             const resizing = boxHeightRef.current !== null && scroller.clientHeight !== boxHeightRef.current
                 && Date.now() - lastInputRef.current > INPUT_WINDOW_MS;
-            const nearBottom = atBottom || ((ownScroll || resizing) && nearBottomRef.current);
+            const committing = Date.now() - committedAtRef.current < COMMIT_WINDOW_MS
+                && Date.now() - lastInputRef.current > INPUT_WINDOW_MS;
+            const nearBottom = atBottom || ((ownScroll || resizing || committing) && nearBottomRef.current);
             nearBottomRef.current = nearBottom;
             setShowJumpToLatest(!nearBottom && !pillWouldCoverNotice());
             if (nearBottom) {

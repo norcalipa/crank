@@ -449,6 +449,44 @@ describe('useTranscriptScroll', () => {
         });
     });
 
+    describe('the scroll event that the browser makes for a change of the content (scroll anchoring)', () => {
+        const atEnd = (log: HTMLElement) => metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+
+        test('a scroll right after a commit that changed the content, with no input, does not end following', () => {
+            const {rerender} = render(<Harness assistantCount={1} contentKey="a"/>);
+            const log = screen.getByTestId('log');
+            atEnd(log);
+            fireEvent.scroll(log);
+            // A notice above the reader's place goes: the commit, then the browser moves the scroll position on its own.
+            rerender(<Harness assistantCount={1} contentKey="b"/>);
+            metrics(log, {scrollHeight: 900, scrollTop: 300, clientHeight: 200});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+        });
+
+        test('it is the reader\'s when they gave input, or once the commit is more than 100ms old', () => {
+            const {rerender} = render(<Harness assistantCount={1} contentKey="a"/>);
+            const log = screen.getByTestId('log');
+            atEnd(log);
+            fireEvent.scroll(log);
+            rerender(<Harness assistantCount={1} contentKey="b"/>);
+            fireEvent.wheel(log);
+            metrics(log, {scrollHeight: 900, scrollTop: 300, clientHeight: 200});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+            // Following again, a commit, and then a scroll 100ms later with no input behind it: find-in-page, not the browser's anchoring.
+            now += 1000;
+            atEnd(log);
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+            rerender(<Harness assistantCount={1} contentKey="c"/>);
+            now += 100;
+            metrics(log, {scrollHeight: 900, scrollTop: 300, clientHeight: 200});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        });
+    });
+
     describe('what the hook releases when it re-runs and when it unmounts', () => {
         const watchObservers = () => {
             const made: Array<{targets: Element[]; disconnect: jest.Mock}> = [];
