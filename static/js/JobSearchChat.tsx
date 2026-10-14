@@ -243,7 +243,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
 
     // Ref to the last submitted turn so Retry replays the same content + idempotency key.
-    const lastSent = React.useRef<{content: string; key: string} | null>(null);
+    const lastSent = React.useRef<{content: string; key: string; epoch: number; conversationId: number} | null>(null);
     // Synchronous pending mirror so double clicks and concurrent retries cannot
     // start a second in-flight turn (apply-once, client side; the server's
     // 409 turn_in_progress is the backstop).
@@ -849,6 +849,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (turnConversationId == null || (pendingRef.current && !opts?.retriedAfterClose && !opts?.withoutContext)) return;
         pendingRef.current = true;
         keepDraftRef.current = false;
+        // The failed-send state belongs to the account and conversation that made it.
+        const sendEpoch = purgeEpochRef.current;
+        const sentTurn = {content, key, epoch: sendEpoch, conversationId: turnConversationId};
+        const viewChanged = () => purgeEpochRef.current !== sendEpoch || conversationIdRef.current !== turnConversationId;
         // Context this turn was sent under (issue #479): compared with the
         // live context when the reply lands.
         // A retry of the same turn is re-grounded on the page it was first asked
@@ -1029,7 +1033,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     }
                     setError(serverMsg);
                     setErrorType(serverType);
-                    lastSent.current = {content, key};
+                    lastSent.current = sentTurn;
                     setRetrying(true);
                     return;
                 }
@@ -1051,7 +1055,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     // honest exhausted state below).
                     setErrorType(serverType);
                     setError(serverMsg);
-                    lastSent.current = {content, key};
+                    lastSent.current = sentTurn;
                     setRetrying(true);
                     setMessages((prev) => prev.map(
                         (m) => (m === (existingUser || optimisticUser)
@@ -1064,6 +1068,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 // server received the request is uncertain. The server is
                 // the source of truth — reconcile now instead of guessing.
                 const outcome = await reconcileWithServer(turnConversationId, key);
+                if (viewChanged()) return;
                 if (outcome === 'absent') {
                     handleConfirmedUnsent(
                         'Your message may not have been sent. It has been kept as a draft below.',
@@ -1080,7 +1085,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 // state is rendered; let the turn's own panel speak.
                 setError(serverMsg);
                 setErrorType(serverType || null);
-                lastSent.current = {content, key};
+                lastSent.current = sentTurn;
                 setRetrying(true);
                 return;
             }
@@ -1167,6 +1172,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 // Honest cancel semantics: stopping only stops the client's
                 // wait. Ask the server what actually happened to the turn.
                 const outcome = await reconcileWithServer(turnConversationId, key);
+                if (viewChanged()) return;
                 if (outcome === 'absent') {
                     handleConfirmedUnsent(
                         'Stopped before the message was sent. It has been kept as a draft below.',
@@ -1184,13 +1190,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setError(
                     'Stopped waiting. The response will appear when it is ready — use "Check for response" below.',
                 );
-                lastSent.current = {content, key};
+                lastSent.current = sentTurn;
                 setRetrying(true);
                 return;
             }
             // Network-level failure: whether the server received the request
             // is unknown; reconcile against the server instead of guessing.
             const outcome = await reconcileWithServer(turnConversationId, key);
+            if (viewChanged()) return;
             if (outcome === 'absent') {
                 handleConfirmedUnsent(
                     'Your message may not have been sent. It has been kept as a draft below.',
@@ -1204,7 +1211,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 return;
             }
             setError(e instanceof Error ? e.message : 'Something went wrong.');
-            lastSent.current = {content, key};
+            lastSent.current = sentTurn;
             setRetrying(true);
         } finally {
             abortRef.current = null;
@@ -1325,7 +1332,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const handleRetry = async () => {
         const sent = lastSent.current;
-        if (!sent) return;
+        // A send from another account or conversation is never replayed into this one.
+        if (!sent || sent.epoch !== purgeEpochRef.current || sent.conversationId !== conversationIdRef.current) return;
         setRetrying(false);
         setError(null);
         setErrorType(null);
@@ -1400,6 +1408,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPrefDismissed(false);
             clearPrefNotices();
             setError(null);
+            lastSent.current = null;
+            setRetrying(false);
             focusAfterHistoryAction();
             return null;
         } catch {
@@ -1423,6 +1433,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPrefDismissed(false);
             clearPrefNotices();
             setError(null);
+            lastSent.current = null;
+            setRetrying(false);
             focusAfterHistoryAction();
             return null;
         } catch {
@@ -1441,18 +1453,21 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         const epoch = purgeEpochRef.current;
         const targetId = conversationIdRef.current;
         // A purge, New conversation or Delete while the answer is on its way: it belongs to a view that is gone.
-        const purged = () => purgeEpochRef.current !== epoch || conversationIdRef.current !== targetId;
+        const accountChanged = () => purgeEpochRef.current !== epoch;
+        const purged = () => accountChanged() || conversationIdRef.current !== targetId;
         try {
             const res = await csrfFetch('/api/agent/preferences/undo/', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({undo: prefUndoToken}),
             });
-            if (purged()) return;
+            if (accountChanged()) return;
             if (res.ok) {
                 const undone = await res.json().catch(() => null);
-                if (purged()) return;
+                if (accountChanged()) return;
+                // The saved priorities changed whichever conversation is open now.
                 if (typeof undone?.revision === 'number') setPrioritiesRevision(undone.revision);
+                if (purged()) return;
                 setPrefUndoState('done');
                 setPrefChanges(null);
                 setPrefUndoToken(null);
@@ -1503,7 +1518,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         const targetId = conversationIdRef.current;
         const proposalAnchor = prefAnchors.proposal;
         // A purge, New conversation or Delete while the answer is on its way: it belongs to a view that is gone.
-        const purged = () => purgeEpochRef.current !== epoch || conversationIdRef.current !== targetId;
+        const accountChanged = () => purgeEpochRef.current !== epoch;
+        const purged = () => accountChanged() || conversationIdRef.current !== targetId;
         try {
             const res = await csrfFetch('/api/agent/preferences/apply/', {
                 method: 'POST',
@@ -1513,9 +1529,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     decision,
                 }),
             });
-            if (purged()) return;
+            if (accountChanged()) return;
             if (res.ok) {
                 const data = await res.json();
+                if (accountChanged()) return;
+                // The saved priorities changed whichever conversation is open now.
+                if (data.scope !== 'search' && typeof data.revision === 'number') setPrioritiesRevision(data.revision);
                 if (purged()) return;
                 if (data.scope === 'search') {
                     // This-search-only: never saved; show the confirmation
@@ -1531,7 +1550,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     setPrefUndoError(null);
                     setPrefUndoErrorType(null);
                     setPreferencesChanged(true);
-                    if (typeof data.revision === 'number') setPrioritiesRevision(data.revision);
                 }
                 setPrefProposal(null);
                 setPrefProposalState('idle');
@@ -1611,6 +1629,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             onUndo={handleUndoPreferenceChange}
             onDismiss={() => {
                 setPrefDismissed(true);
+                // The change is acknowledged: no plain banner returns under a later reply.
+                setPreferencesChanged(false);
                 setPrefChanges(null);
                 setPrefUndoToken(null);
                 setPrefUndoState('idle');
