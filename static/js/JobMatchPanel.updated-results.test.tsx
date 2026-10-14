@@ -212,6 +212,15 @@ describe('polling and the notice', () => {
         expect(banner.querySelectorAll('[aria-live="assertive"]')).toHaveLength(0);
     });
 
+    test('an answer with no generation (the read gate went off) says nothing', async () => {
+        const server = makeServer(1);
+        server.revision = () => revisionAnswer(null, 60);
+        await mount(server);
+        await advance(POLL);
+        expect(calls('/revision/')).toBe(1);
+        expect(notice()).not.toBeInTheDocument();
+    });
+
     test('a hidden tab sends nothing, and one check follows the return', async () => {
         const server = makeServer(1);
         await mount(server);
@@ -376,6 +385,33 @@ describe('Refresh results', () => {
         expect(notice()).not.toBeInTheDocument();
     });
 
+    test('a purge during the retry leaves nothing of the old account and applies nothing', async () => {
+        const server = await withNotice();
+        server.statusGeneration = () => 3;
+        const original = global.fetch as jest.Mock;
+        let reads = 0;
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+            if (String(url).includes('/status/')) reads += 1;
+            // The second attempt (reads 2 onward of this press) waits.
+            return reads >= 2 ? gate.then(() => original(url, init)) : original(url, init);
+        });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('updated-results-refresh'));
+            await jest.advanceTimersByTimeAsync(0);
+        });
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+        });
+        await act(async () => {
+            release();
+            await jest.advanceTimersByTimeAsync(0);
+        });
+        expect(screen.queryByTestId('ranked-job-3')).not.toBeInTheDocument();
+        expect(notice()).not.toBeInTheDocument();
+    });
+
     test('a read that fails keeps the list, shows the failed notice and keeps the notice', async () => {
         const server = await withNotice();
         const original = global.fetch as jest.Mock;
@@ -479,6 +515,12 @@ describe('the idle rule in the panel', () => {
         expect(await screen.findByTestId('updated-results-notice')).toBeInTheDocument();
         expect(screen.queryByTestId('ranked-job-3')).not.toBeInTheDocument();
         expect(document.activeElement).toBe(screen.getByTestId('job-match-refresh'));
+    });
+
+    test('a document with no active element counts as no focus in the panel', async () => {
+        jest.spyOn(document, 'activeElement', 'get').mockReturnValue(null);
+        await foundAfterReturn();
+        expect(await screen.findByTestId('ranked-job-3')).toBeInTheDocument();
     });
 
     test('shows only the notice when it was not found on the first check after a return', async () => {

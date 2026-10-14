@@ -1337,8 +1337,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     }, [loadStatus]);
     // A poll answered with a generation above the one on screen: say so, and
     // apply it only in the idle state (see `shouldAutoApplyRefresh`).
-    const onPolledRef = React.useRef<(answer: RevisionAnswer, info: {afterReturn: boolean}) => void>(() => undefined);
-    onPolledRef.current = (answer, info) => {
+    const onPolled = (answer: RevisionAnswer, info: {afterReturn: boolean}) => {
         const generation = answer.result_generation;
         const shown = shownGenerationRef.current;
         if (generation === null || shown === null || generation <= shown) return;
@@ -1352,6 +1351,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             void loadStatus(true, 'auto');
         }
     };
+    const onPolledRef = React.useRef(onPolled);
+    onPolledRef.current = onPolled;
     const pollingActive = authed && !pollBlocked && phase === 'ready' && shownGeneration !== null;
     React.useEffect(() => {
         if (!pollingActive) return undefined;

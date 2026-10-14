@@ -84,7 +84,8 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
     };
 
     async function check(): Promise<void> {
-        if (!running || inFlight || !isVisible()) return;
+        // Only a timer or a return to visible calls this, and neither is armed
+        // while a request is out, hidden or stopped: single flight holds.
         inFlight = true;
         lastCheckAt = Date.now();
         const afterReturn = returned;
