@@ -5613,6 +5613,25 @@ describe('preference notices in the transcript (issue #483)', () => {
             expect(posts[posts.length - 1]).toMatchObject({content: 'my question', idempotency_key: key});
         });
 
+        test('a Retry pressed in the instant after an account switch posts nothing', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({error: {type: 'server_error', message: 'Broke.'}}, 500));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const retry = await screen.findByTestId('retry-button');
+            const callsBefore = mock.mock.calls.length;
+            // The click lands before the view has been redrawn without the button.
+            const quiet = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+            document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+            fireEvent.click(retry);
+            quiet.mockRestore();
+            await act(async () => { await Promise.resolve(); });
+            expect(postBodies(mock, messageUrl()).filter((b) => b.content === 'old account private question')).toHaveLength(1);
+            expect(mock.mock.calls.slice(callsBefore).some(([, init]) => String((init as RequestInit | undefined)?.body ?? '').includes('old account private question'))).toBe(false);
+        });
+
         test('New conversation leaves no failed send to retry', async () => {
             await renderChat([assistantMessage(1, 'Old account reply.')]);
             const mock = global.fetch as jest.Mock;
@@ -5676,6 +5695,37 @@ describe('preference notices in the transcript (issue #483)', () => {
             await act(async () => { settle(jsonResponse({applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []}, revision: 9})); });
             expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
             expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        // The answer's body is still being read when the account changes.
+        async function purgeWhileBodyIsRead(answer: object, press: () => void) {
+            const mock = global.fetch as jest.Mock;
+            let release: () => void = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const res = jsonResponse(answer);
+            const read = res.json.bind(res);
+            res.json = jest.fn(() => gate.then(() => read()));
+            mock.mockResolvedValueOnce(res);
+            press();
+            await waitFor(() => expect(res.json).toHaveBeenCalled());
+            mock.mockResolvedValue(jsonResponse(emptyConversation(55)));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await waitFor(() => expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument());
+            await act(async () => { release(); });
+        }
+
+        test('an Apply whose body is read after an account switch publishes nothing', async () => {
+            await withProposal();
+            await purgeWhileBodyIsRead(applyAnswer, () => fireEvent.click(screen.getByTestId('preference-apply-button')));
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+            expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        });
+
+        test('an Undo whose body is read after an account switch publishes nothing', async () => {
+            await applied();
+            await purgeWhileBodyIsRead({undone: true, revision: 4, changes: []}, () => fireEvent.click(screen.getByTestId('preference-undo-button')));
+            expect(getWorkspaceSnapshot().prioritiesRevision).not.toBe(4);
+            expect(screen.queryByTestId('preference-change-undone')).not.toBeInTheDocument();
         });
 
         test('an Apply or Undo answered after an account switch still publishes nothing', async () => {
@@ -5743,24 +5793,42 @@ describe('preference notices in the transcript (issue #483)', () => {
             preferences_changed: true,
         };
 
+        // The old answer's body is read in the very turn in which the view is left, so the
+        // view's own state has not been rendered, and the id the code adopts is all that
+        // tells the answer it is late. `onLeft` runs at that point.
+        const leavingNew = (onLeft: () => void) => {
+            const res = jsonResponse(emptyConversation(43, []));
+            const read = res.json.bind(res);
+            res.json = () => {
+                const body = read();
+                void body.then(onLeft);
+                return body;
+            };
+            return res;
+        };
+        const leavingDelete = (onLeft: () => void) => {
+            const res = jsonResponse({deleted: true});
+            Object.defineProperty(res, 'ok', {get: () => { onLeft(); return true; }});
+            return res;
+        };
+
         test.each([
-            ['New conversation', startNewConversation, () => jsonResponse(emptyConversation(43, []))],
-            ['Delete', deleteConversation, () => jsonResponse({deleted: true})],
-        ])('%s', async (_how, leave, response) => {
+            ['New conversation', startNewConversation, leavingNew],
+            ['Delete', deleteConversation, leavingDelete],
+        ])('%s', async (_how, leave, leaving) => {
             const pendingTurn = {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'pending' as const};
             await renderChat([assistantMessage(1, 'Old account reply.'), pendingTurn]);
             const mock = global.fetch as jest.Mock;
             const settleCheck = holdNextFetch(mock);
             fireEvent.click(await screen.findByTestId('check-response-button'));
-            const settleLeave = holdNextFetch(mock);
+            let arrive: (body: unknown) => void = () => {};
+            const old = jsonResponse({});
+            old.json = jest.fn(() => new Promise<unknown>((resolve) => { arrive = resolve; }));
+            settleCheck(old);
+            await waitFor(() => expect(old.json).toHaveBeenCalled());
+            mock.mockResolvedValueOnce(leaving(() => arrive(oldHistory)));
             leave();
-            await waitFor(() => expect(mock.mock.calls.some(([url]) => /\/(reset|delete)\/$/.test(String(url)))).toBe(true));
-            // Both answers arrive before React renders again.
-            await act(async () => {
-                settleLeave(response());
-                settleCheck(jsonResponse(oldHistory));
-            });
-            expect(screen.getByTestId('empty-history')).toBeInTheDocument();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
             expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
             expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
         });
