@@ -1939,6 +1939,9 @@ test.describe('company view, review round 1 (issue #486c)', () => {
             await opener(page).click();
             await expect(page.getByTestId('fit-ready')).toBeVisible();
             await expect(page.getByTestId('jobs-loading')).toBeVisible();
+            // The browser's own scroll anchoring would hold a fully hidden section anyway; the case is
+            // about the page's own correction.
+            await page.addStyleTag({content: '* { overflow-anchor: none !important; }'});
             const evidence = page.getByTestId('field-evidence');
             await evidence.evaluate((el) => el.scrollIntoView({block: 'start', behavior: 'instant'}));
             await scrollRested(page);
