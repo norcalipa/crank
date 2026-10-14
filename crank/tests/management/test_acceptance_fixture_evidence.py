@@ -797,6 +797,16 @@ class StagingResetAfterARefreshTests(TestCase):
             self.assertTrue(any("earlier match row(s)" in line for line in lines), lines)
 
     def test_a_match_of_another_account_is_not_staging_user_s_state(self):
+        other = get_user_model().objects.create_user("second_account", password="x")
+        document = fixture_preferences()
+        UserPreference.objects.create(
+            user=other,
+            preferences=document,
+            preferences_markdown=to_markdown(document),
+            schema_version=SCHEMA_VERSION,
+            revision=7,
+        )
+        self.assertEqual(recompute_user(other, reason="test").status, RecomputeStatus.PUBLISHED)
         # staging_user excludes the company and publishes no match: generation
         # 1 holds no row of its own.
         apply_patch_to_user(
@@ -812,16 +822,6 @@ class StagingResetAfterARefreshTests(TestCase):
         self.assertFalse(JobMatch.objects.filter(user=self.user).exclude(
             ranker_version="staging-baseline"
         ).exists())
-        other = get_user_model().objects.create_user("second_account", password="x")
-        document = fixture_preferences()
-        UserPreference.objects.create(
-            user=other,
-            preferences=document,
-            preferences_markdown=to_markdown(document),
-            schema_version=SCHEMA_VERSION,
-            revision=7,
-        )
-        self.assertEqual(recompute_user(other, reason="test").status, RecomputeStatus.PUBLISHED)
         self.assertEqual(MatchResultState.objects.get(user=other).current_generation,
                          state.current_generation)
         self.assertTrue(JobMatch.objects.filter(user=other).exists())
