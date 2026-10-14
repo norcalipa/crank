@@ -1872,6 +1872,10 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
 
 // Adversarial review round 1 and the screenshot review's round-3 findings (issue #486c).
 test.describe('company view, review round 1 (issue #486c)', () => {
+    test.beforeEach(() => {
+        requireDjangoTier();
+    });
+
     for (const size of [{width: 375, height: 667}, {width: 320, height: 640}]) {
         test(`${size.width}x${size.height}: after View jobs and a small scroll, the fit arriving does not push Open jobs away`, async ({page}) => {
             await page.setViewportSize(size);
