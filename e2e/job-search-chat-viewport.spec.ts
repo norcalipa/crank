@@ -1131,9 +1131,11 @@ test.describe('notices in the transcript and collapsing footer notices (issue #4
         if (route.request().method() === 'GET' && String(url).includes('conversations')) return route.fallback();
         return route.fulfill({status, contentType: 'application/json', body: JSON.stringify(body)});
     });
+    // Each reply has an id of its own: two replies with one id (a 1 in 900 draw, seen once in CI) put a notice under both.
+    let replyId = 9000;
     const replyWith = (page: Page, extra: Record<string, unknown>, content = 'I can save these as your priorities.') => page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
         ? route.fulfill({status: 201, contentType: 'application/json', body: JSON.stringify({
-            message: {id: 9000 + Math.floor(Math.random() * 900), role: 'assistant', content, preferences_changed: false, created: null, results: null},
+            message: {id: replyId += 1, role: 'assistant', content, preferences_changed: false, created: null, results: null},
             preferences_changed: false, ...extra,
         })})
         : route.fallback()));
