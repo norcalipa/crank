@@ -720,6 +720,14 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         expect(popupCss).toMatch(/@media \(min-width: 576px\) \{\s*#job-match-panel \.job-match-stale-banner \{\s*grid-template-columns: auto minmax\(0, 1fr\) auto;\s*align-items: center;/);
     });
 
+    it('never wraps the label of the Refresh results button, and keeps it a 44px control', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        expect(popupCss.slice(start, next)).toMatch(/#job-match-panel \.job-match-updated-refresh \{\s*white-space: nowrap;\s*\}/);
+        // The 44px floor comes from the panel-wide button rule, which the notice button inherits.
+        expect(popupCss).toMatch(/#job-match-panel \.btn \{\s*min-height: 44px;\s*min-width: 44px;\s*\}/);
+    });
+
     it('scopes the heading scroll margin to the widths that show the sticky top bar', () => {
         expect(popupCss).toMatch(/@media \(max-width: 767\.98px\) \{\s*#job-match-panel \.job-match-panel-title \{ scroll-margin-top: 4\.5rem; \}\s*\}/);
         expect(popupCss).not.toMatch(/^#job-match-panel \.job-match-panel-title \{ scroll-margin-top/m);

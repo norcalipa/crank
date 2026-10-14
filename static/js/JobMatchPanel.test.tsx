@@ -94,6 +94,11 @@ async function renderPanel(
         if (url.includes('/api/job-matches/ranked/')) {
             return Promise.resolve(jsonResponse(rankedPayload(rankedJobs, rankedOrgs), rankedStatus));
         }
+        // The revision read (issue #485) is not a list read: by default it
+        // says there is nothing to poll, so request-count assertions hold.
+        if (url.includes('/api/job-matches/revision/')) {
+            return Promise.resolve(jsonResponse({result_generation: null, poll_after_seconds: null}));
+        }
         if (url.includes('/api/job-matches/')) {
             return Promise.resolve(jsonResponse(matchPayload(count, opts.storedResults ?? [])));
         }
