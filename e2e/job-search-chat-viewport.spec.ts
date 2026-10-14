@@ -1527,7 +1527,9 @@ test.describe('notices arrive on screen, the pill steps aside, the footer toggle
     // What the reader can see of the notice in the transcript, with no scrolling of ours.
     const arrival = (page: Page) => page.evaluate(() => {
         const log = document.querySelector('[role="log"]') as HTMLElement;
-        const notice = document.querySelector('[data-testid="transcript-notice"]') as HTMLElement;
+        const blocks = document.querySelectorAll('[data-testid="transcript-notice"]');
+        // The newest notice is the last block.
+        const notice = blocks[blocks.length - 1] as HTMLElement;
         const box = log.getBoundingClientRect();
         const inside = (el: Element) => { const r = el.getBoundingClientRect(); return r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5; };
         const title = notice.querySelector('.pref-change-summary') as HTMLElement;
@@ -1684,6 +1686,83 @@ test.describe('notices arrive on screen, the pill steps aside, the footer toggle
                 if (read) { walked.push(String(read.label)); expect(read.covered, `${read.label} is clear of the pill`).toBe(0); expect(read.inside, `${read.label} is inside the transcript`).toBe(true); }
             }
             expect(walked.length).toBe(2);
+        });
+
+        test(`a second proposal that replaces an open one arrives with its title on screen, ${size.width}x${size.height}`, async ({page}) => {
+            test.setTimeout(120_000);
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            await expect.poll(() => fromEnd(page), {message: 'the loaded history is at its end'}).toBeLessThanOrEqual(2);
+            await replyWith(page, {preference_proposal: proposalOf(10)}, 'The first proposal comes with this reply.');
+            await send(page, 'Please set ten things.');
+            await expect(page.getByTestId('preference-proposal-notice')).toBeVisible();
+            await settleLayout(page);
+            // The reader leaves it open and asks again; the next reply brings another proposal under itself.
+            await page.unroute(SEND);
+            await replyWith(page, {preference_proposal: {...proposalOf(10), id: 'prop-b'}}, 'The second proposal comes with this reply.');
+            await send(page, 'Actually, think again.');
+            await expect(page.getByRole('log').getByText('The second proposal comes with this reply.')).toBeVisible();
+            await settleLayout(page);
+            let reading = await arrival(page);
+            for (let i = 0; i < 20; i += 1) {
+                await page.waitForTimeout(250);
+                const again = await arrival(page);
+                const same = JSON.stringify(again) === JSON.stringify(reading);
+                reading = again;
+                if (same) break;
+            }
+            await expect(page.getByTestId('transcript-notice')).toHaveCount(1);
+            await expect(page.getByTestId('transcript-notice').locator('xpath=preceding-sibling::*[1]')).toContainText('The second proposal comes with this reply.');
+            expect(reading.titleInside, `the second proposal's title is on screen on arrival ${JSON.stringify(reading)}`).toBe(true);
+            if (reading.fromEnd > 2) expect(reading.noticeTop, 'its top is just below the transcript\'s top').toBeGreaterThanOrEqual(-1);
+        });
+
+        test(`an applied notice stays under its own reply when a later reply brings a proposal, the pill shows for the newest notice off screen, and New conversation clears both, ${size.width}x${size.height}`, async ({page}) => {
+            test.setTimeout(150_000);
+            await page.setViewportSize(size);
+            await loadPanel(page, 'priorities=57');
+            await expect.poll(() => fromEnd(page), {message: 'the loaded history is at its end'}).toBeLessThanOrEqual(2);
+            await replyWith(page, {preference_proposal: proposalOf(2)}, 'The first proposal comes with this reply.');
+            await send(page, 'Please set two things.');
+            await expect(page.getByTestId('preference-proposal-notice')).toBeVisible();
+            await page.unroute(SEND);
+            await jsonRoute(page, '**/api/agent/preferences/apply/', {applied: true, scope: 'account', revision: 3, changes: FIELDS.slice(0, 2), undo: {expected_revision: 3, document: {}}});
+            await page.getByTestId('preference-apply-button').click();
+            await expect(page.getByTestId('preference-change-notice')).toBeVisible();
+            await page.unroute('**/api/agent/preferences/apply/');
+            await replyWith(page, {preference_proposal: {...proposalOf(2), id: 'prop-b'}}, 'The second proposal comes with this reply.');
+            await send(page, 'And two more.');
+            await expect(page.getByTestId('preference-proposal-notice')).toBeVisible();
+            await page.unroute(SEND);
+            await settleLayout(page);
+            const blocks = page.getByTestId('transcript-notice');
+            await expect(blocks).toHaveCount(2);
+            await expect(blocks.nth(0).getByTestId('preference-change-notice'), 'the applied notice and its Undo').toBeVisible();
+            await expect(blocks.nth(0).locator('xpath=preceding-sibling::*[1]')).toContainText('The first proposal comes with this reply.');
+            await expect(blocks.nth(1).getByTestId('preference-proposal-notice')).toBeAttached();
+            await expect(blocks.nth(1).locator('xpath=preceding-sibling::*[1]')).toContainText('The second proposal comes with this reply.');
+            // The reader scrolls to the very top with the wheel: both notices are off screen, so the pill is there to bring them back.
+            const box = (await page.getByRole('log').boundingBox())!;
+            await page.mouse.move(box.x + box.width / 2, box.y + 40);
+            for (let i = 0; i < 200 && (await page.getByRole('log').evaluate((el) => el.scrollTop)) > 0; i += 1) {
+                await page.mouse.wheel(0, -1200);
+                await page.waitForTimeout(30);
+            }
+            await settleLayout(page);
+            expect(await page.getByRole('log').evaluate((el) => el.scrollTop)).toBe(0);
+            await expect(page.locator('#job-search-chat .chat-jump-row .btn'), 'the pill shows while the newest notice is off screen').toBeVisible();
+            // New conversation with notices showing leaves none of them, and no anchor.
+            await page.route('**/api/agent/conversations/*/reset/**', (route) => route.fulfill({
+                status: 200, contentType: 'application/json',
+                body: JSON.stringify({id: 43, active: true, created: null, modified: null, messages: [], preferences_changed: false}),
+            }));
+            await page.getByTestId('conversation-more').click();
+            await page.getByTestId('conversation-new').click();
+            await waitForConfirmArmed(page);
+            await page.getByTestId('confirm-action').click();
+            await expect(page.getByTestId('empty-history')).toBeVisible();
+            await expect(page.getByTestId('transcript-notice')).toHaveCount(0);
+            await expect(page.getByRole('log')).not.toHaveAttribute('data-notice-anchor', /.*/);
         });
 
         test(`the plain banner's close button is a 44px target and keeps its name, ${size.width}x${size.height}`, async ({page}) => {

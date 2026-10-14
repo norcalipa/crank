@@ -16,6 +16,7 @@ const longError = 'x'.repeat(121);
 // and the resize observer is driven by hand.
 let cutText = false;
 let observers: Array<() => void> = [];
+let watched: Element[] = [];
 const heightOf = jest.spyOn(HTMLElement.prototype, 'scrollHeight', 'get');
 const boxOf = jest.spyOn(HTMLElement.prototype, 'clientHeight', 'get');
 const measureCalls = jest.fn();
@@ -24,6 +25,7 @@ const resize = () => act(() => { observers.forEach((callback) => callback()); })
 beforeEach(() => {
     cutText = false;
     observers = [];
+    watched = [];
     measureCalls.mockClear();
     heightOf.mockImplementation(function (this: HTMLElement) {
         measureCalls();
@@ -31,9 +33,11 @@ beforeEach(() => {
     });
     boxOf.mockImplementation(() => 30);
     (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
-        constructor(callback: () => void) { observers.push(callback); }
-        observe() {}
-        disconnect() {}
+        callback: () => void;
+        constructor(callback: () => void) { this.callback = callback; }
+        // Only a watched element's changes reach the callback.
+        observe(el: Element) { observers.push(this.callback); watched.push(el); }
+        disconnect() { observers = observers.filter((cb) => cb !== this.callback); }
     };
 });
 
@@ -98,6 +102,18 @@ describe('FooterNotices (issue #483)', () => {
         cutText = true;
         resize();
         expect(screen.getByTestId('chat-notices-details')).toBeInTheDocument();
+    });
+
+    test('watches the error text, so a change of its width is measured, and stops watching when it is gone', () => {
+        cutText = true;
+        const {rerender, view} = setup({error: longError});
+        expect(watched).toHaveLength(1);
+        expect(watched[0]).toBe(screen.getByText(longError));
+        expect(watched[0]).toHaveClass('chat-error-text');
+        expect(observers).toHaveLength(1);
+        rerender({error: null});
+        expect(observers).toHaveLength(0);
+        view.unmount();
     });
 
     test('a fixed toggle (a status notice) is kept while the text fits, and without ResizeObserver the text is measured once', () => {

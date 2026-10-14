@@ -35,8 +35,13 @@ async function ensureTurns(page: Page, turns: number): Promise<void> {
     }
 }
 
-async function revision(page: Page): Promise<number> {
-    return page.evaluate(async () => (await (await fetch('/api/agent/preferences/')).json()).revision);
+/** The saved priorities as the server answers them: whether the row exists, its revision and its document.
+ * The seeded account's row is at revision 0, so a revision alone cannot tell a deleted row (also revision 0) from a kept one. */
+async function savedPriorities(page: Page): Promise<{exists: boolean; revision: number; preferences: unknown}> {
+    return page.evaluate(async () => {
+        const {exists, revision, preferences} = await (await fetch('/api/agent/preferences/')).json();
+        return {exists, revision, preferences};
+    });
 }
 
 const more = (page: Page) => page.getByTestId('conversation-more');
@@ -52,21 +57,22 @@ for (const size of SIZES) {
     test.describe(`conversation controls, ${size.name} ${size.width}x${size.height}`, () => {
         test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE === '1', 'needs assistant replies: not part of the provider-outage pass');
 
-        let startRevision = 0;
+        let startPriorities: Awaited<ReturnType<typeof savedPriorities>>;
         test.beforeEach(async ({page}) => {
             requireDjangoTier();
             await page.setViewportSize({width: size.width, height: size.height});
             await login(page, E2E_USERNAME, E2E_PASSWORD);
             await openAssistant(page);
             await ensureTurns(page, 2);
-            startRevision = await revision(page);
+            startPriorities = await savedPriorities(page);
+            expect(startPriorities.exists, 'the seeded account has a saved row to compare against').toBe(true);
         });
 
         test.afterEach(async ({page}, testInfo) => {
             if (testInfo.status === 'skipped') return;
             await page.unrouteAll({behavior: 'ignoreErrors'});
             await page.goto('/');
-            expect(await revision(page), 'saved priorities are unchanged').toBe(startRevision);
+            expect(await savedPriorities(page), 'saved priorities are unchanged').toEqual(startPriorities);
         });
 
         /** Where focus belongs after New or Delete: the composer when docked, the empty state's call to action in the sheet. */
