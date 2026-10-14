@@ -125,7 +125,7 @@ async function renderChat(existingMessages: ChatMessage[] = []) {
     );
     render(<JobSearchChat/>);
     // Wait until resume resolves and the input is enabled. The composer is
-    // enabled while history is still loading, but a submit is dropped until
+    // enabled while history is still loading, but a submit  until
     // loading clears, so wait for the loading indicator to go away too.
     await screen.findByLabelText('Message');
     await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
@@ -4114,7 +4114,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBeNull();
     });
 
-    test('an apply response that lands after a purge is dropped (no diff, no Undo, no revision)', async () => {
+    test('an apply response that lands after a purge  (no diff, no Undo, no revision)', async () => {
         await submitTurnWithProposal({
             message: assistantMessage(32, 'I suggest this.', false),
             preferences_changed: false,
@@ -4171,7 +4171,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
             act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
         };
 
-        test('a successful undo that lands after a purge is dropped', async () => {
+        test('a successful undo that lands after a purge ', async () => {
             const button = await applied();
             const settle = holdNextFetch(global.fetch as jest.Mock);
             fireEvent.click(button);
@@ -4181,7 +4181,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
             expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
         });
 
-        test('a failed undo that lands after a purge is dropped', async () => {
+        test('a failed undo that lands after a purge ', async () => {
             const button = await applied();
             const settle = holdNextFetch(global.fetch as jest.Mock);
             fireEvent.click(button);
@@ -4190,7 +4190,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
             expect(screen.queryByTestId('preference-undo-error')).not.toBeInTheDocument();
         });
 
-        test('a network failure on undo after a purge is dropped', async () => {
+        test('a network failure on undo after a purge ', async () => {
             const button = await applied();
             const settle = holdNextFetch(global.fetch as jest.Mock);
             fireEvent.click(button);
@@ -4807,7 +4807,7 @@ describe('validated page context and assistant actions (issue #484)', () => {
         expect(screen.getByLabelText('Message')).toHaveValue('hello');
     });
 
-    test('an open_company action for a company the reply does not name is dropped', async () => {
+    test('an open_company action for a company the reply does not name ', async () => {
         await renderChat([]);
         act(() => setWorkspaceContext({surface: 'rankings'}));
         const revision = getWorkspaceSnapshot().contextRevision;
@@ -5412,7 +5412,7 @@ describe('preference notices in the transcript (issue #483)', () => {
             expect(log()).not.toHaveAttribute('data-notice-anchor');
         });
 
-        test('a failed Apply answered after New conversation leaves the new conversation alone', async () => {
+        test('a failed Apply answered after New conversation is dropped', async () => {
             await withProposal();
             const mock = global.fetch as jest.Mock;
             const settle = holdNextFetch(mock);
@@ -5475,6 +5475,25 @@ describe('preference notices in the transcript (issue #483)', () => {
             expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
             expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
             expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+
+        test('after a purge that resumes the same conversation id the old answer is still dropped (the purge epoch)', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({error: {type: 'turn_in_progress', message: 'Another tab is running this turn.'}}, 409));
+            const settle = holdNextFetch(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'q1'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await waitFor(() => expect(mock.mock.calls.filter(([url]) => String(url) === '/api/agent/conversations/42/').length).toBe(2));
+            mock.mockResolvedValue(jsonResponse(emptyConversation(42, [assistantMessage(70, 'Fresh after the purge.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('Fresh after the purge.');
+            await act(async () => { settle(jsonResponse(oldHistory(true))); });
+            expect(screen.getByText('Fresh after the purge.')).toBeInTheDocument();
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+            expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
             expect(log()).not.toHaveAttribute('data-notice-anchor');
         });
 
