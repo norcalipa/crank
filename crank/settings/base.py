@@ -476,6 +476,11 @@ MATCH_RESULTS_READ_ENABLED = _env_bool("MATCH_RESULTS_READ_ENABLED", False)
 # MATCH_RECOMPUTE_ENABLED / match_recompute gates with the preference hook and
 # no manifest sets this value (docs/match-recompute.md, "Triggers").
 JOB_MATCH_REFRESH_COOLDOWN_SECONDS = _env_int("JOB_MATCH_REFRESH_COOLDOWN_SECONDS", 30)
+# Seconds an open tab waits between asks of ``GET /api/job-matches/revision/``
+# (issue #485; the client clamps it to 30-600). 0 turns polling off for every
+# client: the endpoint then answers ``poll_after_seconds: null``. The endpoint
+# also answers null while ``MATCH_RESULTS_READ_ENABLED`` is off.
+RESULT_REVISION_POLL_SECONDS = _env_int("RESULT_REVISION_POLL_SECONDS", 60)
 # Bounded drain: users per recompute_matches invocation and its wall-clock
 # deadline in seconds.
 MATCH_RECOMPUTE_MAX_USERS = _env_int("MATCH_RECOMPUTE_MAX_USERS", 50)

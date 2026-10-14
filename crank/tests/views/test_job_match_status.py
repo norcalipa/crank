@@ -218,6 +218,48 @@ class JobMatchStatusViewTests(TestCase):
             [q for q in queries if "crank_jobmatch" in q["sql"] and "requirements" in q["sql"]]
         )
 
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_status_carries_the_committed_result_generation(self):
+        """issue #485: the three reads of one load can be compared."""
+        from crank.models.job_match import MatchResultState
+
+        self.make_preference(self.user)
+        MatchResultState.objects.create(
+            user=self.user, current_generation=5, issued_generation=5
+        )
+        self.client.force_login(self.user)
+        self.assertEqual(
+            self.client.get("/api/job-matches/status/").json()["result_generation"], 5
+        )
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_status_generation_is_null_without_a_committed_generation(self):
+        from crank.models.job_match import MatchResultState
+
+        self.client.force_login(self.user)
+        # No preference row at all.
+        self.assertIsNone(
+            self.client.get("/api/job-matches/status/").json()["result_generation"]
+        )
+        # A preference but no published generation.
+        self.make_preference(self.user)
+        MatchResultState.objects.create(user=self.user, issued_generation=1)
+        self.assertIsNone(
+            self.client.get("/api/job-matches/status/").json()["result_generation"]
+        )
+
+    def test_status_generation_is_null_while_reads_are_off(self):
+        from crank.models.job_match import MatchResultState
+
+        self.make_preference(self.user)
+        MatchResultState.objects.create(
+            user=self.user, current_generation=5, issued_generation=5
+        )
+        self.client.force_login(self.user)
+        self.assertIsNone(
+            self.client.get("/api/job-matches/status/").json()["result_generation"]
+        )
+
     def test_no_preferences_counts_zero_without_match_queries(self):
         self.client.force_login(self.user)
         response = self.client.get("/api/job-matches/status/")

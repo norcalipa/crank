@@ -131,6 +131,23 @@ computation unchanged — pre-rollout users and the `seed_e2e` Playwright
 journey keep working. Injected `match_service` calls (this-search-only
 preference overrides, orchestrator injections) always stay live.
 
+`GET /api/job-matches/revision/` (issue #485) is the cheap read an open
+`/chat/` tab polls to learn that a newer generation exists. It answers
+`result_generation`, `pending`, `stale`, `preference_revision`,
+`generated_at` and `poll_after_seconds` for the requester only, with
+`Cache-Control: private, no-store`, in at most four queries (the two
+capability switches, the state and preference rows as one join, the data
+watermark). It records no monitoring event and does not touch the session:
+`GET /api/job-matches/status/` records one `availability_state` event per
+request, which is the value of release gate `job-matches-source-unavailable`,
+so the status endpoint is never polled. `GET /api/job-matches/status/` also
+carries `result_generation`, so the client can check that the three reads of
+one load describe the same generation. With the read gate off, or before a
+generation exists, the revision answers `result_generation: null` and
+`poll_after_seconds: null` and no client polls. `RESULT_REVISION_POLL_SECONDS`
+(default 60; the client clamps it to 30–600) sets the interval, and `0` turns
+polling off for every client: set it in the ConfigMap and redeploy.
+
 ## Rollout order
 
 1. Migrate `0039_match_result_generation` — additive; old pods ignore the
