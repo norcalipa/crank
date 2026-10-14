@@ -12,7 +12,7 @@ import {getWorkspaceSnapshot, resetWorkspaceForTests} from './workspace/store';
 
 const POLL = 60_000;
 
-function job(id: number, title: string, generation: number) {
+function job(id: number, title: string, generation: number, extras: RowExtras = {}) {
     return {
         listing_id: id,
         title,
@@ -24,8 +24,15 @@ function job(id: number, title: string, generation: number) {
         is_remote: true,
         score: 80,
         reasons: ['Remote'],
-        revision: {result_generation: generation},
+        requirements: extras.requirements ?? [],
+        revision: {result_generation: generation, generated_at: '2026-10-14T11:00:00Z', ...extras.revision},
     };
+}
+
+// What a test adds to every row: revision flags and requirement outcomes.
+interface RowExtras {
+    revision?: Record<string, unknown>;
+    requirements?: unknown[];
 }
 
 // What the server holds: a generation, the jobs it ranks, and what each read
@@ -38,6 +45,7 @@ interface Server {
     matchGeneration?: (call: number) => number | null | undefined;
     revision: () => Response | Promise<Response>;
     loads: number;
+    extras?: RowExtras;
 }
 
 const json = (payload: unknown, status = 200) => new Response(JSON.stringify(payload), {
@@ -78,7 +86,7 @@ function install(server: Server) {
         const rows = generation === null ? [] : (server.jobs[generation] ?? []);
         if (url.includes('/api/job-matches/ranked/')) {
             return Promise.resolve(json({
-                job_matches: rows.map(([id, title]) => job(id, title, generation!)),
+                job_matches: rows.map(([id, title]) => job(id, title, generation!, server.extras)),
                 organization_matches: [],
             }));
         }
@@ -86,7 +94,7 @@ function install(server: Server) {
         const matchGeneration = stamped === undefined ? generation : stamped;
         return Promise.resolve(json({
             count: rows.length, next: null, previous: null,
-            results: rows.slice(0, 1).map(([id, title]) => job(id, title, matchGeneration!)),
+            results: rows.slice(0, 1).map(([id, title]) => job(id, title, matchGeneration!, server.extras)),
         }));
     });
 }
@@ -588,6 +596,175 @@ describe('the idle rule in the panel', () => {
         setVisibility('visible');
         await advance(0);
         expect(calls('/status/')).toBe(reads);
+    });
+});
+
+describe('holding the reader\u2019s row and one message (visual review, round 1)', () => {
+    // Result 1 sits 78 px lower while the notice is up, and 100 px lower
+    // again once the newer list's extra row is above it.
+    function mockRows() {
+        jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const id = (this as HTMLElement).dataset?.testid ?? '';
+            const noticeUp = !!document.querySelector('[data-testid="updated-results-notice"]');
+            const newer = !!document.querySelector('[data-testid="ranked-job-3"]');
+            const top = id === 'ranked-job-1' ? 120 + (noticeUp ? 78 : 0) + (newer ? 100 : 0) : id === 'ranked-job-2' ? 400 : 0;
+            return {top, bottom: top + 100, left: 0, right: 10, width: 10, height: 100, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+        const scrollBy = jest.fn();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        return scrollBy;
+    }
+    async function withNotice(server = makeServer(1)) {
+        await mount(server);
+        server.generation = 2;
+        await advance(POLL);
+        await screen.findByTestId('updated-results-notice');
+        return server;
+    }
+
+    test('the notice\u2019s arrival puts the row being read back where it was, once', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        const scrollBy = mockRows();
+        server.generation = 2;
+        await advance(POLL);
+        await screen.findByTestId('updated-results-notice');
+        expect(scrollBy).toHaveBeenCalledTimes(1);
+        expect(scrollBy).toHaveBeenCalledWith({top: 78, left: 0, behavior: 'instant'});
+        // A still newer generation changes nothing on screen: nothing to hold.
+        server.generation = 3;
+        await advance(POLL);
+        expect(scrollBy).toHaveBeenCalledTimes(1);
+    });
+
+    test('the header refresh with the notice up holds the row too', async () => {
+        await withNotice();
+        const scrollBy = mockRows();
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+        });
+        await advance(0);
+        await screen.findByTestId('ranked-job-3');
+        expect(notice()).not.toBeInTheDocument();
+        // 120 before the read (notice on top: 198) and 220 after it.
+        expect(scrollBy).toHaveBeenCalledWith({top: 22, left: 0, behavior: 'instant'});
+    });
+
+    test('focusing the heading after Refresh results does not scroll', async () => {
+        await withNotice();
+        const focus = jest.spyOn(HTMLElement.prototype, 'focus');
+        await press();
+        await screen.findByTestId('ranked-job-3');
+        const heading = document.getElementById('job-match-panel-title')!;
+        const instances = focus.mock.instances as unknown as HTMLElement[];
+        expect(instances).toContain(heading);
+        expect(focus.mock.calls[instances.indexOf(heading)]).toEqual([{preventScroll: true}]);
+    });
+
+    test('a failed refresh says so inside the notice, and the next press clears it', async () => {
+        const server = await withNotice();
+        server.statusGeneration = () => 3;
+        await press();
+        expect(screen.getByTestId('notice-folded')).toHaveTextContent('The newer results weren\u2019t ready. Still showing the results you had.');
+        expect(notice()).toContainElement(screen.getByTestId('notice-folded'));
+        server.statusGeneration = undefined;
+        await press();
+        await screen.findByTestId('ranked-job-3');
+        expect(screen.queryByTestId('notice-folded')).not.toBeInTheDocument();
+    });
+
+    test('with stale results the notice carries the stale sentence and the stale box stands down', async () => {
+        const server = makeServer(1);
+        server.extras = {revision: {stale: true}};
+        await withNotice(server);
+        expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('stale-refresh')).not.toBeInTheDocument();
+        expect(screen.getByTestId('notice-folded')).toHaveTextContent('computed before your latest priorities or data');
+        // One message, one labelled button (the header icon is the icon-only control).
+        expect(screen.getAllByRole('button', {name: /refresh|check again/i}).filter((b) => b.textContent !== '')).toHaveLength(1);
+        server.extras = {revision: {stale: false}};
+        await press();
+        await screen.findByTestId('ranked-job-3');
+        expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
+    });
+
+    test('a stale count-only view folds the same way', async () => {
+        const server = makeServer(1);
+        server.extras = {revision: {stale: true}};
+        await mount(server);
+        server.generation = 2;
+        await advance(POLL);
+        expect(await screen.findByTestId('notice-folded')).toHaveTextContent('computed before');
+        expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
+    });
+
+    test('with changed evidence the second refresh button waits until the newer results are loaded', async () => {
+        const server = makeServer(1);
+        server.extras = {requirements: [{
+            path: 'work_location.modes', status: 'match', source_kind: 'evidence', source_id: 9,
+            evidence_status: {state: 'superseded'},
+        }]};
+        await mount(server);
+        expect(screen.getByTestId('evidence-changed-refresh')).toBeInTheDocument();
+        server.generation = 2;
+        await advance(POLL);
+        await screen.findByTestId('updated-results-notice');
+        expect(screen.getByTestId('evidence-changed-notice')).toBeInTheDocument();
+        expect(screen.getByTestId('evidence-changed-notice')).toHaveTextContent('Refresh results above');
+        expect(screen.queryByTestId('evidence-changed-refresh')).not.toBeInTheDocument();
+        await press();
+        await screen.findByTestId('ranked-job-3');
+        expect(screen.getByTestId('evidence-changed-refresh')).toBeInTheDocument();
+    });
+
+    test('an idle auto-apply is announced and marked until the reader scrolls', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        setVisibility('hidden');
+        await advance(5 * 60_000);
+        server.generation = 2;
+        setVisibility('visible');
+        await advance(0);
+        await screen.findByTestId('ranked-job-3');
+        expect(screen.getByTestId('read-announcement')).toHaveTextContent('Showing updated results.');
+        expect(screen.getByTestId('results-updated-badge')).toHaveTextContent('Updated');
+        act(() => {
+            window.dispatchEvent(new Event('scroll'));
+        });
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+    });
+
+    test('the mark also goes at the next press', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        setVisibility('hidden');
+        await advance(5 * 60_000);
+        server.generation = 2;
+        setVisibility('visible');
+        await advance(0);
+        await screen.findByTestId('results-updated-badge');
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+        });
+        await advance(0);
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+    });
+
+    test('Refresh results announces that the results changed', async () => {
+        await withNotice();
+        await press();
+        await screen.findByTestId('ranked-job-3');
+        expect(screen.getByTestId('read-announcement')).toHaveTextContent('Showing updated results.');
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+    });
+
+    test('a read that changes nothing keeps the ordinary announcement', async () => {
+        await mount(makeServer(1));
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+        });
+        await advance(0);
+        expect(screen.getByTestId('read-announcement')).toHaveTextContent('Finished checking your job matches.');
     });
 });
 

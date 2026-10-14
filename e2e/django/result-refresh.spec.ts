@@ -82,6 +82,36 @@ async function generations(page: Page) {
     });
 }
 
+// The result card being read: the first one on screen, and where it sits in
+// the viewport. The notice and the stale box come and go above the list, so
+// "nothing moved" is measured on the row, not on scrollY (scroll anchoring
+// hides a push from scrollY in Chrome and does not exist in Safari).
+async function readingRow(page: Page) {
+    return page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll<HTMLElement>(
+            '[data-testid^="ranked-job-"]:not([data-testid="ranked-job-matches"])'));
+        const card = cards.find((c) => {
+            const rect = c.getBoundingClientRect();
+            return rect.bottom > 0 && rect.top < window.innerHeight;
+        });
+        return card ? {id: card.dataset.testid!, top: card.getBoundingClientRect().top} : null;
+    });
+}
+const rowTop = (page: Page, id: string) =>
+    page.evaluate((testid) => document.querySelector(`[data-testid="${testid}"]`)?.getBoundingClientRect().top ?? null, id);
+
+type Position = 'heading-at-top' | 'mid-list';
+async function placeReader(page: Page, position: Position) {
+    await page.evaluate((where) => {
+        const heading = document.getElementById('job-match-panel-title')!;
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        const top = where === 'heading-at-top'
+            ? window.scrollY + heading.getBoundingClientRect().top
+            : Math.min(max, window.scrollY + heading.getBoundingClientRect().top + 220);
+        window.scrollTo({top, left: 0, behavior: 'instant'});
+    }, position);
+}
+
 const chip = (page: Page) =>
     page.getByTestId('ranked-job-matches').getByTestId('requirement-work_location.modes').first();
 
@@ -100,9 +130,10 @@ test.describe('Updated results available (stored results)', () => {
             await expect(chip(page)).toHaveAttribute('data-evidence-state', 'missing');
             await page.evaluate(() => {
                 (document.querySelector('[data-testid^="ranked-job-"]:not([data-testid="ranked-job-matches"])') as any).__marker = 'same-node';
-                window.scrollTo({top: 80, left: 0, behavior: 'instant'});
             });
-            const scrollBefore = await page.evaluate(() => window.scrollY);
+            await placeReader(page, 'heading-at-top');
+            const reading = (await readingRow(page))!;
+            expect(reading).not.toBeNull();
             const statusBefore = seen.status;
 
             fixture('settle');
@@ -112,8 +143,9 @@ test.describe('Updated results available (stored results)', () => {
             await expect(notice).toHaveAttribute('role', 'status');
             await expect(notice).toContainText('Updated results available.');
             expect(seen.revision).toBe(1);
-            // Nothing else moved: same node, same scroll, old content, no status read.
-            expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
+            // Nothing else moved: the row being read is where it was (the
+            // notice's arrival is held), same node, old content, no status read.
+            expect(Math.abs((await rowTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
             expect(await page.evaluate(() =>
                 (document.querySelector('[data-testid^="ranked-job-"]:not([data-testid="ranked-job-matches"])') as any).__marker)).toBe('same-node');
             await expect(chip(page)).toHaveAttribute('data-evidence-state', 'missing');
@@ -125,6 +157,7 @@ test.describe('Updated results available (stored results)', () => {
             await button.focus();
             await page.keyboard.press('Enter');
             await expect(notice).toHaveCount(0);
+            await expect.poll(async () => Math.abs((await rowTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
             await expect(chip(page)).toHaveAttribute('data-evidence-state', 'sourced');
             await expect(page.getByRole('heading', {name: 'Your Job Matches'})).toBeFocused();
             const after = await generations(page);
@@ -135,6 +168,78 @@ test.describe('Updated results available (stored results)', () => {
             await expectNoHorizontalOverflow(page);
         });
     }
+
+    for (const [width, height] of [[1280, 800], [375, 800]] as const) {
+        for (const anchoring of ['on', 'off'] as const) {
+            for (const position of ['heading-at-top', 'mid-list'] as const) {
+                test(`the row being read does not move when the notice arrives or is applied: ${position}, scroll anchoring ${anchoring}, ${width}px`, async ({page}) => {
+                    await page.setViewportSize({width, height});
+                    await open(page);
+                    if (anchoring === 'off') {
+                        // Safari has no scroll anchoring: stand in for it.
+                        await page.addStyleTag({content: '*, *::before, *::after { overflow-anchor: none !important; }'});
+                    }
+                    await placeReader(page, position);
+                    const reading = (await readingRow(page))!;
+                    expect(reading).not.toBeNull();
+
+                    fixture('settle');
+                    await page.clock.runFor(INTERVAL_MS + 1000);
+                    const notice = page.getByTestId('updated-results-notice');
+                    await expect(notice).toBeVisible();
+                    expect(Math.abs((await rowTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+
+                    // Pressed from off screen (browse-mode activation): the page does not jump to the heading.
+                    await notice.getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+                    await expect(notice).toHaveCount(0);
+                    await expect.poll(async () => Math.abs((await rowTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+                    await expectNoHorizontalOverflow(page);
+                });
+            }
+        }
+
+        test(`the header refresh with the notice up holds the row, and the evidence box offers no second refresh, ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            await open(page);
+            await placeReader(page, 'heading-at-top');
+            const reading = (await readingRow(page))!;
+            fixture('settle');
+            await page.clock.runFor(INTERVAL_MS + 1000);
+            await expect(page.getByTestId('updated-results-notice')).toBeVisible();
+            expect(Math.abs((await rowTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            // One message, one button: "Refresh matches" waits until the newer results are in.
+            await expect(page.getByTestId('evidence-changed-notice')).toBeVisible();
+            await expect(page.getByTestId('evidence-changed-refresh')).toHaveCount(0);
+            await expect(page.getByTestId('stale-notice')).toHaveCount(0);
+            await page.getByTestId('job-match-refresh').click();
+            await expect(page.getByTestId('updated-results-notice')).toHaveCount(0);
+            await expect.poll(async () => Math.abs((await rowTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+        });
+    }
+
+    test('a refresh that cannot be applied says so in the notice and keeps the old set', async ({page}) => {
+        await open(page);
+        fixture('settle');
+        await page.clock.runFor(INTERVAL_MS + 1000);
+        const notice = page.getByTestId('updated-results-notice');
+        await expect(notice).toBeVisible();
+        // The three reads of the press disagree: the status read reports another generation.
+        await page.route('**/api/job-matches/status/**', async (route) => {
+            const response = await route.fetch();
+            const body = await response.json();
+            await route.fulfill({response, json: {...body, result_generation: (body.result_generation ?? 0) + 7}});
+        });
+        await notice.getByRole('button', {name: 'Refresh results'}).click();
+        await expect(page.getByTestId('notice-folded')).toContainText('Still showing the results you had');
+        await expect(page.getByTestId('read-announcement')).toContainText('weren’t ready');
+        await expect(notice).toBeVisible();
+        await expect(notice.getByRole('button', {name: 'Refresh results'})).not.toHaveAttribute('aria-disabled', 'true');
+        await expect(chip(page)).toHaveAttribute('data-evidence-state', 'missing');
+        await page.unroute('**/api/job-matches/status/**');
+        await notice.getByRole('button', {name: 'Refresh results'}).click();
+        await expect(notice).toHaveCount(0);
+        await expect(chip(page)).toHaveAttribute('data-evidence-state', 'sourced');
+    });
 
     test('a hidden tab sends no revision request; the return sends one', async ({page}) => {
         const seen = countRequests(page);
@@ -162,6 +267,11 @@ test.describe('Updated results available (stored results)', () => {
         await setVisibility(page, 'visible');
         await expect(chip(page)).toHaveAttribute('data-evidence-state', 'sourced');
         await expect(page.getByTestId('updated-results-notice')).toHaveCount(0);
+        // The list changed under a reader who was away: it says so until they act.
+        await expect(page.getByTestId('results-updated-badge')).toBeVisible();
+        await expect(page.getByTestId('read-announcement')).toHaveText('Showing updated results.');
+        await page.mouse.wheel(0, 40);
+        await expect(page.getByTestId('results-updated-badge')).toHaveCount(0);
     });
 
     test('after a return, with focus inside the panel, only the notice appears', async ({page}) => {
