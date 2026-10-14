@@ -106,7 +106,8 @@ async function placeReader(page: Page, position: Position) {
         const heading = document.getElementById('job-match-panel-title')!;
         const max = document.documentElement.scrollHeight - window.innerHeight;
         const top = where === 'heading-at-top'
-            ? window.scrollY + heading.getBoundingClientRect().top
+            // 72 px: below the sticky top bar, so no control is scrolled into view by the test's own press.
+            ? window.scrollY + heading.getBoundingClientRect().top - 72
             : Math.min(max, window.scrollY + heading.getBoundingClientRect().top + 220);
         window.scrollTo({top, left: 0, behavior: 'instant'});
     }, position);
@@ -211,7 +212,8 @@ test.describe('Updated results available (stored results)', () => {
             await expect(page.getByTestId('evidence-changed-notice')).toBeVisible();
             await expect(page.getByTestId('evidence-changed-refresh')).toHaveCount(0);
             await expect(page.getByTestId('stale-notice')).toHaveCount(0);
-            await page.getByTestId('job-match-refresh').click();
+            // dispatchEvent: a real press would scroll the control into view first, which moves the row on its own.
+            await page.getByTestId('job-match-refresh').dispatchEvent('click');
             await expect(page.getByTestId('updated-results-notice')).toHaveCount(0);
             await expect.poll(async () => Math.abs((await rowTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
         });
@@ -224,10 +226,18 @@ test.describe('Updated results available (stored results)', () => {
         const notice = page.getByTestId('updated-results-notice');
         await expect(notice).toBeVisible();
         // The three reads of the press disagree: the status read reports another generation.
-        await page.route('**/api/job-matches/status/**', async (route) => {
-            const response = await route.fetch();
-            const body = await response.json();
-            await route.fulfill({response, json: {...body, result_generation: (body.result_generation ?? 0) + 7}});
+        // In the page (the server's host name only resolves in the browser).
+        await page.evaluate(() => {
+            const original = window.fetch.bind(window);
+            (window as any).__realFetch = original;
+            window.fetch = async (input, init) => {
+                const response = await original(input, init);
+                const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+                if (!url.includes('/api/job-matches/status/')) return response;
+                const body = await response.clone().json();
+                return new Response(JSON.stringify({...body, result_generation: (body.result_generation ?? 0) + 7}),
+                    {status: 200, headers: {'Content-Type': 'application/json'}});
+            };
         });
         await notice.getByRole('button', {name: 'Refresh results'}).click();
         await expect(page.getByTestId('notice-folded')).toContainText('Still showing the results you had');
@@ -235,7 +245,7 @@ test.describe('Updated results available (stored results)', () => {
         await expect(notice).toBeVisible();
         await expect(notice.getByRole('button', {name: 'Refresh results'})).not.toHaveAttribute('aria-disabled', 'true');
         await expect(chip(page)).toHaveAttribute('data-evidence-state', 'missing');
-        await page.unroute('**/api/job-matches/status/**');
+        await page.evaluate(() => { window.fetch = (window as any).__realFetch; });
         await notice.getByRole('button', {name: 'Refresh results'}).click();
         await expect(notice).toHaveCount(0);
         await expect(chip(page)).toHaveAttribute('data-evidence-state', 'sourced');

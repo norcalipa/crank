@@ -1415,14 +1415,6 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             pollerRef.current = null;
         };
     }, [pollingActive]);
-    // After newer results are applied, the first listed result that is still
-    // there goes back to the offset it had (the notice leaving moves it too).
-    React.useLayoutEffect(() => {
-        const anchor = anchorRef.current;
-        if (!anchor) return;
-        anchorRef.current = null;
-        restoreAnchor(anchor);
-    }, [rankedMatches, shownGeneration, seenGeneration]);
     // Stored matches that cite replaced evidence are only resolved by a
     // recompute, so this asks for one and acts on the answer (issue #473).
     // The list stays on screen while it runs; only an answer that can have
@@ -1430,6 +1422,15 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [recheck, setRecheck] = React.useState<RecheckState>(RECHECK_IDLE);
     const [recheckAnnouncement, setRecheckAnnouncement] = React.useState('');
     const [recheckFocus, setRecheckFocus] = React.useState<{control: HTMLElement} | null>(null);
+    // After newer results are applied, a notice appears or leaves, or a re-check
+    // changes the notice's sentence, the first listed result that is still there
+    // goes back to the offset it had.
+    React.useLayoutEffect(() => {
+        const anchor = anchorRef.current;
+        if (!anchor) return;
+        anchorRef.current = null;
+        restoreAnchor(anchor);
+    }, [rankedMatches, shownGeneration, seenGeneration, recheck]);
     const recheckRunningRef = React.useRef(false);
     // Bumped by a private-state purge: an answer that arrives for an earlier
     // account is dropped without a re-read, a message or a focus move.
@@ -1439,6 +1440,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         if (recheckRunningRef.current || refreshRunningRef.current) return;
         recheckRunningRef.current = true;
         const epoch = recheckEpochRef.current;
+        // The notice's sentence changes with each step: hold the row through them.
+        anchorRef.current = captureAnchor();
         setRecheck((current) => ({kind: 'running', wasPaused: current.kind === 'paused'}));
         setRecheckAnnouncement('');
         const answer = await requestRecheck();
@@ -1448,6 +1451,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             if (epoch !== recheckEpochRef.current) return;
         }
         recheckRunningRef.current = false;
+        anchorRef.current = captureAnchor();
         setRecheck(answer.state);
         setRecheckAnnouncement(answer.announcement);
         // The pressed control keeps focus unless the outcome removed it (the

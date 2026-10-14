@@ -717,6 +717,31 @@ describe('holding the reader\u2019s row and one message (visual review, round 1)
         expect(screen.getByTestId('evidence-changed-refresh')).toBeInTheDocument();
     });
 
+    test('the header refresh with changed evidence holds the row through the re-check\u2019s own sentence changes', async () => {
+        const server = makeServer(1);
+        server.extras = {requirements: [{
+            path: 'work_location.modes', status: 'match', source_kind: 'evidence', source_id: 9,
+            evidence_status: {state: 'superseded'},
+        }]};
+        await mount(server);
+        // The evidence box's sentence is one line taller while the re-check
+        // runs (21 px) and two lines taller once it has failed (40 px).
+        jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const id = (this as HTMLElement).dataset?.testid ?? '';
+            const kind = (document.querySelector('[data-testid="evidence-changed-notice"]') as HTMLElement | null)?.dataset.recheck;
+            const top = id === 'ranked-job-1' ? 120 + (kind === 'running' ? 21 : kind === 'failed' ? 40 : 0) : id === 'ranked-job-2' ? 400 : 0;
+            return {top, bottom: top + 100, left: 0, right: 10, width: 10, height: 100, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+        const scrollBy = jest.fn();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+        });
+        await advance(0);
+        expect(scrollBy).toHaveBeenCalledWith({top: 21, left: 0, behavior: 'instant'});
+        expect(scrollBy).toHaveBeenCalledWith({top: 19, left: 0, behavior: 'instant'});
+    });
+
     test('an idle auto-apply is announced and marked until the reader scrolls', async () => {
         const server = makeServer(1);
         await mount(server);
