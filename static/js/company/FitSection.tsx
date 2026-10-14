@@ -27,6 +27,8 @@ export interface CompanyFit {
     coverage: number | null;
     requirements: FitRequirement[];
     unsupported?: string[];
+    // The reader excluded this company by name; the ranked list leaves it out.
+    excluded?: boolean;
 }
 
 const isCompanyFit = (data: unknown): data is CompanyFit => {
@@ -135,10 +137,23 @@ function evidenceText(requirement: FitRequirement): string | null {
 
 // What the Fit number is. It is the ranking's own score for the company
 // (`_score_organization_match`), not a count of the rows below, and it has no
-// fixed top: a company is scored on five of the ranking's eight factors.
+// fixed top: only four of the ranking's eight factors can score for a company
+// (a company has no industry, so the industry factor never scores), so it is at
+// most 50.
 const FIT_MEANING = 'The ranking\u2019s score for this company under your priorities: points for the profile fields at '
-    + 'the top of this page that match your funding stage, work mode, industry and vesting priorities, plus its ratings. '
-    + 'Only five of the ranking\u2019s eight factors apply to a company, so it cannot reach 100.';
+    + 'the top of this page that match your funding stage, work mode and accelerated-vesting priorities, plus its ratings. '
+    + 'Only four of the ranking\u2019s eight factors can score for a company, so it cannot reach 100.';
+
+// One sentence, visible without opening anything, beside the number it is about.
+export const FIT_NUMBER_NOTE = 'Fit is the ranking\u2019s score, not a count of the rows below, and the two can disagree.';
+
+// The number the endpoint sends as `company_score` is the plain mean of the
+// company's rating types (`_company_score`); no preset weights enter it. The
+// job-match panel's own label (`MATCH_TERMS.companyScore`) is not true for it.
+export const COMPANY_SCORE_TERM = {
+    label: 'Average rating',
+    meaning: 'The plain average of its rating types, 0 to 5, whatever the ranking preset.',
+};
 
 const figure = (value: number | null, scale: string, digits = 1): string =>
     value === null || value === undefined ? '—' : `${value.toFixed(digits)}${scale}`;
@@ -153,7 +168,7 @@ function Figures({fit}: {fit: CompanyFit}) {
                 <strong className="job-match-figure-value" data-testid="fit-score">{figure(fit.fit_score, '')}</strong>
             </span>
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label" title={MATCH_TERMS.companyScore.meaning}>{MATCH_TERMS.companyScore.label}</span>
+                <span className="job-match-figure-label" title={COMPANY_SCORE_TERM.meaning}>{COMPANY_SCORE_TERM.label}</span>
                 <strong className="job-match-figure-value" data-testid="fit-company-score">{figure(fit.company_score, ' / 5')}</strong>
             </span>
             <span role="listitem" className="job-match-figure">
@@ -228,8 +243,8 @@ function FitLegend() {
                 <dl className="ranking-definitions mb-0">
                     <dt>{MATCH_TERMS.fit.label}</dt>
                     <dd>{FIT_MEANING}</dd>
-                    <dt>{MATCH_TERMS.companyScore.label}</dt>
-                    <dd>{MATCH_TERMS.companyScore.meaning}</dd>
+                    <dt>{COMPANY_SCORE_TERM.label}</dt>
+                    <dd>{COMPANY_SCORE_TERM.meaning}</dd>
                     <dt>{MATCH_TERMS.requirementCoverage.label}</dt>
                     <dd>{MATCH_TERMS.requirementCoverage.meaning}</dd>
                     <dt>Why the fit and the rows can disagree</dt>
@@ -350,7 +365,14 @@ const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
         const fit = state.data;
         body = (
             <div data-testid="fit-ready" aria-busy={refreshing || undefined}>
+                {fit.excluded && (
+                    <p className="company-fit-excluded mb-2" data-testid="fit-excluded">
+                        You excluded {target} in your priorities, so your ranked results leave it out. This page still
+                        shows how it fits the rest.
+                    </p>
+                )}
                 <Figures fit={fit}/>
+                <p className="small text-body-secondary mb-2" data-testid="fit-number-note">{FIT_NUMBER_NOTE}</p>
                 <FitLegend/>
                 {FIT_GROUPS.map(group => {
                     const rows = fit.requirements.filter(item => fitGroupOf(item) === group.key);

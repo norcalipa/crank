@@ -5235,8 +5235,9 @@ span.priority-chip-button { cursor: default; }
     text-decoration: none;
 }
 /* The fit is being read again after a saved change: what is on screen stays
-   (no change of height) but is dimmed, so it is not taken for current. */
+   (no change of height) but is dimmed, so it is not taken for current. The value
+   keeps every line of text at 4.5 to 1 or better (measured, issue #486). */
 .company-fit [aria-busy="true"]:not([role="status"]) {
-    opacity: .6;
+    opacity: .75;
 }
 /* end issue #486 company view */

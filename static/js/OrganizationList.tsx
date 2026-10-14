@@ -220,7 +220,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     }
 
     componentDidUpdate(_prevProps: unknown, prevState: OrganizationListState) {
-        const companyChanged = prevState.view?.organization?.id !== this.state.view?.organization?.id;
+        // A loading view has no record yet: its id is the company the heading shows.
+        // Going from "loading" to "no view" (Back before the record arrived) is a
+        // change too, or the assistant keeps speaking for a company never shown.
+        const companyChanged = prevState.view?.organization?.id !== this.state.view?.organization?.id
+            || prevState.view?.id !== this.state.view?.id;
         // A view that ended without a company (gone, or failed to load) must
         // not leave the previous company in the assistant. The URL keeps its
         // ?company=, so only the assistant's company goes.

@@ -45,6 +45,30 @@ const amount = (value: string | number | null | undefined): number | null => {
     return Number.isFinite(number) ? number : null;
 };
 
+// The pay period as the sources send it: USAJobs' own codes (`PA`, `PH`, `BW`, ...)
+// and the plain words other adapters copy.
+const PAY_PERIODS: Record<string, string> = {
+    pa: 'per year', year: 'per year', yearly: 'per year', annual: 'per year', annually: 'per year',
+    annum: 'per year', 'per annum': 'per year',
+    ph: 'per hour', hour: 'per hour', hourly: 'per hour',
+    pd: 'per day', day: 'per day', daily: 'per day',
+    pw: 'per week', week: 'per week', weekly: 'per week',
+    bw: 'every two weeks', biweekly: 'every two weeks', 'bi-weekly': 'every two weeks',
+    pm: 'per month', month: 'per month', monthly: 'per month',
+};
+
+/**
+ * A stored pay period in words: "per year", "per hour", ... Text that already
+ * starts with "per" is not prefixed again; a value that is not known is printed
+ * as it was stored, without a "per" of ours.
+ */
+export function payPeriodText(raw: string | undefined): string {
+    const text = (raw ?? '').trim();
+    if (!text) return '';
+    const bare = text.toLowerCase().replace(/^per\s+/, '');
+    return PAY_PERIODS[bare] ?? PAY_PERIODS[text.toLowerCase()] ?? text;
+}
+
 /**
  * Pay as published: the stored currency, range and period, nothing inferred.
  * "Pay not published" when the listing has no amount.
@@ -58,7 +82,8 @@ export function payText(job: CompanyJob): string {
         ? `${format(low)}–${format(high)}`
         : format((low ?? high) as number);
     const currency = job.compensation_currency ? `${job.compensation_currency} ` : '';
-    const period = job.compensation_interval ? ` per ${job.compensation_interval}` : '';
+    const words = payPeriodText(job.compensation_interval);
+    const period = words ? ` ${words}` : '';
     return `${currency}${range}${period}`;
 }
 

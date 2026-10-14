@@ -167,15 +167,30 @@ export function retryFrom(headingId: string, retry: () => void): void {
  *
  * The position of what follows the section is read while rendering (before the
  * new content is in the page) and again after the commit. When the whole section
- * was above the top of the screen and what follows it moved, the page is
- * scrolled by the same amount.
+ * was above where the screen starts and what follows it moved, the page is
+ * scrolled by the same amount. On phones the sticky top bar covers the first
+ * part of the screen, so the screen starts at the bottom of that bar: a section
+ * that ends under it shows the reader nothing either.
  */
+export const coveredTop = (): number => {
+    const bar = document.querySelector('header.app-mobile-topbar');
+    if (!bar) return 0;
+    const position = getComputedStyle(bar).position;
+    if (position !== 'sticky' && position !== 'fixed') return 0;
+    const rect = bar.getBoundingClientRect();
+    return rect.height > 0 ? Math.max(0, rect.bottom) : 0;
+};
+
 export function useHoldReaderBelow(sectionRef: React.RefObject<HTMLElement>, dependency: unknown): void {
-    const before = React.useRef<{bottom: number; next: number} | null>(null);
+    const before = React.useRef<{bottom: number; next: number; top: number} | null>(null);
     const section = sectionRef.current;
     if (section) {
         const bottom = section.getBoundingClientRect().bottom;
-        before.current = {bottom, next: section.nextElementSibling?.getBoundingClientRect().top ?? bottom};
+        before.current = {
+            bottom,
+            next: section.nextElementSibling?.getBoundingClientRect().top ?? bottom,
+            top: coveredTop(),
+        };
     }
     React.useLayoutEffect(() => {
         const element = sectionRef.current;
@@ -183,6 +198,6 @@ export function useHoldReaderBelow(sectionRef: React.RefObject<HTMLElement>, dep
         if (!element || !was) return;
         const next = element.nextElementSibling?.getBoundingClientRect().top ?? element.getBoundingClientRect().bottom;
         const moved = next - was.next;
-        if (was.bottom <= 0 && Math.abs(moved) >= 1) window.scrollBy({top: moved, behavior: 'instant' as ScrollBehavior});
+        if (was.bottom <= was.top && Math.abs(moved) >= 1) window.scrollBy({top: moved, behavior: 'instant' as ScrollBehavior});
     }, [dependency, sectionRef]);
 }

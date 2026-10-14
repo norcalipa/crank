@@ -16,11 +16,15 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.views.decorators.http import require_GET
 
-from crank.empty_state import has_enabled_job_source
-from crank.models.job import JobListing
+from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.organization import Organization
 from crank.services.job_matching import organization_fit
 from crank.views.job_matches import _listing_payload
+
+#: The sources whose listings count, the filter every other reader of job
+#: inventory uses (``match_inventory``, the assistant status, inventory health):
+#: a blocked, pending or disabled source never contributes.
+LIVE_SOURCE = {"approval_state": JobSourceCatalog.ApprovalState.APPROVED, "enabled": True}
 
 #: Most listings the company view shows.
 MAX_COMPANY_JOBS = 25
@@ -58,13 +62,15 @@ def organization_jobs_view(request, pk):
     organization = _active_organization(pk)
     if organization is None:
         return _not_found()
-    if not has_enabled_job_source():
+    if not JobSourceCatalog.objects.filter(**LIVE_SOURCE).exists():
         return _private(
             JsonResponse(
                 {"organization_id": organization.pk, "inventory": "unavailable", "count": 0, "results": []}
             )
         )
-    listings = JobListing.objects.filter(organization=organization).select_related("organization")[:MAX_COMPANY_JOBS]
+    listings = JobListing.objects.filter(
+        organization=organization, **{f"source__{key}": value for key, value in LIVE_SOURCE.items()}
+    ).select_related("organization")[:MAX_COMPANY_JOBS]
     results = []
     for listing in listings:
         payload = _listing_payload(listing)

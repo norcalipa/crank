@@ -246,6 +246,7 @@ def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CO
     base = {
         "organization_id": org_id,
         "has_preferences": False,
+        "excluded": False,
         "fit_score": None,
         "company_score": None,
         "coverage": None,
@@ -261,6 +262,8 @@ def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CO
     }
     if criteria is None:
         return base
+    # The same name match ``_org_excluded`` uses to drop a company from the list.
+    excluded = _normalized(getattr(organization, "name", "")) in criteria.excluded_companies
     org_evidence = _resolve_evidence([org_id]).get(org_id) or {}
     outcomes = evaluate_org_requirements(organization, criteria, org_evidence)
     # An out-of-scope fact cannot satisfy the reader, whatever produced it.
@@ -283,7 +286,16 @@ def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CO
         )
     generated_at = timezone.now()
     base.update(
-        has_preferences=bool(requirements),
+        # Decided from the saved document, not from the rows: a reader whose
+        # only priority is an exclusion has priorities.
+        has_preferences=bool(
+            requirements
+            or criteria.excluded_companies
+            or criteria.excluded_titles
+            or criteria.excluded_industries
+            or criteria.excluded_locations
+        ),
+        excluded=excluded,
         fit_score=_score_organization_match(organization, criteria, config),
         company_score=_company_score(organization),
         coverage=coverage(outcomes),
