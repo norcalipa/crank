@@ -26,14 +26,15 @@ function renderTranscript(extra: Partial<TranscriptProps> = {}) {
     return render(<Transcript {...props}/>);
 }
 
-const notice = <div role="status" data-testid="preference-proposal-notice">Proposed change</div>;
+const node = <div role="status" data-testid="preference-proposal-notice">Proposed change</div>;
+const noticeAt = (afterId: number | null, kind = 'proposal', body: React.ReactNode = node) => ({kind, afterId, node: body});
 const childNames = () => Array.from(screen.getByRole('log').children).map((el) => (
     el.getAttribute('data-testid') ?? el.getAttribute('aria-label')
 ));
 
 describe('notices in the transcript (issue #483)', () => {
     test('a notice follows the article it is anchored to, inside the log', () => {
-        renderTranscript({notice, noticeAfterId: 2});
+        renderTranscript({notices: [noticeAt(2)]});
         const log = screen.getByRole('log');
         expect(within(log).getByTestId('preference-proposal-notice')).toBeInTheDocument();
         expect(childNames()).toEqual([
@@ -43,35 +44,57 @@ describe('notices in the transcript (issue #483)', () => {
     });
 
     test('a notice with no anchor goes after the last article', () => {
-        renderTranscript({notice, noticeAfterId: null});
+        renderTranscript({notices: [noticeAt(null)]});
         expect(childNames()).toEqual([
             'Your message', 'Assistant message', 'Your message', 'Assistant message', 'transcript-notice',
         ]);
         expect(screen.getByRole('log')).not.toHaveAttribute('data-notice-anchor');
     });
 
-    test('a notice without an anchor prop goes after the last article', () => {
-        renderTranscript({notice});
-        expect(childNames()[4]).toBe('transcript-notice');
+    test('notices with their own anchors sit under their own replies', () => {
+        renderTranscript({notices: [
+            noticeAt(2, 'changes', <div data-testid="applied">Applied</div>),
+            noticeAt(4, 'proposal', <div data-testid="next-proposal">Next</div>),
+        ]});
+        expect(childNames()).toEqual([
+            'Your message', 'Assistant message', 'transcript-notice', 'Your message', 'Assistant message', 'transcript-notice',
+        ]);
+        const blocks = screen.getAllByTestId('transcript-notice');
+        expect(within(blocks[0]).getByTestId('applied')).toBeInTheDocument();
+        expect(within(blocks[1]).getByTestId('next-proposal')).toBeInTheDocument();
+        expect(screen.getByRole('log')).toHaveAttribute('data-notice-anchor', '2 4');
+    });
+
+    test('notices under the same reply share one block, in the order given', () => {
+        renderTranscript({notices: [
+            noticeAt(2, 'proposal', <div data-testid="first">First</div>),
+            noticeAt(99, 'banner', <div data-testid="second">Second</div>),
+            noticeAt(4, 'search', <div data-testid="third">Third</div>),
+        ]});
+        const blocks = screen.getAllByTestId('transcript-notice');
+        expect(blocks).toHaveLength(2);
+        expect(Array.from(blocks[0].children).map((el) => el.getAttribute('data-testid'))).toEqual(['first']);
+        // The banner's anchor is not in the history: it goes after the last reply, with the notice anchored there.
+        expect(Array.from(blocks[1].children).map((el) => el.getAttribute('data-testid'))).toEqual(['second', 'third']);
     });
 
     test('a notice whose anchor is no longer in the history goes after the last article', () => {
-        renderTranscript({notice, noticeAfterId: 99});
+        renderTranscript({notices: [noticeAt(99)]});
         expect(childNames()[4]).toBe('transcript-notice');
     });
 
     test('the pending indicator stays below the notice', () => {
-        renderTranscript({notice, noticeAfterId: 4, pending: true});
+        renderTranscript({notices: [noticeAt(4)], pending: true});
         expect(childNames().slice(-2)).toEqual(['transcript-notice', 'pending-status']);
     });
 
     test('there is no notice node without a notice', () => {
-        renderTranscript({noticeAfterId: 2});
+        renderTranscript({});
         expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
     });
 
     test('a notice in an empty history still shows in the log', () => {
-        renderTranscript({messages: [], notice, noticeAfterId: 2});
+        renderTranscript({messages: [], notices: [noticeAt(2)]});
         expect(within(screen.getByRole('log')).getByTestId('transcript-notice')).toBeInTheDocument();
     });
 });

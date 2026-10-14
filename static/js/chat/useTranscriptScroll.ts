@@ -11,6 +11,7 @@ const INPUT_WINDOW_MS = 300;
 // The band at the bottom of the transcript that the jump pill occupies.
 const PILL_BAND_REM = 4.5;
 const NOTICE_TOP_GAP_PX = 8;
+const NOTICE_SELECTOR = '[data-testid="transcript-notice"]';
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 
 // A pinch zoom shrinks the visual viewport too; only an unscaled one can be an on-screen keyboard.
@@ -82,16 +83,17 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     // thing, and the pill would take the press meant for the notice's control.
     const pillWouldCoverNotice = (): boolean => {
         const history = historyRef.current;
-        const notice = history?.querySelector<HTMLElement>('[data-testid="transcript-notice"]');
-        if (!history || !notice) return false;
+        if (!history) return false;
         const box = history.getBoundingClientRect();
-        const rect = notice.getBoundingClientRect();
-        if (rect.top >= box.bottom || rect.bottom <= box.top) return false;
-        if (!notice.nextElementSibling) return true;
         const bandTop = box.bottom - PILL_BAND_REM * (parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16);
-        return Array.from(notice.querySelectorAll('button, a[href]')).some((el) => {
-            const r = el.getBoundingClientRect();
-            return r.bottom > bandTop && r.top < box.bottom;
+        return Array.from(history.querySelectorAll<HTMLElement>(NOTICE_SELECTOR)).some((notice) => {
+            const rect = notice.getBoundingClientRect();
+            if (rect.top >= box.bottom || rect.bottom <= box.top) return false;
+            if (!notice.nextElementSibling) return true;
+            return Array.from(notice.querySelectorAll('button, a[href]')).some((el) => {
+                const r = el.getBoundingClientRect();
+                return r.bottom > bandTop && r.top < box.bottom;
+            });
         });
     };
 
@@ -198,7 +200,12 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             boxHeightRef.current = height;
             if (height === lastHeight) return;
             lastHeight = height;
-            if (nearBottomRef.current && history.scrollHeight > 0) scrollToLatest('auto');
+            if (nearBottomRef.current && history.scrollHeight > 0) {
+                scrollToLatest('auto');
+            } else if (!nearBottomRef.current) {
+                // The new box can put the pill over a control of a notice that has not moved.
+                setShowJumpToLatest(!pillWouldCoverNotice());
+            }
         });
         observer.observe(history);
         return () => observer.disconnect();
@@ -245,13 +252,20 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     React.useEffect(() => {
         if (contentKeyRef.current === contentKey) return;
         contentKeyRef.current = contentKey;
-        const noticeArrived = noticeKeyRef.current !== noticeKey && noticeKey !== '';
+        // Only a notice that was not showing counts: dismissing one of two leaves the other where it is.
+        const before = noticeKeyRef.current.split(',');
+        const noticeArrived = noticeKey.split(',').some((id) => id !== '' && !before.includes(id));
         noticeKeyRef.current = noticeKey;
-        if (messagesLength === 0 || loading || !nearBottomRef.current) return;
+        if (messagesLength === 0 || loading) return;
+        if (!nearBottomRef.current) {
+            // A notice that grew (an apply error) can put the pill over one of its controls.
+            setShowJumpToLatest(!pillWouldCoverNotice());
+            return;
+        }
         // A notice that is taller than the room left at the end arrives with its
-        // top on screen; the reader scrolls on to its buttons.
+        // top on screen; the reader scrolls on to its buttons. The newest one is the last.
         const scroller = getScroller();
-        const notice = noticeArrived && scroller ? scroller.querySelector<HTMLElement>('[data-testid="transcript-notice"]') : null;
+        const notice = noticeArrived && scroller ? Array.from(scroller.querySelectorAll<HTMLElement>(NOTICE_SELECTOR)).pop() : undefined;
         if (scroller && notice) {
             const end = scroller.scrollHeight - scroller.clientHeight;
             const top = scroller.scrollTop + notice.getBoundingClientRect().top - scroller.getBoundingClientRect().top - NOTICE_TOP_GAP_PX;

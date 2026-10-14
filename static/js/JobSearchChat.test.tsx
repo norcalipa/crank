@@ -5233,6 +5233,290 @@ describe('preference notices in the transcript (issue #483)', () => {
         expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
         expect(log()).not.toHaveAttribute('data-notice-anchor');
     });
+
+    const proposal2 = {
+        id: 'prop-483-b', scope: 'account', changes: [{path: 'notes', old: '', new: 'second change'}], change_count: 1, base_revision: 3,
+        unsupported_criteria: [], token: {patch: {set: {notes: 'second change'}}, scope: 'account', base_revision: 3},
+    };
+    const applyAnswer = {applied: true, scope: 'account', revision: 3, changes, undo: undoToken};
+    const blocks = () => screen.getAllByTestId('transcript-notice');
+    const lastKey = (name: 'noticeKey' | 'contentKey') => {
+        const calls = (useTranscriptScroll as jest.Mock).mock.calls;
+        return calls[calls.length - 1][0][name] as string;
+    };
+
+    async function applied() {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(applyAnswer));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        await screen.findByTestId('preference-change-notice');
+    }
+
+    describe('every notice keeps its own anchor', () => {
+        test('an applied notice stays under its reply when a later reply brings a proposal', async () => {
+            await applied();
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByTestId('preference-proposal-notice');
+            expect(blocks()).toHaveLength(2);
+            expect(within(blocks()[0]).getByTestId('preference-change-notice')).toBeInTheDocument();
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('I suggest these updates.');
+            expect(within(blocks()[1]).getByTestId('preference-proposal-notice')).toBeInTheDocument();
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('Another suggestion.');
+            expect(log()).toHaveAttribute('data-notice-anchor', '11 9');
+        });
+
+        test('an undone notice stays under its reply when a later reply brings a proposal', async () => {
+            await applied();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            await screen.findByTestId('preference-change-undone');
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByTestId('preference-proposal-notice');
+            expect(within(blocks()[0]).getByTestId('preference-change-undone')).toBeInTheDocument();
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('I suggest these updates.');
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('Another suggestion.');
+        });
+
+        test('a search-only confirmation stays under its reply when a later reply brings a proposal', async () => {
+            await withProposal();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+                applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+            }));
+            fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+            await screen.findByTestId('preference-search-applied');
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByTestId('preference-proposal-notice');
+            // A new proposal replaces the confirmation, as before; the anchor goes with it.
+            expect(blocks()).toHaveLength(1);
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('Another suggestion.');
+            expect(log()).toHaveAttribute('data-notice-anchor', '11');
+        });
+
+        test('an open proposal stays under its reply when a later reply reports a change', async () => {
+            await withProposal();
+            await sendTurn('save it directly', {message: assistantMessage(11, 'I saved that.', true), preferences_changed: true});
+            await screen.findByRole('status', {name: 'Preference update'});
+            expect(within(blocks()[0]).getByTestId('preference-proposal-notice')).toBeInTheDocument();
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('I suggest these updates.');
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('I saved that.');
+            // The banner's own anchor holds: a later plain reply does not drag it along.
+            await sendTurn('anything else?', {message: assistantMessage(13, 'No.'), preferences_changed: false});
+            await screen.findByText('No.');
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('I saved that.');
+            expect(log()).toHaveAttribute('data-notice-anchor', '9 11');
+        });
+
+        test('the notice identity moves when a proposal replaces an open one under a later reply, and not for a change inside it', async () => {
+            await withProposal();
+            const first = lastKey('noticeKey');
+            expect(first).toBe('proposal@9');
+            // A failed Apply is a change inside the same notice.
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({error: {type: 'server_error', message: 'Apply broke.'}}, 500));
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            await screen.findByTestId('preference-proposal-error');
+            expect(lastKey('noticeKey')).toBe(first);
+            expect(lastKey('contentKey')).not.toBe('');
+            // A second proposal under a later reply, while the first is still open.
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByText('Another suggestion.');
+            expect(lastKey('noticeKey')).toBe('proposal@11');
+        });
+
+        test('the identity tells the applied notice from the undone one', async () => {
+            await applied();
+            expect(lastKey('noticeKey')).toBe('changes@9');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            await screen.findByTestId('preference-change-undone');
+            expect(lastKey('noticeKey')).toBe('undone@9');
+        });
+    });
+
+    describe('New conversation and Delete clear every kind of notice', () => {
+        const toApplied = applied;
+        const toSearchOnly = async () => {
+            await withProposal();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+                applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+            }));
+            fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+            await screen.findByTestId('preference-search-applied');
+        };
+        const toUndone = async () => {
+            await applied();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            await screen.findByTestId('preference-change-undone');
+        };
+        const toBanner = async () => {
+            await renderChat();
+            await sendTurn('I need remote', {message: assistantMessage(5, 'Noted.'), preferences_changed: true});
+            await screen.findByRole('status', {name: 'Preference update'});
+        };
+
+        test.each([
+            ['an applied notice', toApplied],
+            ['a search-only confirmation', toSearchOnly],
+            ['an undone notice', toUndone],
+            ['the plain banner', toBanner],
+        ])('%s does not survive New conversation, nor the next reply', async (_label, reach) => {
+            await reach();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+            await sendTurn('hello again', {message: assistantMessage(30, 'Hello.'), preferences_changed: false});
+            await screen.findByText('Hello.');
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        test.each([
+            ['an applied notice', toApplied],
+            ['a search-only confirmation', toSearchOnly],
+            ['an undone notice', toUndone],
+            ['the plain banner', toBanner],
+        ])('%s does not survive Delete', async (_label, reach) => {
+            await reach();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
+            deleteConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+    });
+
+    describe('an answer that lands after the view it was asked for is gone', () => {
+        test.each([
+            ['Apply', 'New conversation', startNewConversation, () => jsonResponse(emptyConversation(43, []))],
+            ['Apply', 'Delete', deleteConversation, () => jsonResponse({deleted: true})],
+        ])('%s answered after %s shows no notice', async (_what, _how, leave, response) => {
+            await withProposal();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            mock.mockResolvedValueOnce(response());
+            leave();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse(applyAnswer)); });
+            expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+
+        test('a failed Apply answered after New conversation leaves the new conversation alone', async () => {
+            await withProposal();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse({error: {type: 'server_error', message: 'Apply broke.'}}, 500)); });
+            expect(screen.queryByTestId('preference-proposal-error')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        test('an Undo answered after New conversation shows no undone notice', async () => {
+            await applied();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse({undone: true, revision: 4, changes: []})); });
+            expect(screen.queryByTestId('preference-change-undone')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        test('an Apply or Undo answered in the same conversation still shows its notice', async () => {
+            await applied();
+            expect(screen.getByTestId('preference-change-notice')).toBeInTheDocument();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            expect(await screen.findByTestId('preference-change-undone')).toBeInTheDocument();
+        });
+    });
+
+    describe('a reconcile answer that lands after the view it was asked for is gone (the leak predates this PR)', () => {
+        const oldHistory = (preferencesChanged: boolean) => ({
+            ...emptyConversation(42, [
+                assistantMessage(1, 'Old account reply.'),
+                {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'completed'},
+                assistantMessage(3, 'Old account saved prefs.', preferencesChanged),
+            ]),
+            preferences_changed: preferencesChanged,
+        });
+
+        test('after an account switch the new account keeps its own conversation, with no banner and no anchor', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({error: {type: 'turn_in_progress', message: 'Another tab is running this turn.'}}, 409));
+            const settle = holdNextFetch(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'q1'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await waitFor(() => expect(mock.mock.calls.filter(([url]) => String(url) === '/api/agent/conversations/42/').length).toBe(2));
+            // The account switch: the purge, then the new account's own conversation.
+            mock.mockResolvedValue(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('New account reply.');
+            await act(async () => { settle(jsonResponse(oldHistory(true))); });
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+            expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+
+        test('after New conversation the new conversation stays empty', async () => {
+            const pendingTurn = {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'pending' as const};
+            await renderChat([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(await screen.findByTestId('check-response-button'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse(oldHistory(true))); });
+            expect(screen.getByTestId('empty-history')).toBeInTheDocument();
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+            expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+
+        test('after Delete the view stays empty', async () => {
+            const pendingTurn = {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'pending' as const};
+            await renderChat([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(await screen.findByTestId('check-response-button'));
+            mock.mockResolvedValueOnce(jsonResponse({deleted: true}));
+            deleteConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse(oldHistory(true))); });
+            expect(screen.getByTestId('empty-history')).toBeInTheDocument();
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+        });
+
+        test('in the same conversation the answer is still adopted', async () => {
+            const pendingTurn = {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'pending' as const};
+            await renderChat([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(oldHistory(true)));
+            fireEvent.click(await screen.findByTestId('check-response-button'));
+            expect(await screen.findByText('Old account saved prefs.')).toBeInTheDocument();
+            expect(log()).toHaveAttribute('data-notice-anchor', '3');
+        });
+    });
 });
 
 describe('what the chat tells the transcript scroll (issue #483)', () => {
