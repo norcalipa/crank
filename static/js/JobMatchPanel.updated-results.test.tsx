@@ -349,6 +349,33 @@ describe('Refresh results', () => {
         expect(notice()).not.toBeInTheDocument();
     });
 
+    test('a poll that fires while a read is running neither aborts it nor is aborted by it', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        const original = global.fetch as jest.Mock;
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const signals: AbortSignal[] = [];
+        global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+            if (String(url).includes('/revision/')) return original(url, init);
+            signals.push(init!.signal!);
+            return gate.then(() => original(url, init));
+        });
+        server.generation = 2;
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+            await jest.advanceTimersByTimeAsync(0);
+        });
+        await advance(POLL);
+        expect(calls('/revision/')).toBe(1);
+        expect(signals.every((signal) => !signal.aborted)).toBe(true);
+        await act(async () => {
+            release();
+            await jest.advanceTimersByTimeAsync(0);
+        });
+        expect(await screen.findByTestId('ranked-job-3')).toBeInTheDocument();
+    });
+
     test('a double press while the read runs sends one read', async () => {
         await withNotice();
         const before = calls('/status/');
