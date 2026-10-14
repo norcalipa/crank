@@ -200,14 +200,33 @@ match that the real matcher published (one refresh does that) and it cites a row
 the reset deleted, the command republishes the account's matches with one forced
 refresh and prints a line saying so; without that the published match would
 read `missing` for both evidence-backed requirements and a scheduled refresh
-would answer `current`. If the refresh does not publish, the line says what it
-answered and the published match is not repaired. The command still refuses
+would answer `current`. Only the rows of the account's published generation start that refresh,
+because only those are what a refresh rewrites (and the only rows served with
+committed reads on). A row of an earlier generation (a listing the account no
+longer matches, or a row under an older ranker version) that still cites a
+deleted row is never rewritten: the command prints one line counting such rows
+and does not refresh again on every run; with committed reads off the list can
+still show them reading `missing`. If the refresh does not publish, the line says
+what it answered and the published match is not repaired.
+
+**Only `staging_user` is republished.** The command touches no other account.
+Any other account whose refresh ranked the fixture listing (a moderator,
+engineer or participant account with saved priorities) keeps a published match
+that cites the deleted rows and reads `missing` for both evidence-backed
+requirements; a scheduled refresh answers `current` for it and the command has
+no option to force one account. The account's own refresh action republishes it
+only with committed reads on and recompute on; otherwise there is no documented
+way back for that account. The command still refuses
 `ENV=prod` and still gives the staff account no repository-known password.
 
 **Resetting the saved priorities on purpose.** Delete the account's saved
 priorities row and run the command: it is created again equal to the fixture's
-document, one revision above the results already published for the account, so
-the account's next refresh publishes instead of being discarded as stale. (The
+document, one revision above the results already published for the account and
+above every revision the account's own audit history shows it used, so the
+account's next refresh publishes instead of being discarded as stale and an Undo
+token issued before the delete is refused instead of overwriting the fixture's
+priorities. Deleting the row through the product's own delete records that floor
+as well. (The
 other way back is to delete the `staging_user` account and run the command; the
 account, its priorities and both fixture matches are created again.)
 

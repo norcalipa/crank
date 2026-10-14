@@ -53,10 +53,15 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
-from crank.models.preference import SCHEMA_VERSION, UserPreference, default_preferences
+from crank.models.preference import (
+    SCHEMA_VERSION,
+    UserPreference,
+    UserPreferenceAudit,
+    default_preferences,
+)
 from crank.services.company_evidence import field_evidence_payload, resolve_field_evidence
 from crank.services.match_recompute import RecomputeStatus, recompute_user
-from crank.services.preferences import to_markdown
+from crank.services.preferences import _recreate_revision_floor, to_markdown
 from crank.settings.base import DEFAULT_ALGORITHM_ID
 
 #: Revision of this fixture set. ``readiness_baseline`` reports it when the
@@ -131,6 +136,24 @@ def fixture_preferences() -> dict:
     preferences["vesting"].update(MATCH_PREFERENCES["vesting"])
     preferences["funding_stage"] = list(MATCH_PREFERENCES["funding_stage"])
     return preferences
+
+
+def _recreated_revision(user, published_revision):
+    """Start a recreated preference row above every revision the account used.
+
+    Audit rows belong to the user and survive the row. Each revision step of
+    the product writes one ``patched`` or ``reset`` row, and a delete through
+    the product records its floor, so the floor plus the number of steps is
+    never below a revision an undo token can name. Without any step the
+    published revision decides.
+    """
+    steps = UserPreferenceAudit.objects.filter(
+        user=user,
+        action__in=[UserPreferenceAudit.Action.PATCHED, UserPreferenceAudit.Action.RESET],
+    ).count()
+    floor = _recreate_revision_floor(user)
+    used = floor + steps + 1 if steps else floor
+    return max(0 if published_revision is None else published_revision + 1, used)
 
 
 class Command(BaseCommand):
@@ -484,7 +507,9 @@ class Command(BaseCommand):
         # are never overwritten.
         preferences = fixture_preferences()
         # A recreated row starts above the revision of the results already
-        # published for the account, or its next refresh is discarded as stale.
+        # published for the account, or its next refresh is discarded as stale,
+        # and above every revision the account used, so an Undo token issued
+        # before the row was deleted can never match it.
         published_revision = (
             MatchResultState.objects.filter(user=ordinary)
             .values_list("preference_revision", flat=True)
@@ -496,7 +521,7 @@ class Command(BaseCommand):
                 "preferences": preferences,
                 "preferences_markdown": to_markdown(preferences),
                 "schema_version": SCHEMA_VERSION,
-                "revision": 0 if published_revision is None else published_revision + 1,
+                "revision": _recreated_revision(ordinary, published_revision),
             },
         )
         if preference.preferences != preferences:
@@ -600,29 +625,54 @@ class Command(BaseCommand):
         path, makes the published match cite the rows just written.
         """
         user = get_user_model().objects.get(username=ORDINARY_USERNAME)
-        cited = set()
-        for ids in (
-            JobMatch.objects.filter(user=user)
-            .exclude(ranker_version=FIXTURE_RANKER_VERSION)
-            .values_list("evidence_ids", flat=True)
-        ):
-            cited.update(ids or [])
-        existing = set(
-            CompanyFieldEvidence.objects.filter(pk__in=cited).values_list("pk", flat=True)
+        own = JobMatch.objects.filter(user=user).exclude(
+            ranker_version=FIXTURE_RANKER_VERSION
         )
-        if cited <= existing:
-            return
-        outcome = recompute_user(user, reason="seed_staging_baseline", force=True)
-        if outcome.status == RecomputeStatus.PUBLISHED:
-            notes.append(
-                f"Republished the matches of {ORDINARY_USERNAME}: one cited an "
-                "evidence row that no longer exists."
+        generation = (
+            MatchResultState.objects.filter(user=user)
+            .values_list("current_generation", flat=True)
+            .first()
+        )
+
+        def citing_deleted_rows(matches):
+            cited = {}
+            for pk, ids in matches.values_list("pk", "evidence_ids"):
+                for evidence_id in ids or []:
+                    cited.setdefault(evidence_id, set()).add(pk)
+            existing = set(
+                CompanyFieldEvidence.objects.filter(pk__in=cited).values_list(
+                    "pk", flat=True
+                )
             )
-        else:
+            return {
+                pk
+                for evidence_id, pks in cited.items()
+                if evidence_id not in existing
+                for pk in pks
+            }
+
+        # Only the rows of the published generation are what a refresh rewrites.
+        if citing_deleted_rows(own.filter(result_generation=generation)):
+            outcome = recompute_user(user, reason="seed_staging_baseline", force=True)
+            if outcome.status == RecomputeStatus.PUBLISHED:
+                notes.append(
+                    f"Republished the matches of {ORDINARY_USERNAME}: one cited an "
+                    "evidence row that no longer exists."
+                )
+            else:
+                notes.append(
+                    f"A published match of {ORDINARY_USERNAME} cites an evidence row "
+                    f"that no longer exists and the refresh answered {outcome.status.value}; "
+                    "it is not repaired."
+                )
+        # A row of an earlier generation (a listing the account no longer
+        # matches, or an older ranker version) is never rewritten by a refresh.
+        left = citing_deleted_rows(own.exclude(result_generation=generation))
+        if left:
             notes.append(
-                f"A published match of {ORDINARY_USERNAME} cites an evidence row "
-                f"that no longer exists and the refresh answered {outcome.status.value}; "
-                "it is not repaired."
+                f"{len(left)} earlier match row(s) of {ORDINARY_USERNAME} still cite an "
+                "evidence row that no longer exists; a refresh does not rewrite them, "
+                "and they are listed only while committed reads are off."
             )
 
     @staticmethod

@@ -31,9 +31,15 @@ from crank.agents.jobs.matching import project_criteria
 from crank.models.company_correction import CompanyCorrection
 from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.job import JobListing
-from crank.models.job_match import JobMatch
+from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.preference import SCHEMA_VERSION, UserPreference, default_preferences
+from crank.services.preferences import (
+    StalePreferenceError,
+    apply_patch_to_user,
+    to_markdown,
+    undo_preference_change,
+)
 from crank.services import company_evidence
 from crank.services.company_evidence import resolve_field_evidence_for_orgs
 from crank.services.job_matching import evaluate_org_requirements
@@ -737,6 +743,84 @@ class StagingResetAfterARefreshTests(TestCase):
             lines = _run()
         self.assertTrue(any("refresh answered failed" in line for line in lines))
 
+    def test_a_row_no_refresh_can_rewrite_does_not_start_one_on_every_run(self):
+        recompute_user(self.user, reason="test", force=True)
+        # The participant excludes the company: the next refresh publishes no
+        # match for the listing and leaves the earlier row as it was.
+        apply_patch_to_user(
+            self.user,
+            {"set": {"exclusions.companies": [TARGET_ORG_NAME]}},
+            expected_revision=0,
+        )
+        self.assertEqual(
+            recompute_user(self.user, reason="test", force=True).status,
+            RecomputeStatus.PUBLISHED,
+        )
+        self.assertEqual(JobMatch.objects.filter(user=self.user).exclude(
+            ranker_version="staging-baseline"
+        ).count(), 1)
+        _rows().delete()
+        lines = _run()
+        self.assertFalse(any(line.startswith("Republished") for line in lines), lines)
+        self.assertTrue(any("earlier match row(s)" in line for line in lines), lines)
+        generation = MatchResultState.objects.get(user=self.user).current_generation
+        for _ in range(2):
+            with mock.patch(
+                "crank.management.commands.seed_staging_baseline.recompute_user"
+            ) as refresh:
+                lines = _run()
+            refresh.assert_not_called()
+            self.assertFalse(any(line.startswith("Republished") for line in lines), lines)
+        self.assertEqual(
+            MatchResultState.objects.get(user=self.user).current_generation, generation
+        )
+
+    def test_a_row_of_an_older_ranker_version_is_said_and_not_refreshed_again(self):
+        recompute_user(self.user, reason="test", force=True)
+        published = JobMatch.objects.filter(user=self.user).exclude(
+            ranker_version="staging-baseline"
+        ).get()
+        # A row published under an older ranker version stays beside the
+        # present one and is never rewritten by a refresh.
+        published.pk = None
+        published.ranker_version = "0.9.0"
+        published.result_generation = 0
+        published.save()
+        _rows().delete()
+        self.assertTrue(any(line.startswith("Republished") for line in _run()))
+        for _ in range(2):
+            with mock.patch(
+                "crank.management.commands.seed_staging_baseline.recompute_user"
+            ) as refresh:
+                lines = _run()
+            refresh.assert_not_called()
+            self.assertTrue(any("earlier match row(s)" in line for line in lines), lines)
+
+    def test_a_match_of_another_account_does_not_start_a_refresh_of_staging_user(self):
+        other = get_user_model().objects.create_user("second_account", password="x")
+        document = fixture_preferences()
+        UserPreference.objects.create(
+            user=other,
+            preferences=document,
+            preferences_markdown=to_markdown(document),
+            schema_version=SCHEMA_VERSION,
+            revision=7,
+        )
+        self.assertEqual(recompute_user(other, reason="test").status, RecomputeStatus.PUBLISHED)
+        self.assertTrue(JobMatch.objects.filter(user=other).exists())
+        _rows().delete()
+        with mock.patch(
+            "crank.management.commands.seed_staging_baseline.recompute_user"
+        ) as refresh:
+            _run()
+        refresh.assert_not_called()
+        # The recreated priorities follow staging_user's own published revision.
+        self.assertEqual(recompute_user(self.user, reason="test", force=True).status,
+                         RecomputeStatus.PUBLISHED)
+        UserPreference.objects.filter(user=self.user).delete()
+        _run()
+        self.assertEqual(UserPreference.objects.get(user=self.user).revision, 1)
+
     def test_without_a_published_match_the_command_runs_no_refresh(self):
         _rows().delete()
         with mock.patch(
@@ -772,3 +856,40 @@ class StagingRecreatedPreferenceTests(TestCase):
         UserPreference.objects.filter(user=user).delete()
         _run()
         self.assertEqual(UserPreference.objects.get(user=user).revision, 0)
+
+    def test_an_undo_from_before_the_reset_cannot_overwrite_the_recreated_priorities(self):
+        _run()
+        user = get_user_model().objects.get(username=ORDINARY_USERNAME)
+        apply_patch_to_user(
+            user, {"set": {"exclusions.companies": ["Acme One"]}}, expected_revision=0
+        )
+        self.assertEqual(
+            recompute_user(user, reason="test", force=True).status, RecomputeStatus.PUBLISHED
+        )
+        # Two more saves after the last publish (recompute is off by default).
+        second = apply_patch_to_user(
+            user, {"set": {"exclusions.companies": ["Acme Two"]}}, expected_revision=1
+        )
+        apply_patch_to_user(
+            user, {"set": {"exclusions.companies": ["Acme Three"]}}, expected_revision=2
+        )
+        UserPreference.objects.filter(user=user).delete()
+        _run()
+        self.assertGreater(UserPreference.objects.get(user=user).revision, 3)
+        with self.assertRaises(StalePreferenceError):
+            undo_preference_change(user, second["undo"])
+        self.assertEqual(UserPreference.objects.get(user=user).preferences, fixture_preferences())
+
+    def test_a_delete_through_the_product_leaves_the_same_protection(self):
+        from crank.services.preferences import delete_user_preference
+
+        _run()
+        user = get_user_model().objects.get(username=ORDINARY_USERNAME)
+        first = apply_patch_to_user(
+            user, {"set": {"exclusions.companies": ["Acme One"]}}, expected_revision=0
+        )
+        delete_user_preference(user)
+        _run()
+        with self.assertRaises(StalePreferenceError):
+            undo_preference_change(user, first["undo"])
+        self.assertEqual(UserPreference.objects.get(user=user).preferences, fixture_preferences())
