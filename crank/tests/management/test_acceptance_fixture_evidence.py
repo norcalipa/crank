@@ -796,7 +796,22 @@ class StagingResetAfterARefreshTests(TestCase):
             refresh.assert_not_called()
             self.assertTrue(any("earlier match row(s)" in line for line in lines), lines)
 
-    def test_a_match_of_another_account_does_not_start_a_refresh_of_staging_user(self):
+    def test_a_match_of_another_account_is_not_staging_user_s_state(self):
+        # staging_user excludes the company and publishes no match: generation
+        # 1 holds no row of its own.
+        apply_patch_to_user(
+            self.user,
+            {"set": {"exclusions.companies": [TARGET_ORG_NAME]}},
+            expected_revision=0,
+        )
+        self.assertEqual(
+            recompute_user(self.user, reason="test", force=True).status,
+            RecomputeStatus.PUBLISHED,
+        )
+        state = MatchResultState.objects.get(user=self.user)
+        self.assertFalse(JobMatch.objects.filter(user=self.user).exclude(
+            ranker_version="staging-baseline"
+        ).exists())
         other = get_user_model().objects.create_user("second_account", password="x")
         document = fixture_preferences()
         UserPreference.objects.create(
@@ -807,19 +822,21 @@ class StagingResetAfterARefreshTests(TestCase):
             revision=7,
         )
         self.assertEqual(recompute_user(other, reason="test").status, RecomputeStatus.PUBLISHED)
+        self.assertEqual(MatchResultState.objects.get(user=other).current_generation,
+                         state.current_generation)
         self.assertTrue(JobMatch.objects.filter(user=other).exists())
         _rows().delete()
         with mock.patch(
             "crank.management.commands.seed_staging_baseline.recompute_user"
         ) as refresh:
-            _run()
+            lines = _run()
         refresh.assert_not_called()
-        # The recreated priorities follow staging_user's own published revision.
-        self.assertEqual(recompute_user(self.user, reason="test", force=True).status,
-                         RecomputeStatus.PUBLISHED)
+        self.assertFalse(any("earlier match row(s)" in line for line in lines), lines)
+        # The recreated priorities follow staging_user's own history, not the
+        # other account's published revision (7).
         UserPreference.objects.filter(user=self.user).delete()
         _run()
-        self.assertEqual(UserPreference.objects.get(user=self.user).revision, 1)
+        self.assertEqual(UserPreference.objects.get(user=self.user).revision, 2)
 
     def test_without_a_published_match_the_command_runs_no_refresh(self):
         _rows().delete()
@@ -885,11 +902,21 @@ class StagingRecreatedPreferenceTests(TestCase):
 
         _run()
         user = get_user_model().objects.get(username=ORDINARY_USERNAME)
-        first = apply_patch_to_user(
+        apply_patch_to_user(
             user, {"set": {"exclusions.companies": ["Acme One"]}}, expected_revision=0
+        )
+        self.assertEqual(
+            recompute_user(user, reason="test", force=True).status, RecomputeStatus.PUBLISHED
+        )
+        second = apply_patch_to_user(
+            user, {"set": {"exclusions.companies": ["Acme Two"]}}, expected_revision=1
+        )
+        apply_patch_to_user(
+            user, {"set": {"exclusions.companies": ["Acme Three"]}}, expected_revision=2
         )
         delete_user_preference(user)
         _run()
+        self.assertGreaterEqual(UserPreference.objects.get(user=user).revision, 4)
         with self.assertRaises(StalePreferenceError):
-            undo_preference_change(user, first["undo"])
+            undo_preference_change(user, second["undo"])
         self.assertEqual(UserPreference.objects.get(user=user).preferences, fixture_preferences())
