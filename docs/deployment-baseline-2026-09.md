@@ -192,9 +192,18 @@ run is not a reset. At its end it prints the state each fixture field reads at
 that moment (verified, stale, conflicted, unknown); after 180 days the fresh
 row reads stale and no requirement reads verified.
 
-**Resetting the fixture states on purpose.** Delete the
-`CompanyFieldEvidence` rows of `Staging Example Corp` and run the command again:
-the fresh-seed states come back and the command's own match cites the new rows.
+**Resetting the fixture states on purpose.** On the **staging or dev database
+only, never production** (the command's production guard does not cover a manual
+delete), delete the `CompanyFieldEvidence` rows of `Staging Example Corp` with
+this exact command, scoped by name, and run the seed command again:
+
+```bash
+python manage.py shell -c "from crank.models import CompanyFieldEvidence; print(CompanyFieldEvidence.objects.filter(organization__name='Staging Example Corp').delete())"
+python manage.py seed_staging_baseline
+```
+
+Any company correction that pointed at a deleted row loses that link
+(`current_evidence` is set to null). The fresh-seed states come back and the command's own match cites the new rows.
 The same procedure refreshes an aged fixture. If the account already has a
 match that the real matcher published (one refresh does that) and it cites a row
 the reset deleted, the command republishes the account's matches with one forced
@@ -219,16 +228,34 @@ only with committed reads on and recompute on; otherwise there is no documented
 way back for that account. The command still refuses
 `ENV=prod` and still gives the staff account no repository-known password.
 
-**Resetting the saved priorities on purpose.** Delete the account's saved
-priorities row and run the command: it is created again equal to the fixture's
-document, one revision above the results already published for the account and
-above every revision the account's own audit history shows it used, so the
-account's next refresh publishes instead of being discarded as stale and an Undo
-token issued before the delete is refused instead of overwriting the fixture's
-priorities. Deleting the row through the product's own delete records that floor
-as well. (The
-other way back is to delete the `staging_user` account and run the command; the
-account, its priorities and both fixture matches are created again.)
+**Resetting the saved priorities on purpose.** On the **staging or dev database
+only, never production**, delete the account's saved priorities row through the
+product's own delete, which records the revision floor, and run the command:
+
+```bash
+python manage.py shell -c "from django.contrib.auth import get_user_model; from crank.services.preferences import delete_user_preference; print(delete_user_preference(get_user_model().objects.get(username='staging_user')))"
+python manage.py seed_staging_baseline
+```
+
+The row is created again equal to the fixture's document, one revision above the
+results already published for the account and above every revision the account's
+own audit history shows it used. The command records the revision it starts the
+row at in a `created` audit row, so a second reset in a row counts it too. The
+account's next refresh publishes instead of being discarded as stale, and an
+Undo token issued before the delete is refused instead of overwriting the
+fixture's priorities. A plain row delete (SQL, an admin bulk delete) records no
+floor of its own; the command's audit-history rule still protects the tokens of
+the changes the account made through the product.
+
+The other way back is to delete the `staging_user` account and run the command,
+but that deletes everything the account owns, not only its priorities and both
+fixture matches: its chat conversations, the corrections and company requests it
+submitted, its job searches, its match state and its preference audit history. In
+a usability session those can be the session's record; prefer the reset above.
+
+`--password` and `--staff-password` refuse an empty or blank value, so an unset
+shell variable can never replace a chosen password with the repository default
+or give the staff account an empty one.
 
 ## 5. Staging replay procedure
 
