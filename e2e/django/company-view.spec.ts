@@ -1869,3 +1869,124 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
         }
     });
 });
+
+// Adversarial review round 1 and the screenshot review's round-3 findings (issue #486c).
+test.describe('company view, review round 1 (issue #486c)', () => {
+    for (const size of [{width: 375, height: 667}, {width: 320, height: 640}]) {
+        test(`${size.width}x${size.height}: after View jobs and a small scroll, the fit arriving does not push Open jobs away`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page, PREFS_USER, E2E_PASSWORD);
+            try {
+                await setPriorities(page, SIX);
+                let release: () => void = () => {};
+                const held = new Promise<void>((resolve) => { release = resolve; });
+                await page.route('**/api/organizations/*/fit/', async (route) => {
+                    await held;
+                    await route.continue();
+                });
+                await page.goto('/');
+                await opener(page).click();
+                await expect(page.getByTestId('fit-loading')).toBeVisible();
+                await page.getByTestId('company-view-jobs').click();
+                // The jump scrolls smoothly: wait for the heading to arrive below the top bar, then for rest.
+                await expect.poll(() => page.locator('#company-jobs-title').evaluate((el) => el.getBoundingClientRect().top))
+                    .toBeGreaterThan(49);
+                await scrollRested(page);
+                await page.mouse.move(size.width / 2, size.height / 2);
+                const scrolledTo = await page.evaluate(() => window.scrollY);
+                await page.mouse.wheel(0, 30);
+                await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrolledTo + 20);
+                await scrollRested(page);
+                // The strip under the sticky top bar: the fit ends below the top of the window
+                // but above the bottom of the bar, so the reader sees none of it.
+                const strip = await page.evaluate(() => ({
+                    fitBottom: document.querySelector('[data-testid="company-fit"]')!.getBoundingClientRect().bottom,
+                    barBottom: document.querySelector('header.app-mobile-topbar')!.getBoundingClientRect().bottom,
+                }));
+                expect(strip.fitBottom, 'the fit ends in the strip under the bar').toBeGreaterThan(0);
+                expect(strip.fitBottom).toBeLessThanOrEqual(strip.barBottom);
+                const heading = page.locator('#company-jobs-title');
+                const before = await heading.evaluate((el) => el.getBoundingClientRect().top);
+                release();
+                await expect(page.getByTestId('fit-ready')).toBeVisible();
+                await scrollRested(page);
+                const after = await heading.evaluate((el) => el.getBoundingClientRect().top);
+                // Round 3 measured 718 px (375x667) and 782 px (320x640) here.
+                expect(Math.abs(after - before)).toBeLessThanOrEqual(40);
+            } finally {
+                await page.unroute('**/api/organizations/*/fit/');
+                await setPriorities(page, SEEDED);
+            }
+        });
+    }
+
+    test('a reader who scrolled past the jobs is not moved when a long list arrives; the pay reads in words', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page);
+        const listings = Array.from({length: 25}, (_, n) => ({
+            id: n + 1, title: `Role ${n + 1}`, location_text: 'Remote (US)', is_remote: true,
+            compensation_min: '85000', compensation_max: '95000', compensation_currency: 'USD',
+            compensation_interval: n % 2 ? 'PA' : 'per year', canonical_url: `https://jobs.example.test/${n + 1}`, status: 'active',
+        }));
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        await page.route('**/api/organizations/*/jobs/', async (route) => {
+            await held;
+            await route.fulfill({json: {organization_id: 1, inventory: 'available', count: 25, results: listings}});
+        });
+        try {
+            await page.goto('/');
+            await opener(page).click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await expect(page.getByTestId('jobs-loading')).toBeVisible();
+            const evidence = page.getByTestId('field-evidence');
+            await evidence.evaluate((el) => el.scrollIntoView({block: 'start', behavior: 'instant'}));
+            await scrollRested(page);
+            const jobsBottom = await page.getByTestId('company-jobs').evaluate((el) => el.getBoundingClientRect().bottom);
+            expect(jobsBottom, 'the Jobs section is above the reader').toBeLessThanOrEqual(0);
+            const top = () => evidence.evaluate((el) => el.getBoundingClientRect().top);
+            const before = await top();
+            release();
+            await expect(page.getByTestId('jobs-list')).toBeVisible();
+            await scrollRested(page);
+            // Twenty-five rows are well over a screen tall; what the reader was reading stays put.
+            expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(40);
+            const rows = page.getByTestId('job-row-1');
+            await expect(rows).toContainText('USD 85,000–95,000 per year');
+            await expect(page.getByTestId('job-row-2')).toContainText('USD 85,000–95,000 per year');
+            await expect(page.getByTestId('jobs-list')).not.toContainText(/per PA|per per/);
+        } finally {
+            await page.unroute('**/api/organizations/*/jobs/');
+        }
+    });
+
+    test('a reader who excluded this company is told so in the fit; one with only that priority still sees the fit', async ({page}) => {
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, {set: {'exclusions.companies': [COMPANY]}});
+            await page.goto('/');
+            await opener(page).click();
+            const sentence = page.getByTestId('fit-excluded');
+            await expect(sentence).toBeVisible();
+            await expect(sentence).toContainText(`You excluded ${COMPANY} in your priorities`);
+            await expect(page.getByTestId('fit-no-priorities')).toHaveCount(0);
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+        } finally {
+            await setPriorities(page, SEEDED);
+        }
+    });
+
+    test('the Fit number is explained where it is read, and the explanation is true of this scoring', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        await opener(page).click();
+        const note = page.getByTestId('fit-number-note');
+        await expect(note).toBeVisible();
+        await expect(note).toHaveText('Fit is the ranking’s score, not a count of the rows below, and the two can disagree.');
+        await expect(page.locator('.job-match-figure-label').nth(1)).toHaveText('Average rating');
+        const legend = page.getByTestId('fit-legend');
+        await legend.locator('summary').click();
+        await expect(legend).toContainText('Only four of the ranking’s eight factors can score for a company');
+        await expect(legend).not.toContainText(/industry|five of/i);
+    });
+});
