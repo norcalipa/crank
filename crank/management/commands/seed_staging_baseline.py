@@ -44,6 +44,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Max
 from django.utils import timezone
 
 from crank.agents.jobs.matching import evaluate_requirements, project_criteria
@@ -151,7 +152,15 @@ def _recreated_revision(user, published_revision):
         user=user,
         action__in=[UserPreferenceAudit.Action.PATCHED, UserPreferenceAudit.Action.RESET],
     ).count()
-    floor = _recreate_revision_floor(user)
+    # The command's own starting revision is recorded in a ``created`` audit row
+    # (below), so a later recreation counts it too.
+    floor = max(
+        _recreate_revision_floor(user),
+        UserPreferenceAudit.objects.filter(
+            user=user, action=UserPreferenceAudit.Action.CREATED
+        ).aggregate(start=Max("change_count"))["start"]
+        or 0,
+    )
     used = floor + steps + 1 if steps else floor
     return max(0 if published_revision is None else published_revision + 1, used)
 
@@ -192,6 +201,12 @@ class Command(BaseCommand):
                 "seed_staging_baseline refuses to run with ENV=prod; "
                 "staging fixtures must never enter production."
             )
+        for flag in ("password", "staff_password"):
+            value = options[flag]
+            if value is not None and not value.strip():
+                raise CommandError(
+                    f"--{flag.replace('_', '-')} must not be empty or blank."
+                )
         notes: list[str] = []
         created, readings = self._load(
             password=options["password"],
@@ -524,6 +539,15 @@ class Command(BaseCommand):
                 "revision": _recreated_revision(ordinary, published_revision),
             },
         )
+        if created["preference_ordinary"]:
+            # The product writes this row on every creation; it records the
+            # revision this row started at, which no patch or reset accounts for.
+            UserPreferenceAudit.objects.create(
+                user=ordinary,
+                action=UserPreferenceAudit.Action.CREATED,
+                schema_version=SCHEMA_VERSION,
+                change_count=preference.revision,
+            )
         if preference.preferences != preferences:
             notes.append(
                 f"Kept the saved priorities of {ORDINARY_USERNAME}; they differ "

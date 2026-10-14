@@ -16,7 +16,7 @@ from datetime import timedelta
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.utils import timezone
 from django.test import TestCase, override_settings
 
@@ -33,10 +33,16 @@ from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObs
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
-from crank.models.preference import SCHEMA_VERSION, UserPreference, default_preferences
+from crank.models.preference import (
+    SCHEMA_VERSION,
+    UserPreference,
+    UserPreferenceAudit,
+    default_preferences,
+)
 from crank.services.preferences import (
     StalePreferenceError,
     apply_patch_to_user,
+    reset,
     to_markdown,
     undo_preference_change,
 )
@@ -656,6 +662,25 @@ class StagingAccountTests(TestCase):
         staff.refresh_from_db()
         self.assertFalse(staff.has_usable_password())
 
+    def test_a_rerun_demotes_the_ordinary_account_if_it_was_made_staff(self):
+        _run()
+        get_user_model().objects.filter(username=ORDINARY_USERNAME).update(is_staff=True)
+        _run()
+        self.assertFalse(get_user_model().objects.get(username=ORDINARY_USERNAME).is_staff)
+
+    def test_an_empty_or_blank_password_is_refused_and_changes_nothing(self):
+        _run(password="operator-chosen-1")
+        before = self._columns(ORDINARY_USERNAME)
+        for flag in ("password", "staff_password"):
+            for value in ("", "   "):
+                with self.assertRaises(CommandError) as raised:
+                    _run(**{flag: value})
+                self.assertIn(flag.replace("_", "-"), str(raised.exception))
+        self.assertEqual(self._columns(ORDINARY_USERNAME), before)
+        self.assertFalse(
+            get_user_model().objects.get(username="staging_staff").has_usable_password()
+        )
+
 
 class StagingOutputTests(TestCase):
     def test_the_output_says_the_ordinary_match_was_rewritten(self):
@@ -920,3 +945,77 @@ class StagingRecreatedPreferenceTests(TestCase):
         with self.assertRaises(StalePreferenceError):
             undo_preference_change(user, second["undo"])
         self.assertEqual(UserPreference.objects.get(user=user).preferences, fixture_preferences())
+
+
+@override_settings(CACHES=LOCMEM)
+class StagingSecondResetTests(TestCase):
+    """A second reset in a row must still refuse the last Undo of the session before."""
+
+    def _user(self):
+        _run()
+        return get_user_model().objects.get(username=ORDINARY_USERNAME)
+
+    def _session(self, user, start, names):
+        last = None
+        for offset, name in enumerate(names):
+            last = apply_patch_to_user(
+                user, {"set": {"exclusions.companies": [name]}}, expected_revision=start + offset
+            )
+        return last
+
+    def _reset_by_delete(self, user):
+        UserPreference.objects.filter(user=user).delete()
+        _run()
+        return UserPreference.objects.get(user=user).revision
+
+    def _assert_refused(self, user, last):
+        with self.assertRaises(StalePreferenceError):
+            undo_preference_change(user, last["undo"])
+        self.assertEqual(UserPreference.objects.get(user=user).preferences, fixture_preferences())
+
+    def test_the_first_reset_refuses_the_last_undo(self):
+        user = self._user()
+        last = self._session(user, 0, ["S1 A", "S1 B"])
+        self._reset_by_delete(user)
+        self._assert_refused(user, last)
+
+    def test_the_second_reset_refuses_the_last_undo(self):
+        user = self._user()
+        self._session(user, 0, ["S1 A", "S1 B"])
+        start = self._reset_by_delete(user)
+        last = self._session(user, start, ["S2 A", "S2 B"])
+        self._reset_by_delete(user)
+        self._assert_refused(user, last)
+
+    def test_the_second_reset_after_a_publish_in_the_first_session(self):
+        user = self._user()
+        self._session(user, 0, ["S1 A"])
+        self.assertEqual(
+            recompute_user(user, reason="test", force=True).status, RecomputeStatus.PUBLISHED
+        )
+        self._session(user, 1, ["S1 B"])
+        start = self._reset_by_delete(user)
+        last = self._session(user, start, ["S2 A"])
+        self._reset_by_delete(user)
+        self._assert_refused(user, last)
+
+    def test_the_starting_revision_is_recorded_when_the_command_creates_the_row(self):
+        user = self._user()
+        self._session(user, 0, ["S1 A", "S1 B"])
+        start = self._reset_by_delete(user)
+        audits = UserPreferenceAudit.objects.filter(
+            user=user, action=UserPreferenceAudit.Action.CREATED
+        )
+        self.assertEqual(max(audits.values_list("change_count", flat=True)), start)
+        # An untouched rerun creates no row and writes no audit row.
+        count = audits.count()
+        _run()
+        self.assertEqual(audits.count(), count)
+
+    def test_product_resets_in_the_session_count_as_revision_steps(self):
+        user = self._user()
+        self._session(user, 0, ["S1 A"])
+        reset(user, expected_revision=1)
+        last = self._session(user, 2, ["S1 B"])
+        self._reset_by_delete(user)
+        self._assert_refused(user, last)
