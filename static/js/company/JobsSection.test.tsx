@@ -266,6 +266,14 @@ describe('payPeriodText', () => {
         expect(payPeriodText(undefined)).toBe('');
     });
 
+    it.each(['constructor', 'per constructor', '__proto__', 'toString', 'hasOwnProperty', 'per __proto__'])(
+        'does not read the inherited property "%s"', (raw) => {
+            expect(payPeriodText(raw)).toBe(raw);
+            expect(payText(job({compensation_min: '100000', compensation_max: '100000', compensation_currency: 'USD', compensation_interval: raw})))
+                .toBe(`USD 100,000 ${raw}`);
+        },
+    );
+
     it('never prints "per per" or a raw code in a job row', () => {
         for (const raw of ['PA', 'PH', 'per year', 'yearly', 'annual']) {
             const text = payText(job({compensation_interval: raw}));

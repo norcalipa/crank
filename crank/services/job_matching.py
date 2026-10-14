@@ -298,7 +298,8 @@ def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CO
         excluded=excluded,
         fit_score=_score_organization_match(organization, criteria, config),
         company_score=_company_score(organization),
-        coverage=coverage(outcomes),
+        # No requirement row, no share: 0% would claim rows that were all missed.
+        coverage=coverage(outcomes) if outcomes else None,
         requirements=requirements,
     )
     base["revision"].update(

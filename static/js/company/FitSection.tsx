@@ -27,7 +27,7 @@ export interface CompanyFit {
     coverage: number | null;
     requirements: FitRequirement[];
     unsupported?: string[];
-    // The reader excluded this company by name; the ranked list leaves it out.
+    // The reader excluded this company by name; the assistant's company matches leave it out.
     excluded?: boolean;
 }
 
@@ -295,6 +295,16 @@ export interface FitSectionProps {
     onSettled?: () => void;
 }
 
+/** Where an exclusion applies: the assistant's matches, not the ranked list. */
+function ExcludedNote({target, hasRows}: {target: string; hasRows: boolean}) {
+    return (
+        <p className="company-fit-excluded mb-2" data-testid="fit-excluded">
+            You excluded {target} in your priorities, so the assistant&rsquo;s company matches leave it out.
+            Company rankings do not use your priorities.{hasRows && ' This page still shows how it fits the rest.'}
+        </p>
+    );
+}
+
 /**
  * How this company fits the signed-in reader's saved priorities (issue #486):
  * every requirement the reader set, in four groups, with the fit, company score
@@ -339,7 +349,9 @@ const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
                 </button>
             </div>
         );
-    } else if (!state.data.has_preferences) {
+    } else if (!state.data.has_preferences || (state.data.requirements.length === 0 && (state.data.unsupported || []).length > 0)) {
+        // Nothing here can be checked against a company: no priorities at all, or
+        // only ones the engine cannot evaluate (with or without an exclusion).
         const unsupported = state.data.unsupported || [];
         body = unsupported.length > 0 ? (
             <div data-testid="fit-unsupported-only" aria-busy={refreshing || undefined}>
@@ -361,16 +373,22 @@ const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
                 </button>
             </div>
         );
+    } else if (state.data.requirements.length === 0) {
+        // Only exclusions: there is no requirement to count, so no coverage and no groups.
+        body = (
+            <div data-testid="fit-exclusions-only" aria-busy={refreshing || undefined}>
+                {state.data.excluded && <ExcludedNote target={target} hasRows={false}/>}
+                <p className="mb-0">
+                    Your saved priorities are only exclusions, so there is no requirement to check {target} against.
+                    Exclusions apply to the assistant&rsquo;s company matches and to Job Search listings.
+                </p>
+            </div>
+        );
     } else {
         const fit = state.data;
         body = (
             <div data-testid="fit-ready" aria-busy={refreshing || undefined}>
-                {fit.excluded && (
-                    <p className="company-fit-excluded mb-2" data-testid="fit-excluded">
-                        You excluded {target} in your priorities, so your ranked results leave it out. This page still
-                        shows how it fits the rest.
-                    </p>
-                )}
+                {fit.excluded && <ExcludedNote target={target} hasRows/>}
                 <Figures fit={fit}/>
                 <p className="small text-body-secondary mb-2" data-testid="fit-number-note">{FIT_NUMBER_NOTE}</p>
                 <FitLegend/>

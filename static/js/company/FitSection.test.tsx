@@ -224,7 +224,9 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         renderFit();
         const ready = await screen.findByTestId('fit-ready');
         const sentence = within(ready).getByTestId('fit-excluded');
-        expect(sentence).toHaveTextContent('You excluded Acme in your priorities, so your ranked results leave it out.');
+        expect(sentence).toHaveTextContent('You excluded Acme in your priorities, so the assistant’s company matches leave it out.');
+        expect(sentence).toHaveTextContent('Company rankings do not use your priorities.');
+        expect(sentence).not.toHaveTextContent('ranked results');
         expect(sentence).toHaveTextContent('This page still shows how it fits the rest.');
         expect(within(ready).getAllByTestId('fit-excluded')).toHaveLength(1);
         expect(sentence.compareDocumentPosition(screen.getByRole('list', {name: 'Match figures'}))
@@ -237,14 +239,41 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(screen.queryByTestId('fit-excluded')).toBeNull();
     });
 
-    test('a reader whose only priority is an exclusion sees the fit, not "Set your priorities"', async () => {
+    test('a reader whose only priority is an exclusion gets one sentence, no coverage and no empty groups', async () => {
         global.fetch = jest.fn().mockResolvedValue(answer(fit({
             has_preferences: true, excluded: true, requirements: [], fit_score: 0, coverage: null,
         })));
         renderFit();
-        expect(await screen.findByTestId('fit-ready')).toBeInTheDocument();
+        const only = await screen.findByTestId('fit-exclusions-only');
+        expect(only).toHaveTextContent('Your saved priorities are only exclusions, so there is no requirement to check Acme against.');
+        expect(only).toHaveTextContent('Job Search listings');
         expect(screen.queryByTestId('fit-no-priorities')).toBeNull();
-        expect(screen.getByTestId('fit-excluded')).toBeInTheDocument();
+        expect(screen.queryByTestId('fit-ready')).toBeNull();
+        expect(screen.queryByTestId('fit-coverage')).toBeNull();
+        expect(screen.queryByTestId('fit-group-meets')).toBeNull();
+        // There are no rows for "the rest" to refer to.
+        expect(within(only).getByTestId('fit-excluded')).toHaveTextContent('Company rankings do not use your priorities.');
+        expect(within(only).getByTestId('fit-excluded')).not.toHaveTextContent('still shows how it fits');
+    });
+
+    test('an exclusion-only reader whose company is not excluded gets the sentence without the exclusion note', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            has_preferences: true, excluded: false, requirements: [], fit_score: 0, coverage: null,
+        })));
+        renderFit();
+        await screen.findByTestId('fit-exclusions-only');
+        expect(screen.queryByTestId('fit-excluded')).toBeNull();
+    });
+
+    test('unsupported priorities plus an exclusion still read "cannot be checked", not the ready view', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            has_preferences: true, requirements: [], coverage: null, unsupported: ['roles.titles'],
+        })));
+        renderFit();
+        const prompt = await screen.findByTestId('fit-unsupported-only');
+        expect(prompt).toHaveTextContent('cannot be checked against a company yet: Role titles.');
+        expect(screen.queryByTestId('fit-ready')).toBeNull();
+        expect(screen.queryByTestId('fit-exclusions-only')).toBeNull();
     });
 
     test('the Fit number carries no scale it cannot reach', async () => {

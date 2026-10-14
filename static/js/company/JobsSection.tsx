@@ -47,7 +47,7 @@ const amount = (value: string | number | null | undefined): number | null => {
 
 // The pay period as the sources send it: USAJobs' own codes (`PA`, `PH`, `BW`, ...)
 // and the plain words other adapters copy.
-const PAY_PERIODS: Record<string, string> = {
+const PAY_PERIODS: ReadonlyMap<string, string> = new Map(Object.entries({
     pa: 'per year', year: 'per year', yearly: 'per year', annual: 'per year', annually: 'per year',
     annum: 'per year', 'per annum': 'per year',
     ph: 'per hour', hour: 'per hour', hourly: 'per hour',
@@ -55,7 +55,7 @@ const PAY_PERIODS: Record<string, string> = {
     pw: 'per week', week: 'per week', weekly: 'per week',
     bw: 'every two weeks', biweekly: 'every two weeks', 'bi-weekly': 'every two weeks',
     pm: 'per month', month: 'per month', monthly: 'per month',
-};
+}));
 
 /**
  * A stored pay period in words: "per year", "per hour", ... Text that already
@@ -66,7 +66,7 @@ export function payPeriodText(raw: string | undefined): string {
     const text = (raw ?? '').trim();
     if (!text) return '';
     const bare = text.toLowerCase().replace(/^per\s+/, '');
-    return PAY_PERIODS[bare] ?? PAY_PERIODS[text.toLowerCase()] ?? text;
+    return PAY_PERIODS.get(bare) ?? PAY_PERIODS.get(text.toLowerCase()) ?? text;
 }
 
 /**

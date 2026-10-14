@@ -390,9 +390,32 @@ class FitEndpointTests(CompanyViewTestBase):
                 body = self.fit().json()
                 self.assertTrue(body["has_preferences"])
                 self.assertEqual(body["requirements"], [])
+                # No requirement row, no share of rows decided: not 0%.
+                self.assertIsNone(body["coverage"])
         UserPreference.objects.filter(user=self.user).update(preferences=prefs())
         body = self.fit().json()
         self.assertEqual((body["has_preferences"], body["excluded"]), (False, False))
+
+    def test_an_exclusion_beside_only_unsupported_priorities_has_no_coverage_and_lists_what_is_unchecked(self):
+        document = prefs(exclusions={"titles": ["Sales"]})
+        document["roles"] = {"titles": ["Engineer"], "families": [], "seniority": []}
+        UserPreference.objects.update_or_create(
+            user=self.user, defaults={"preferences": document, "schema_version": 3}
+        )
+        body = self.fit().json()
+        self.assertTrue(body["has_preferences"])
+        self.assertEqual(body["requirements"], [])
+        self.assertIsNone(body["coverage"])
+        self.assertIn("roles.titles", body["unsupported"])
+
+    def test_coverage_is_a_share_once_there_is_a_requirement_row(self):
+        UserPreference.objects.update_or_create(
+            user=self.user,
+            defaults={"preferences": prefs(work_location={"modes": ["remote"]}, exclusions={"titles": ["Sales"]}), "schema_version": 3},
+        )
+        body = self.fit().json()
+        self.assertTrue(body["requirements"])
+        self.assertIsNotNone(body["coverage"])
 
     def test_a_company_that_is_not_public_still_gets_an_answer_until_561(self):
         # Which records get a page is the owner's open decision (#561): the

@@ -1967,7 +1967,7 @@ test.describe('company view, review round 1 (issue #486c)', () => {
         }
     });
 
-    test('a reader who excluded this company is told so in the fit; one with only that priority still sees the fit', async ({page}) => {
+    test('a reader who excluded this company is told where the exclusion applies; one with only that priority gets a sentence, not empty groups', async ({page}) => {
         await login(page, PREFS_USER, E2E_PASSWORD);
         try {
             await setPriorities(page, {set: {'exclusions.companies': [COMPANY]}});
@@ -1975,9 +1975,15 @@ test.describe('company view, review round 1 (issue #486c)', () => {
             await opener(page).click();
             const sentence = page.getByTestId('fit-excluded');
             await expect(sentence).toBeVisible();
-            await expect(sentence).toContainText(`You excluded ${COMPANY} in your priorities`);
+            // Opened from Company rankings, which never use the reader's priorities.
+            await expect(sentence).toContainText(`You excluded ${COMPANY} in your priorities, so the assistant’s company matches leave it out.`);
+            await expect(sentence).toContainText('Company rankings do not use your priorities.');
+            await expect(sentence).not.toContainText('ranked results');
             await expect(page.getByTestId('fit-no-priorities')).toHaveCount(0);
-            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await expect(page.getByTestId('fit-exclusions-only')).toContainText('only exclusions');
+            await expect(page.getByTestId('fit-ready')).toHaveCount(0);
+            await expect(page.getByTestId('fit-coverage')).toHaveCount(0);
+            await expect(page.getByTestId('fit-group-meets')).toHaveCount(0);
         } finally {
             await setPriorities(page, SEEDED);
         }
