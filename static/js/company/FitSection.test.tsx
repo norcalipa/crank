@@ -178,17 +178,17 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         // The Fit number says what it is, and that it has no top of 100.
         expect(text).toContain('The ranking\u2019s score for this company under your priorities');
         expect(text).toContain('so it cannot reach 100');
+        expect(text).toContain('Only five of the ranking\u2019s eight factors apply to a company');
         // Why the number and the rows can disagree.
         expect(text).toContain('Why the fit and the rows can disagree');
         expect(text).toContain('the fit reads the profile values');
-        expect(text).toContain('a priority under Meets can add nothing to the fit');
-        expect(text).toContain('Does not meet lists requirements that are not met; Tradeoffs lists preferences that are not met.');
-        expect(text).toContain('a row built on it Sourced, not confirmed');
+        expect(text).toContain('A priority under Meets can add nothing to the fit');
+        expect(text).toContain('Verified describes the fact in "Data Freshness & Sources"; Sourced, not confirmed describes how a row was decided from it.');
         // Cut to what a reader meets: no entry for a status this view cannot show, no run-together words.
         expect(text).not.toContain(MATCH_TERMS.changed.label);
         expect(text).not.toContain('Refresh matches');
         expect(text).not.toMatch(/confirmedeven|confirmed[a-z]/);
-        expect(text.split(/\s+/).length).toBeLessThan(270);
+        expect(text.split(/\s+/).length).toBeLessThan(230);
         expect(within(legend).getByText('What these labels mean').tagName).toBe('SUMMARY');
     });
 
@@ -619,6 +619,9 @@ describe('fitGroupOf and observedText', () => {
         ['work_location.countries', 'us', 'US'],
         ['work_location.countries', 'usa', 'USA'],
         ['work_location.countries', 'uk', 'UK'],
+        ['work_location.countries', 'ca', 'CA'],
+        ['work_location.countries', 'de', 'DE'],
+        ['work_location.countries', 'gbr', 'GBR'],
         ['work_location.countries', 'canada', 'Canada'],
         ['work_location.countries', 'united states', 'United States'],
         ['work_location.countries', 'United States', 'United States'],

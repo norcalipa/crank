@@ -136,9 +136,9 @@ function evidenceText(requirement: FitRequirement): string | null {
 // What the Fit number is. It is the ranking's own score for the company
 // (`_score_organization_match`), not a count of the rows below, and it has no
 // fixed top: a company is scored on five of the ranking's eight factors.
-const FIT_MEANING = 'The ranking\u2019s score for this company under your priorities. It scores the profile fields at '
-    + 'the top of this page against your funding stage, work mode, industry and vesting priorities, and adds points for '
-    + 'the company\u2019s ratings. Only five of the ranking\u2019s eight factors apply to a company, so it cannot reach 100.';
+const FIT_MEANING = 'The ranking\u2019s score for this company under your priorities: points for the profile fields at '
+    + 'the top of this page that match your funding stage, work mode, industry and vesting priorities, plus its ratings. '
+    + 'Only five of the ranking\u2019s eight factors apply to a company, so it cannot reach 100.';
 
 const figure = (value: number | null, scale: string, digits = 1): string =>
     value === null || value === undefined ? '—' : `${value.toFixed(digits)}${scale}`;
@@ -234,12 +234,8 @@ function FitLegend() {
                     <dd>{MATCH_TERMS.requirementCoverage.meaning}</dd>
                     <dt>Why the fit and the rows can disagree</dt>
                     <dd>
-                        The rows are decided from sourced facts; the fit reads the profile values. Where they differ,
-                        a priority under Meets can add nothing to the fit, and one that is unmet or undecided can add to it.
-                    </dd>
-                    <dt>Groups</dt>
-                    <dd>
-                        Does not meet lists requirements that are not met; Tradeoffs lists preferences that are not met.
+                        The rows come from sourced facts; the fit reads the profile values. A priority under Meets
+                        can add nothing to the fit, and one that is unmet or undecided can add to it.
                     </dd>
                     <dt>Marks</dt>
                     <dd>
@@ -261,9 +257,8 @@ function FitLegend() {
                             <li><span className="evidence-badge">{MATCH_TERMS.sourced.label}</span>: {MATCH_TERMS.sourced.meaning}</li>
                         </ul>
                         <p className="mb-0 mt-1">
-                            A fact can be {EVIDENCE_STATUS_META.verified.label} in "Data Freshness &amp; Sources" and
-                            a row built on it {MATCH_TERMS.sourced.label}: the list is about the fact, the row about
-                            how this priority was decided from it.
+                            {EVIDENCE_STATUS_META.verified.label} describes the fact in "Data Freshness &amp; Sources";
+                            {' '}{MATCH_TERMS.sourced.label} describes how a row was decided from it.
                         </p>
                     </dd>
                 </dl>

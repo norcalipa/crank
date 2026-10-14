@@ -1799,7 +1799,7 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
         await expect(legend).toHaveAttribute('open', '');
         await expect(legend).toContainText('so it cannot reach 100');
         await expect(legend).toContainText('Why the fit and the rows can disagree');
-        await expect(legend).toContainText('a row built on it Sourced, not confirmed');
+        await expect(legend).toContainText('Sourced, not confirmed describes how a row was decided from it');
         await expect(legend).not.toContainText('Refresh matches');
         await expect(legend).toContainText('Sourced, not confirmed');
         await expectNoHorizontalOverflow(page);
