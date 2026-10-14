@@ -17,6 +17,7 @@ from crank.models.organization import Organization
 from crank.models.preference import UserPreference, default_preferences
 from crank.services.scores import (
     organization_api_cache_key,
+    organization_avg_scores_cache_key,
     organization_provenance_api_cache_key,
     organization_scores_api_cache_key,
 )
@@ -327,25 +328,117 @@ class FitEndpointTests(CompanyViewTestBase):
         self.fit()
         self.assertEqual([cache.get(k) for k in keys], [None, None, None])
 
+    def test_the_only_shared_entry_it_fills_is_the_reader_neutral_average_scores(self):
+        # Both `_score_organization_match` and `_company_score` read the
+        # company's ratings through `Organization.avg_scores()`, the one read
+        # path every reader of a company's scores uses; it fills this entry
+        # (`cache.get_or_set`). The value depends on the company's ratings
+        # alone, never on the reader, so no private data reaches the cache.
+        UserPreference.objects.create(
+            user=self.user, preferences=prefs(funding_stage=["A"]), schema_version=3
+        )
+        key = organization_avg_scores_cache_key(self.org.pk)
+        self.assertIsNone(cache.get(key))
+        self.fit()
+        mine = cache.get(key)
+        self.assertEqual(mine, [])  # a company with no ratings
+        cache.clear()
+        UserPreference.objects.create(
+            user=self.other, preferences=prefs(funding_stage=["C"], work_location={"modes": ["remote"]}),
+            schema_version=3,
+        )
+        self.client.force_login(self.other)
+        self.fit()
+        self.assertEqual(cache.get(key), mine)
+
+    def test_a_cold_read_costs_one_more_query_than_a_warm_one(self):
+        UserPreference.objects.create(
+            user=self.user, preferences=prefs(funding_stage=["A"]), schema_version=3
+        )
+        with self.assertNumQueries(8):
+            self.fit()
+        with self.assertNumQueries(7):
+            self.fit()
+
+    def test_a_reader_who_excluded_this_company_is_told(self):
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=prefs(work_location={"modes": ["remote"]}, exclusions={"companies": [" ACME "]}),
+            schema_version=3,
+        )
+        body = self.fit().json()
+        self.assertTrue(body["excluded"])
+        self.assertTrue(body["has_preferences"])
+        self.assertTrue(body["requirements"])  # still explains itself
+        UserPreference.objects.filter(user=self.user).update(
+            preferences=prefs(work_location={"modes": ["remote"]}, exclusions={"companies": ["Other Corp"]})
+        )
+        self.assertFalse(self.fit().json()["excluded"])
+
+    def test_a_reader_whose_only_priority_is_an_exclusion_has_priorities(self):
+        for exclusions in (
+            {"companies": ["Acme"]},
+            {"companies": ["Other Corp"]},
+            {"titles": ["Manager"]},
+            {"industries": ["Mining"]},
+            {"locations": ["Mars"]},
+        ):
+            with self.subTest(exclusions=exclusions):
+                UserPreference.objects.update_or_create(
+                    user=self.user, defaults={"preferences": prefs(exclusions=exclusions), "schema_version": 3}
+                )
+                body = self.fit().json()
+                self.assertTrue(body["has_preferences"])
+                self.assertEqual(body["requirements"], [])
+        UserPreference.objects.filter(user=self.user).update(preferences=prefs())
+        body = self.fit().json()
+        self.assertEqual((body["has_preferences"], body["excluded"]), (False, False))
+
+    def test_a_company_that_is_not_public_still_gets_an_answer_until_561(self):
+        # Which records get a page is the owner's open decision (#561): the
+        # rule is the three organization endpoints' (active records only).
+        Organization.objects.filter(pk=self.org.pk).update(public=False)
+        self.assertEqual(self.fit().status_code, 200)
+
+    def test_the_numbers_are_sent(self):
+        Organization.objects.filter(pk=self.org.pk).update(funding_round="A")
+        UserPreference.objects.create(
+            user=self.user, preferences=prefs(funding_stage=["A"]), schema_version=3
+        )
+        # `coverage` is the share of decided requirements, `company_score` the
+        # plain average of the company's rating types.
+        with mock.patch.object(
+            Organization, "avg_scores", return_value=[{"avg_score": 4.0}, {"avg_score": 2.0}]
+        ):
+            body = self.fit().json()
+        self.assertEqual(body["coverage"], 1.0)
+        self.assertEqual(body["company_score"], 3.0)
+        self.assertGreater(body["fit_score"], 0)
+        self.assertIsNone(self.fit().json()["company_score"])  # no ratings
+
 
 class JobsEndpointTests(CompanyViewTestBase):
     def setUp(self):
         super().setUp()
         self.source = JobSourceCatalog.objects.create(
-            name="Synthetic", adapter_key="synthetic.v1", base_url="https://jobs.example.test", enabled=True
+            name="Synthetic",
+            adapter_key="synthetic.v1",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
         )
 
     def jobs(self, pk=None):
         return self.client.get(self.url("organization-jobs", pk))
 
-    def listing(self, n, status=JobListing.Status.ACTIVE, organization=None, **values):
+    def listing(self, n, status=JobListing.Status.ACTIVE, organization=None, title_prefix="Role", **values):
         now = timezone.now()
         return JobListing.all_objects.create(
             source=self.source,
             external_id=f"job-{n}",
             canonical_url=f"https://jobs.example.test/{n}",
             employer_name="Acme",
-            title=f"Role {n}",
+            title=f"{title_prefix} {n}",
             first_seen_at=now - timedelta(days=2),
             last_seen_at=now - timedelta(minutes=n),
             status=status,
@@ -388,6 +481,45 @@ class JobsEndpointTests(CompanyViewTestBase):
         for key in ("id", "title", "location_text", "is_remote", "compensation_min", "compensation_max",
                     "compensation_currency", "compensation_interval", "status"):
             self.assertIn(key, row)
+
+    def test_listings_of_blocked_pending_and_disabled_sources_never_appear(self):
+        # The one rule every other reader of job inventory uses (`match_inventory`):
+        # an approved AND enabled source. A block changes `approval_state` only,
+        # so a blocked source keeps `enabled=True` and its listings stay active.
+        Approval = JobSourceCatalog.ApprovalState
+        sources = {"approved": self.source}
+        for name, approval, enabled in (
+            ("blocked", Approval.BLOCKED, True),
+            ("pending", Approval.PENDING, True),
+            ("disabled", Approval.APPROVED, False),
+        ):
+            sources[name] = JobSourceCatalog.objects.create(
+                name=name, adapter_key=f"{name}.v1", base_url=f"https://jobs.example.test/{name}",
+                approval_state=approval, enabled=enabled,
+            )
+        for n, name in enumerate(sources, start=1):
+            self.source = sources[name]
+            self.listing(n, title_prefix=name)
+        body = self.jobs().json()
+        self.assertEqual(body["inventory"], "available")
+        self.assertEqual([r["title"] for r in body["results"]], ["approved 1"])
+        # Only the blocked and the pending source are left: nothing is "available".
+        JobSourceCatalog.objects.filter(pk__in=[sources["approved"].pk, sources["disabled"].pk]).update(enabled=False)
+        gone = self.jobs().json()
+        self.assertEqual((gone["inventory"], gone["count"], gone["results"]), ("unavailable", 0, []))
+        # Every source enabled but none approved: still unavailable.
+        JobSourceCatalog.objects.update(enabled=True, approval_state=Approval.PENDING)
+        self.assertEqual(self.jobs().json()["inventory"], "unavailable")
+
+    def test_the_unavailable_answer_is_not_cached_by_the_browser_either(self):
+        JobSourceCatalog.objects.update(enabled=False)
+        response = self.jobs()
+        self.assertEqual(response.json()["inventory"], "unavailable")
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+
+    def test_a_company_that_is_not_public_still_gets_an_answer_until_561(self):
+        Organization.objects.filter(pk=self.org.pk).update(public=False)
+        self.assertEqual(self.jobs().json()["inventory"], "available")
 
     def test_capped_at_25(self):
         for n in range(1, 31):

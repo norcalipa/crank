@@ -6,7 +6,7 @@ import * as React from 'react';
 
 import * as store from '../workspace/store';
 import {EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS} from '../labels';
-import FitSection, {CompanyFit, FitRequirement, fitGroupOf, observedText} from './FitSection';
+import FitSection, {COMPANY_SCORE_TERM, CompanyFit, FIT_NUMBER_NOTE, FitRequirement, fitGroupOf, observedText} from './FitSection';
 import {retryFrom, useHoldReaderBelow, useOwnCompanyRead} from './useOwnCompanyRead';
 
 const req = (overrides: Partial<FitRequirement> = {}): FitRequirement => ({
@@ -69,7 +69,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(screen.getByTestId('fit-coverage')).toHaveTextContent('60%');
         const labels = within(screen.getByRole('list', {name: 'Match figures'})).getAllByRole('listitem');
         expect(labels.map(item => item.querySelector('.job-match-figure-label')?.textContent)).toEqual(
-            ['Fit', 'Company score (preset)', 'Requirement coverage']);
+            ['Fit', 'Average rating', 'Requirement coverage']);
         const groupOf = (path: string) => screen.getByTestId(`fit-row-${path}`).closest('[data-testid^="fit-group-"]')!.getAttribute('data-testid');
         expect(groupOf('funding_stage')).toBe('fit-group-meets');
         expect(groupOf('work_location.max_in_office_days')).toBe('fit-group-does-not-meet');
@@ -169,7 +169,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(legend.tagName).toBe('DETAILS');
         expect(legend).not.toHaveAttribute('open');
         const text = legend.textContent || '';
-        for (const term of [MATCH_TERMS.companyScore, MATCH_TERMS.requirementCoverage, MATCH_TERMS.sourced]) {
+        for (const term of [COMPANY_SCORE_TERM, MATCH_TERMS.requirementCoverage, MATCH_TERMS.sourced]) {
             expect(text).toContain(term.label);
             expect(text).toContain(term.meaning);
         }
@@ -178,7 +178,10 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         // The Fit number says what it is, and that it has no top of 100.
         expect(text).toContain('The ranking\u2019s score for this company under your priorities');
         expect(text).toContain('so it cannot reach 100');
-        expect(text).toContain('Only five of the ranking\u2019s eight factors apply to a company');
+        expect(text).toContain('Only four of the ranking\u2019s eight factors can score for a company');
+        // A company has no industry, so the sentence must not promise points for one.
+        expect(text).not.toMatch(/industry|five of/i);
+        expect(text).toContain('funding stage, work mode and accelerated-vesting priorities');
         // Why the number and the rows can disagree.
         expect(text).toContain('Why the fit and the rows can disagree');
         expect(text).toContain('the fit reads the profile values');
@@ -190,6 +193,58 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(text).not.toMatch(/confirmedeven|confirmed[a-z]/);
         expect(text.split(/\s+/).length).toBeLessThan(230);
         expect(within(legend).getByText('What these labels mean').tagName).toBe('SUMMARY');
+    });
+
+    test('a visible sentence under the numbers says the Fit is not a summary of the rows', async () => {
+        renderFit();
+        const ready = await screen.findByTestId('fit-ready');
+        const note = within(ready).getByTestId('fit-number-note');
+        expect(note).toHaveTextContent(FIT_NUMBER_NOTE);
+        expect(note).toHaveTextContent('not a count of the rows below, and the two can disagree');
+        // Outside the closed disclosure, after the three numbers and before it.
+        expect(note.closest('details')).toBeNull();
+        const figures = screen.getByRole('list', {name: 'Match figures'});
+        expect(figures.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(note.compareDocumentPosition(screen.getByTestId('fit-legend')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    test('the company score is labelled as the plain average rating it is, not as a preset', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        const label = screen.getByText(COMPANY_SCORE_TERM.label, {selector: '.job-match-figure-label'});
+        expect(label).toHaveAttribute('title', COMPANY_SCORE_TERM.meaning);
+        expect(COMPANY_SCORE_TERM.meaning).toContain('plain average');
+        expect(COMPANY_SCORE_TERM.meaning).toContain('whatever the ranking preset');
+        const text = screen.getByTestId('fit-ready').textContent || '';
+        expect(text).not.toMatch(/preset-weighted|Company score \(preset\)/);
+    });
+
+    test('a reader who excluded this company is told so, once, above the numbers', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({excluded: true})));
+        renderFit();
+        const ready = await screen.findByTestId('fit-ready');
+        const sentence = within(ready).getByTestId('fit-excluded');
+        expect(sentence).toHaveTextContent('You excluded Acme in your priorities, so your ranked results leave it out.');
+        expect(sentence).toHaveTextContent('This page still shows how it fits the rest.');
+        expect(within(ready).getAllByTestId('fit-excluded')).toHaveLength(1);
+        expect(sentence.compareDocumentPosition(screen.getByRole('list', {name: 'Match figures'}))
+            & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    test('a company that was not excluded says nothing about exclusion', async () => {
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.queryByTestId('fit-excluded')).toBeNull();
+    });
+
+    test('a reader whose only priority is an exclusion sees the fit, not "Set your priorities"', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            has_preferences: true, excluded: true, requirements: [], fit_score: 0, coverage: null,
+        })));
+        renderFit();
+        expect(await screen.findByTestId('fit-ready')).toBeInTheDocument();
+        expect(screen.queryByTestId('fit-no-priorities')).toBeNull();
+        expect(screen.getByTestId('fit-excluded')).toBeInTheDocument();
     });
 
     test('the Fit number carries no scale it cannot reach', async () => {
@@ -568,6 +623,105 @@ describe('useOwnCompanyRead tags what it holds with the company (issue #486, rul
         expect(after[0].kind).toBe('loading');
         for (const entry of after) expect(entry.kind).not.toBe('ready');
         await waitFor(() => expect(renders[renders.length - 1]).toEqual({id: 5, kind: 'ready'}));
+    });
+});
+
+describe('account hydration while the read is out (issue #486, review round 1)', () => {
+    beforeEach(() => {
+        store.resetWorkspaceForTests();
+    });
+    afterEach(cleanup);
+
+    test('the account becoming known mid-read does not empty the section or drop the answer', async () => {
+        // `/?company=<id>` while signed in: the read starts before the workspace
+        // knows the account. Hydrating "unknown" -> "authenticated" is not a sign-out.
+        expect(store.getWorkspaceSnapshot().account.status).toBe('unknown');
+        let resolve: (value: unknown) => void = () => {};
+        global.fetch = jest.fn().mockReturnValue(new Promise(r => {
+            resolve = r;
+        }));
+        renderFit();
+        act(() => store.setWorkspaceAccount({status: 'authenticated', key: 'ann'}));
+        expect(screen.queryByTestId('fit-sign-in')).toBeNull();
+        await act(async () => {
+            resolve(answer(fit()));
+        });
+        expect(await screen.findByTestId('fit-ready')).toBeInTheDocument();
+        expect(screen.queryByTestId('fit-sign-in')).toBeNull();
+    });
+});
+
+describe('the reader\'s place when the fit arrives (issue #486, review round 1)', () => {
+    let sectionBottom = -100;
+    let rects: jest.SpyInstance;
+    const scrollBy = jest.fn();
+    const Page = () => (
+        <div>
+            <FitSection organizationId={4} name="Acme" isAuthenticated={true} signInUrl={null} onEditPriorities={() => {}}/>
+            <p data-testid="after">after</p>
+        </div>
+    );
+    beforeEach(() => {
+        store.resetWorkspaceForTests();
+        scrollBy.mockReset();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        rects = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const ready = !!document.querySelector('[data-testid="fit-ready"]');
+            const top = this.tagName === 'P' ? (ready ? 700 : 50) : 0;
+            const bottom = this.tagName === 'SECTION' ? sectionBottom : this.tagName === 'HEADER' ? 49 : top;
+            const height = this.tagName === 'HEADER' ? 49 : 0;
+            return {top, bottom, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+    });
+    afterEach(() => {
+        rects.mockRestore();
+        document.querySelector('header')?.remove();
+        cleanup();
+    });
+
+    const arrives = async () => {
+        let resolve: (value: unknown) => void = () => {};
+        global.fetch = jest.fn().mockReturnValue(new Promise(r => {
+            resolve = r;
+        }));
+        render(<Page/>);
+        await act(async () => {
+            resolve(answer(fit()));
+        });
+        expect(await screen.findByTestId('fit-ready')).toBeInTheDocument();
+    };
+
+    test('a reader below the Fit section is held where they are', async () => {
+        sectionBottom = -100;
+        await arrives();
+        expect(scrollBy).toHaveBeenCalledWith({top: 650, behavior: 'instant'});
+    });
+
+    test('a reader who can see the section is not moved', async () => {
+        sectionBottom = 300;
+        await arrives();
+        expect(scrollBy).not.toHaveBeenCalled();
+    });
+
+    test('a section that ends under the phone top bar is held too; a bar that is not sticky covers nothing', async () => {
+        const bar = document.createElement('header');
+        bar.className = 'app-mobile-topbar';
+        bar.style.position = 'sticky';
+        document.body.appendChild(bar);
+        sectionBottom = 30;
+        await arrives();
+        expect(scrollBy).toHaveBeenCalledWith({top: 650, behavior: 'instant'});
+        cleanup();
+        scrollBy.mockReset();
+        bar.style.position = 'static'; // not shown as a bar at 768 px and wider
+        await arrives();
+        expect(scrollBy).not.toHaveBeenCalled();
+        cleanup();
+        scrollBy.mockReset();
+        bar.style.position = 'fixed';
+        document.body.appendChild(bar);
+        await arrives();
+        expect(scrollBy).toHaveBeenCalled();
     });
 });
 

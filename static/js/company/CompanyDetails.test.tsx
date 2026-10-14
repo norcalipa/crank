@@ -609,6 +609,37 @@ describe('CompanyDetails: fit, jobs and View jobs (issue #486, AC 15-18)', () =>
             expect(scrollIntoView).toHaveBeenCalledTimes(1);
         });
 
+        test.each(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])(
+            'the scroll key %j since the jump: the page is not moved', async key => {
+                renderDetails();
+                fireEvent.click(screen.getByTestId('company-view-jobs'));
+                fireEvent.keyDown(window, {key});
+                await settle();
+                expect(scrollIntoView).toHaveBeenCalledTimes(1);
+            });
+
+        test('every listener a jump adds is removed when the next jump replaces it and when the view unmounts', () => {
+            const added = jest.spyOn(window, 'addEventListener');
+            const removed = jest.spyOn(window, 'removeEventListener');
+            const names = ['wheel', 'touchmove', 'pointerdown', 'keydown'];
+            const count = (spy: jest.SpyInstance, name: string) => spy.mock.calls.filter(call => call[0] === name).length;
+            try {
+                const view = renderDetails();
+                fireEvent.click(screen.getByTestId('company-view-jobs'));
+                for (const name of names) expect(count(added, name)).toBe(1);
+                for (const name of names) expect(count(removed, name)).toBe(0);
+                fireEvent.click(screen.getByTestId('company-see-fit'));
+                // The second jump stops the first before it starts its own.
+                for (const name of names) expect(count(added, name)).toBe(2);
+                for (const name of names) expect(count(removed, name)).toBe(1);
+                view.unmount();
+                for (const name of names) expect(count(removed, name)).toBe(2);
+            } finally {
+                added.mockRestore();
+                removed.mockRestore();
+            }
+        });
+
         test('a key that does not scroll leaves the guard on', async () => {
             renderDetails();
             fireEvent.click(screen.getByTestId('company-view-jobs'));

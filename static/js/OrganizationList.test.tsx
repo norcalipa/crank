@@ -1924,6 +1924,68 @@ describe('OrganizationList', () => {
             expect(buildWireContext(getWorkspaceSnapshot())).toMatchObject({surface: 'company', organization_id: 2});
         });
 
+        test('Back to results while the next ranked company loads takes that company out of the assistant', async () => {
+            const base = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url) => (url === '/api/organizations/2/'
+                ? new Promise(() => {})
+                : base(url)));
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 1}));
+            await screen.findByTestId('popup-details-grid');
+            act(() => {
+                openWorkspaceCompany(2);
+            });
+            expect(screen.getByTestId('company-view-loading')).toBeInTheDocument();
+            expect(getWorkspaceSnapshot().context).toMatchObject({organizationId: 2});
+            fireEvent.click(screen.getByTestId('company-back'));
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            // The results are on screen: the assistant speaks about the results, and a
+            // turn sent now names no company.
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'rankings'}));
+            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+            expect(buildWireContext(getWorkspaceSnapshot())).not.toHaveProperty('organization_id');
+        });
+
+        test('the browser\'s Back while the next ranked company loads does the same', async () => {
+            const base = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url) => (url === '/api/organizations/2/'
+                ? new Promise(() => {})
+                : base(url)));
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('popup-details-grid');
+            act(() => {
+                openWorkspaceCompany(2);
+            });
+            expect(screen.getByTestId('company-view-loading')).toBeInTheDocument();
+            act(() => window.history.back());
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'rankings'}));
+            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+        });
+
+        test('a ranked row whose record answers 404 after a switch leaves the assistant (the loading company was the reported one)', async () => {
+            const base = global.fetch as jest.Mock;
+            let resolve2: (value: unknown) => void = () => {};
+            global.fetch = jest.fn().mockImplementation((url) => (url === '/api/organizations/2/'
+                ? new Promise((r) => { resolve2 = r; })
+                : base(url)));
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 1}));
+            await screen.findByTestId('popup-details-grid');
+            act(() => {
+                openWorkspaceCompany(2);
+            });
+            expect(getWorkspaceSnapshot().context).toMatchObject({organizationId: 2});
+            await act(async () => {
+                resolve2({ok: false, status: 404, json: () => Promise.resolve({detail: 'Not found.'})});
+            });
+            await screen.findByTestId('company-not-found');
+            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+        });
+
         test('an id that is not a row keeps the previous company in the assistant until its record arrives', async () => {
             const base = global.fetch as jest.Mock;
             let resolve77: (value: unknown) => void = () => {};

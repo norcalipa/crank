@@ -5,7 +5,7 @@ import {act, cleanup, fireEvent, render, screen} from '@testing-library/react';
 import * as React from 'react';
 
 import * as store from '../workspace/store';
-import JobsSection, {CompanyJob, CompanyJobs, MAX_COMPANY_JOBS, jobMeta, payText, postingUrl} from './JobsSection';
+import JobsSection, {CompanyJob, CompanyJobs, MAX_COMPANY_JOBS, jobMeta, payPeriodText, payText, postingUrl} from './JobsSection';
 
 const job = (overrides: Partial<CompanyJob> = {}): CompanyJob => ({
     id: 1, title: 'Staff Engineer', location_text: 'Remote (US)', is_remote: true,
@@ -203,6 +203,7 @@ describe('postingUrl and payText', () => {
         expect(payText(job({compensation_min: null}))).toBe('USD 190,000 per year');
         expect(payText(job({compensation_min: '100', compensation_max: '100', compensation_currency: '', compensation_interval: ''}))).toBe('100');
         expect(payText(job({compensation_min: null, compensation_max: null}))).toBe('Pay not published');
+        expect(payText(job({compensation_interval: 'PA'}))).toBe('USD 150,000–190,000 per year');
         expect(payText(job({compensation_min: 'abc', compensation_max: ''}))).toBe('Pay not published');
     });
 });
@@ -242,5 +243,98 @@ describe('a job row says each thing once (issue #486, round 2)', () => {
         const alert = await screen.findByTestId('jobs-error');
         expect(alert).toHaveTextContent('Retry loading open jobs');
         expect(document.getElementById('company-jobs-title')).toHaveClass('company-jump-heading');
+    });
+});
+
+describe('payPeriodText', () => {
+    // The sources' own codes and the words other adapters copy, in words.
+    it.each([
+        ['PA', 'per year'], ['year', 'per year'], ['Yearly', 'per year'], ['annual', 'per year'], ['Annually', 'per year'],
+        ['per year', 'per year'], ['per annum', 'per year'], ['Per Year', 'per year'],
+        ['PH', 'per hour'], ['hourly', 'per hour'], ['per hour', 'per hour'], ['hour', 'per hour'],
+        ['PD', 'per day'], ['daily', 'per day'], ['PW', 'per week'], ['weekly', 'per week'],
+        ['BW', 'every two weeks'], ['biweekly', 'every two weeks'], ['PM', 'per month'], ['monthly', 'per month'],
+        ['  per month  ', 'per month'],
+    ])('%s reads as "%s"', (raw, words) => {
+        expect(payPeriodText(raw)).toBe(words);
+    });
+
+    it('prints a value it does not know as stored, without a "per" of its own', () => {
+        expect(payPeriodText('WC')).toBe('WC');
+        expect(payPeriodText('per fortnight')).toBe('per fortnight');
+        expect(payPeriodText('')).toBe('');
+        expect(payPeriodText(undefined)).toBe('');
+    });
+
+    it('never prints "per per" or a raw code in a job row', () => {
+        for (const raw of ['PA', 'PH', 'per year', 'yearly', 'annual']) {
+            const text = payText(job({compensation_interval: raw}));
+            expect(text).not.toMatch(/per per|per P[AH]|per yearly|per annual/);
+        }
+    });
+});
+
+describe('the reader\'s place when the list arrives (issue #486, review round 1)', () => {
+    // jsdom lays nothing out: report the rectangles the browser would. What follows
+    // the section sits at 50 px until the list is in the page, then at 400 px.
+    let sectionBottom = -100;
+    let rects: jest.SpyInstance;
+    const scrollBy = jest.fn();
+    const Page = () => (
+        <div>
+            <JobsSection organizationId={4} name="Acme" isAuthenticated={true} signInUrl={null}/>
+            <p data-testid="after">after</p>
+        </div>
+    );
+    beforeEach(() => {
+        store.resetWorkspaceForTests();
+        scrollBy.mockReset();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        rects = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const listed = !!document.querySelector('[data-testid="jobs-list"]');
+            const top = this.tagName === 'P' ? (listed ? 400 : 50) : 0;
+            const bottom = this.tagName === 'SECTION' ? sectionBottom : this.tagName === 'HEADER' ? 49 : top;
+            const height = this.tagName === 'HEADER' ? 49 : 0;
+            return {top, bottom, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+    });
+    afterEach(() => {
+        rects.mockRestore();
+        document.querySelector('header')?.remove();
+        cleanup();
+    });
+
+    const held = async () => {
+        let resolve: (value: unknown) => void = () => {};
+        global.fetch = jest.fn().mockReturnValue(new Promise(r => {
+            resolve = r;
+        }));
+        render(<Page/>);
+        await act(async () => {
+            resolve(answer(jobs()));
+        });
+        expect(await screen.findByTestId('jobs-list')).toBeInTheDocument();
+    };
+
+    test('a reader below the Jobs section is held where they are when the list arrives', async () => {
+        sectionBottom = -100;
+        await held();
+        expect(scrollBy).toHaveBeenCalledWith({top: 350, behavior: 'instant'});
+    });
+
+    test('a reader who can see the section is not moved', async () => {
+        sectionBottom = 300;
+        await held();
+        expect(scrollBy).not.toHaveBeenCalled();
+    });
+
+    test('a section that ends under the phone top bar is as good as above the screen', async () => {
+        const bar = document.createElement('header');
+        bar.className = 'app-mobile-topbar';
+        bar.style.position = 'sticky';
+        document.body.appendChild(bar);
+        sectionBottom = 30;
+        await held();
+        expect(scrollBy).toHaveBeenCalledWith({top: 350, behavior: 'instant'});
     });
 });

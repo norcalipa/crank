@@ -467,7 +467,7 @@ describe('company view fit and open jobs (issue #486c)', () => {
 
     test('a fit that is being read again is dimmed without changing its height, and the loading placeholder is not', () => {
         const dim = rule('.company-fit [aria-busy="true"]:not([role="status"])');
-        expect(dim).toMatch(/opacity:\s*\.6/);
+        expect(dim).toMatch(/opacity:\s*\.75;/);
         expect(dim).not.toMatch(/height|display|visibility/);
     });
 

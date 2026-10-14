@@ -1605,7 +1605,7 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
             const before = await top();
             release();
             await expect(page.getByTestId('fit-ready')).toBeVisible();
-            await page.waitForTimeout(300);
+            await scrollRested(page);
             // The answer is more than 500 px tall; what the reader was looking at stays where it was.
             expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(40);
         } finally {
@@ -1773,11 +1773,12 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
         const jumpTop = await page.locator('#company-jobs-title').evaluate((el) => el.getBoundingClientRect().top);
         await page.mouse.move(180, 400);
         await page.mouse.wheel(0, 120);
-        await page.waitForTimeout(300);
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+        await scrollRested(page);
         const scrolled = await page.evaluate(() => window.scrollY);
         release();
         await expect(page.getByTestId('fit-ready')).toBeVisible();
-        await page.waitForTimeout(300);
+        await scrollRested(page);
         // The page did not jump back to the heading: it is where the reader left it, give or take
         // the browser's own scroll anchoring for content that grew above it.
         const top = await page.locator('#company-jobs-title').evaluate((el) => el.getBoundingClientRect().top);
@@ -1817,7 +1818,8 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
             await page.goto('/');
             await opener(page).click();
             await expect(page.getByTestId('fit-no-priorities')).toBeVisible();
-            await page.waitForTimeout(800);
+            // The jobs answer is the other read of the page: both have landed before the count.
+            await expect(page.locator('[data-testid="jobs-list"], [data-testid="jobs-empty"], [data-testid="jobs-unavailable"]')).toBeVisible();
             // A plain page load: exactly one fit request and one jobs request.
             expect(asked.filter((url) => url.endsWith('/fit/')).length).toBe(1);
             expect(asked.filter((url) => url.endsWith('/jobs/')).length).toBe(1);
