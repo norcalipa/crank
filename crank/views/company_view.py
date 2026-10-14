@@ -4,8 +4,10 @@
 
 Two read-only endpoints that answer for the signed-in reader alone: how one
 company fits that reader's saved priorities, and the open jobs at that
-company. Neither writes anything, records telemetry, or touches the shared
-per-organization cache; every answer is ``private, no-store``.
+company. Neither writes anything, records telemetry, or fills the shared
+per-organization cache entries the API views use; the one entry a fit read
+fills is the reader-neutral average-score entry that ``Organization.avg_scores``
+keeps for every reader. Every answer is ``private, no-store``.
 
 Which organizations get a page is the same rule the three organization
 endpoints in ``crank/views/api.py`` use (active records, 404 otherwise); the
