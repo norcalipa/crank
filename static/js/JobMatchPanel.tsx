@@ -234,14 +234,19 @@ interface ResultAnchor {
 }
 const RESULT_CARD_SELECTOR = '[data-testid^="ranked-job-"]:not([data-testid="ranked-job-matches"]), [data-testid^="ranked-org-"]:not([data-testid="ranked-org-matches"])';
 function captureAnchor(): ResultAnchor {
-    const rows: ResultAnchor['rows'] = [];
+    // The reader's row is the first card that starts inside the visible area
+    // (below the phone's sticky bar); a card mostly above it is the fallback.
+    const bar = document.querySelector<HTMLElement>('.app-mobile-topbar');
+    const visibleTop = bar ? Math.max(0, bar.getBoundingClientRect().bottom) : 0;
+    const whole: ResultAnchor['rows'] = [];
+    const partial: ResultAnchor['rows'] = [];
     document.querySelectorAll<HTMLElement>(RESULT_CARD_SELECTOR).forEach((card) => {
         const rect = card.getBoundingClientRect();
         if (rect.bottom > 0 && rect.top < window.innerHeight) {
-            rows.push({testid: card.dataset.testid!, top: rect.top});
+            (rect.top >= visibleTop ? whole : partial).push({testid: card.dataset.testid!, top: rect.top});
         }
     });
-    return {rows};
+    return {rows: [...whole, ...partial]};
 }
 function restoreAnchor(anchor: ResultAnchor): void {
     for (const row of anchor.rows) {
@@ -872,10 +877,12 @@ function NoticeBox({tone, testid, icon, children, button, folded}: {
         <div className={`alert alert-${tone} py-2 small mb-3`} role="status" aria-live="polite" data-testid={testid}>
             <div className={`job-match-stale-banner${button ? '' : ' job-match-stale-banner--plain'}`}>
                 <Icon name={icon} className="job-match-stale-icon" />
-                <span className="job-match-stale-message">{children}</span>
+                <span className="job-match-stale-message">
+                    {children}
+                    {folded && <span className="job-match-notice-folded d-block text-muted mt-1" data-testid="notice-folded">{folded}</span>}
+                </span>
                 {button}
             </div>
-            {folded && <div className="job-match-notice-folded text-muted mt-1" data-testid="notice-folded">{folded}</div>}
         </div>
     );
 }
@@ -991,11 +998,12 @@ const hasInventoryAge = (emptyState: EmptyStatePayload): boolean => emptyState.s
 /** Results-generated timestamp (issue #467 round-2): a visible, readable
  * <time> line shown in both healthy and stale views so the user can see when
  * the matches were computed. */
-function ResultTimestamp({revision, paired = false, updated = false}: {
+function ResultTimestamp({revision, paired = false, updated = 'off'}: {
     revision?: RevisionBlock | null;
     paired?: boolean;
-    /** An idle auto-apply just replaced the list: mark it until the reader acts. */
-    updated?: boolean;
+    /** An idle auto-apply just replaced the list: mark it until the reader acts
+     * ('seen' keeps the mark's box, hidden, so its line never re-wraps under a press). */
+    updated?: 'off' | 'on' | 'seen';
 }) {
     const iso = revision?.generated_at;
     const when = formatWhen(iso);
@@ -1007,7 +1015,11 @@ function ResultTimestamp({revision, paired = false, updated = false}: {
         <p className={`text-muted small ${paired ? 'mb-1' : 'mb-3'}`} data-testid="results-timestamp">
             Results generated at{' '}
             <time dateTime={iso}>{when}</time>
-            {updated && <span className="badge text-bg-info ms-2" data-testid="results-updated-badge">Updated</span>}
+            {updated !== 'off' && (
+                <span className={`badge text-bg-info ms-2${updated === 'seen' ? ' invisible' : ''}`}
+                      data-testid={updated === 'on' ? 'results-updated-badge' : 'results-updated-badge-seen'}
+                      aria-hidden={updated === 'seen' || undefined}>Updated</span>
+            )}
         </p>
     );
 }
@@ -1086,7 +1098,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     // or mismatched read), shown inside the notice; and the "Updated" badge
     // that marks an idle auto-apply until the reader scrolls or presses.
     const [keptNote, setKeptNote] = React.useState<string | null>(null);
-    const [updatedBadge, setUpdatedBadge] = React.useState(false);
+    const [updatedBadge, setUpdatedBadge] = React.useState<'off' | 'on' | 'seen'>('off');
+    const keptNoteRef = React.useRef<string | null>(null);
+    keptNoteRef.current = keptNote;
     // Set by a purge: no revision request is sent until a hydration that
     // observed the account (an `unobserved` one neither starts nor stops it).
     const [pollBlocked, setPollBlocked] = React.useState(false);
@@ -1154,7 +1168,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         setSeenGeneration(null);
         setAutoApplying(false);
         setKeptNote(null);
-        setUpdatedBadge(false);
+        setUpdatedBadge('off');
         anchorRef.current = null;
         setRefreshFailed(false);
         setRefreshRunning(false);
@@ -1181,8 +1195,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setReadNote('Checking your job matches…');
         }
         setAutoApplying(mode === 'auto');
+        // The kept sentence leaves with this press: hold the row through it.
+        if (keptNoteRef.current !== null && hasResultsRef.current) {
+            anchorRef.current = captureAnchor();
+        }
         setKeptNote(null);
-        setUpdatedBadge(false);
         setErrorMsg(null);
         const readAll = async () => {
             const [statusRes, matchRes, rankedRes] = await Promise.all([
@@ -1241,6 +1258,10 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 setRefreshFailed(false);
                 setAutoApplying(false);
                 if (mode !== 'read') {
+                    // The sentence grows the notice above the list: hold the row.
+                    if (hasResultsRef.current) {
+                        anchorRef.current = captureAnchor();
+                    }
                     setKeptNote(KEPT_SENTENCE);
                 }
                 setReadNote(mode === 'read' ? 'Finished checking your job matches.' : KEPT_SENTENCE);
@@ -1266,9 +1287,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             if (hasResultsRef.current) {
                 anchorRef.current = captureAnchor();
             }
-            if (mode === 'auto' && changed) {
-                setUpdatedBadge(true);
-            }
+            // After the capture: a hidden mark's box leaving is held like the rest.
+            setUpdatedBadge(mode === 'auto' && changed ? 'on' : 'off');
             setAutoApplying(false);
             setRankedMatches(rankedData);
             // Issue #484: the server compares these with its own revisions to
@@ -1369,11 +1389,13 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         void loadStatus(true, 'accept');
     }, [loadStatus]);
     const noticeUp = seenGeneration !== null && shownGeneration !== null && seenGeneration > shownGeneration;
-    // The "Updated" mark goes at the reader's next scroll, press or key.
+    // The "Updated" mark goes at the reader's next scroll, press or key: their
+    // own input only (the panel's hold and scroll anchoring scroll the page
+    // too), and it keeps its box so nothing moves under the press.
     React.useEffect(() => {
-        if (!updatedBadge) return undefined;
-        const clear = () => setUpdatedBadge(false);
-        const events = ['scroll', 'pointerdown', 'keydown'] as const;
+        if (updatedBadge !== 'on') return undefined;
+        const clear = () => setUpdatedBadge('seen');
+        const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
         events.forEach((name) => window.addEventListener(name, clear, {once: true, passive: true}));
         return () => events.forEach((name) => window.removeEventListener(name, clear));
     }, [updatedBadge]);
@@ -1430,7 +1452,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         if (!anchor) return;
         anchorRef.current = null;
         restoreAnchor(anchor);
-    }, [rankedMatches, shownGeneration, seenGeneration, recheck]);
+    }, [rankedMatches, shownGeneration, seenGeneration, recheck, keptNote]);
     const recheckRunningRef = React.useRef(false);
     // Bumped by a private-state purge: an answer that arrives for an earlier
     // account is dropped without a re-read, a message or a focus move.

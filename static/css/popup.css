@@ -1519,12 +1519,6 @@ body.app-nav-drawer-open {
     justify-content: center;
 }
 
-/* The one muted line folded into the alert box: it lines up with the
-   message, under the icon column (16px icon + .5rem gap). */
-#job-match-panel .job-match-notice-folded {
-    margin-left: 1.5rem;
-}
-
 /* A box with no button keeps its icon on the first line at every width; the
    banner grid centres its items from 576px up, which put the icon beside the
    middle of a message of three lines. A box with a button is unchanged. */

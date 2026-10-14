@@ -251,6 +251,51 @@ test.describe('Updated results available (stored results)', () => {
         await expect(chip(page)).toHaveAttribute('data-evidence-state', 'sourced');
     });
 
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
+        test(`the kept sentence and every later press hold the row at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            await open(page);
+            fixture('settle');
+            await page.clock.runFor(INTERVAL_MS + 1000);
+            const notice = page.getByTestId('updated-results-notice');
+            await expect(notice).toBeVisible();
+            await placeReader(page, 'heading-at-top');
+            const reading = (await readingRow(page))!;
+            await page.evaluate(() => {
+                const original = window.fetch.bind(window);
+                (window as any).__realFetch = original;
+                window.fetch = async (input, init) => {
+                    const response = await original(input, init);
+                    const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+                    if (!url.includes('/api/job-matches/status/')) return response;
+                    const body = await response.clone().json();
+                    return new Response(JSON.stringify({...body, result_generation: (body.result_generation ?? 0) + 7}),
+                        {status: 200, headers: {'Content-Type': 'application/json'}});
+                };
+            });
+            const held = () => expect.poll(async () => Math.abs((await rowTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            // dispatchEvent: a real press would scroll the control into view first.
+            await notice.getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+            await expect(page.getByTestId('notice-folded')).toContainText('Still showing the results you had');
+            await held();
+            // The next press takes the sentence away and brings it back: the row stays put through both.
+            await notice.getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+            await held();
+            await expect(page.getByTestId('notice-folded')).toContainText('Still showing the results you had');
+            await held();
+            // The reason is read before the button.
+            expect(await page.evaluate(() => {
+                const folded = document.querySelector('[data-testid="notice-folded"]')!;
+                const button = document.querySelector('[data-testid="updated-results-refresh"]')!;
+                return !!(folded.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING);
+            })).toBe(true);
+            await page.evaluate(() => { window.fetch = (window as any).__realFetch; });
+            await notice.getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+            await expect(notice).toHaveCount(0);
+            await held();
+        });
+    }
+
     test('a hidden tab sends no revision request; the return sends one', async ({page}) => {
         const seen = countRequests(page);
         await open(page);
@@ -282,6 +327,43 @@ test.describe('Updated results available (stored results)', () => {
         await expect(page.getByTestId('read-announcement')).toHaveText('Showing updated results.');
         await page.mouse.wheel(0, 40);
         await expect(page.getByTestId('results-updated-badge')).toHaveCount(0);
+    });
+
+    // The mark wraps the timestamp line on phones: it must be painted, and its
+    // box must stay when it goes, or the first tap lands on the row below.
+    test.describe('on phones', () => {
+        test.use({hasTouch: true});
+        for (const [width, height] of [[375, 667], [390, 844]] as const) {
+            test(`the idle auto-apply's mark is seen and the first tap on a job title opens the listing at ${width}x${height}`, async ({page}) => {
+                await page.setViewportSize({width, height});
+                await open(page);
+                await page.evaluate(() => {
+                    window.scrollTo({top: 0, left: 0, behavior: 'instant'});
+                    (document.activeElement as HTMLElement | null)?.blur();
+                });
+                await setVisibility(page, 'hidden');
+                await page.clock.runFor(5 * 60_000);
+                fixture('settle');
+                await setVisibility(page, 'visible');
+                await expect(chip(page)).toHaveAttribute('data-evidence-state', 'sourced');
+                // Still there after the panel's own hold has scrolled the page.
+                await expect(page.getByTestId('results-updated-badge')).toBeVisible();
+                const title = page.getByTestId('ranked-job-matches').locator('a[target="_blank"]').first();
+                // Scrolled into reach only when it is not already (a scroll event is the old clearing path:
+                // the first input must be the tap). Centred, not under the sticky top bar.
+                const reach = (await title.boundingBox())!;
+                if (reach.y < 60 || reach.y + reach.height > height - 60) {
+                    await title.evaluate((el) => el.scrollIntoView({block: 'center', behavior: 'instant'}));
+                }
+                // The tap is the reader's first input: the mark leaves, its box does not.
+                const before = (await title.boundingBox())!;
+                const popup = page.waitForEvent('popup', {timeout: 5000});
+                await page.touchscreen.tap(before.x + before.width / 2, before.y + before.height / 2);
+                await popup;
+                await expect(page.getByTestId('results-updated-badge')).toHaveCount(0);
+                expect(Math.abs((await title.boundingBox())!.y - before.y)).toBeLessThanOrEqual(1);
+            });
+        }
     });
 
     test('after a return, with focus inside the panel, only the notice appears', async ({page}) => {

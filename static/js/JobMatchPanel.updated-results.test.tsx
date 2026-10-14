@@ -673,6 +673,50 @@ describe('holding the reader\u2019s row and one message (visual review, round 1)
         expect(screen.queryByTestId('notice-folded')).not.toBeInTheDocument();
     });
 
+    test('the kept sentence and its leaving hold the row, and the reason comes before the button', async () => {
+        const server = await withNotice();
+        jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const id = (this as HTMLElement).dataset?.testid ?? '';
+            const grown = !!document.querySelector('[data-testid="notice-folded"]');
+            const top = id === 'ranked-job-1' ? 198 + (grown ? 25 : 0) : 0;
+            return {top, bottom: top + 100, left: 0, right: 10, width: 10, height: 100, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+        const scrollBy = jest.fn();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        server.statusGeneration = () => 3;
+        await press();
+        const folded = screen.getByTestId('notice-folded');
+        expect(scrollBy).toHaveBeenCalledWith({top: 25, left: 0, behavior: 'instant'});
+        expect(folded.compareDocumentPosition(screen.getByTestId('updated-results-refresh')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        scrollBy.mockClear();
+        server.statusGeneration = () => 3;
+        await press();
+        // The sentence goes at the start of the press and comes back after it.
+        expect(scrollBy).toHaveBeenCalledWith({top: -25, left: 0, behavior: 'instant'});
+    });
+
+    test('the row held is the first card that starts in view, not one mostly above it', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const id = (this as HTMLElement).dataset?.testid ?? '';
+            const noticeUp = !!document.querySelector('[data-testid="updated-results-notice"]');
+            // The first card is cut at the top and grows when the notice is up.
+            const top = id === 'ranked-job-1' ? -18 + (noticeUp ? 110 : 0) : id === 'ranked-job-2' ? 300 + (noticeUp ? 78 : 0) : 0;
+            return {top, bottom: top + 100, left: 0, right: 10, width: 10, height: 100, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+        const topbar = document.createElement('div');
+        topbar.className = 'app-mobile-topbar';
+        document.body.appendChild(topbar);
+        const scrollBy = jest.fn();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        server.generation = 2;
+        await advance(POLL);
+        await screen.findByTestId('updated-results-notice');
+        expect(scrollBy).toHaveBeenCalledWith({top: 78, left: 0, behavior: 'instant'});
+        topbar.remove();
+    });
+
     test('with stale results the notice carries the stale sentence and the stale box stands down', async () => {
         const server = makeServer(1);
         server.extras = {revision: {stale: true}};
@@ -742,7 +786,7 @@ describe('holding the reader\u2019s row and one message (visual review, round 1)
         expect(scrollBy).toHaveBeenCalledWith({top: 19, left: 0, behavior: 'instant'});
     });
 
-    test('an idle auto-apply is announced and marked until the reader scrolls', async () => {
+    test('an idle auto-apply is announced and marked until the reader\u2019s own wheel input', async () => {
         const server = makeServer(1);
         await mount(server);
         setVisibility('hidden');
@@ -753,10 +797,19 @@ describe('holding the reader\u2019s row and one message (visual review, round 1)
         await screen.findByTestId('ranked-job-3');
         expect(screen.getByTestId('read-announcement')).toHaveTextContent('Showing updated results.');
         expect(screen.getByTestId('results-updated-badge')).toHaveTextContent('Updated');
+        // The panel's own hold and scroll anchoring scroll the page: that is not the reader.
         act(() => {
             window.dispatchEvent(new Event('scroll'));
         });
+        expect(screen.getByTestId('results-updated-badge')).toBeInTheDocument();
+        act(() => {
+            window.dispatchEvent(new Event('wheel'));
+        });
+        // The mark goes but keeps its box, hidden, so the line never re-wraps under a press.
         expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+        const seen = screen.getByTestId('results-updated-badge-seen');
+        expect(seen).toHaveClass('invisible');
+        expect(seen).toHaveAttribute('aria-hidden', 'true');
     });
 
     test('the mark also goes at the next press', async () => {
@@ -769,10 +822,16 @@ describe('holding the reader\u2019s row and one message (visual review, round 1)
         await advance(0);
         await screen.findByTestId('results-updated-badge');
         await act(async () => {
+            fireEvent.pointerDown(screen.getByTestId('job-match-refresh'));
+        });
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+        expect(screen.getByTestId('results-updated-badge-seen')).toHaveClass('invisible');
+        // The next read's success takes the hidden box away (held with the rest).
+        await act(async () => {
             fireEvent.click(screen.getByTestId('job-match-refresh'));
         });
         await advance(0);
-        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('results-updated-badge-seen')).not.toBeInTheDocument();
     });
 
     test('Refresh results announces that the results changed', async () => {

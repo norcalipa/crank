@@ -704,10 +704,10 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         expect(popupCss.slice(start, next)).toMatch(/#job-match-panel a\.btn \{\s*display: inline-flex;\s*align-items: center;\s*justify-content: center;\s*\}/);
     });
 
-    it('indents the folded line under the message, past the icon column', () => {
+    it('needs no indent for the folded line: it sits inside the message column', () => {
         const start = popupCss.indexOf('/* issue #485 result refresh */');
         const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
-        expect(popupCss.slice(start, next)).toMatch(/#job-match-panel \.job-match-notice-folded \{\s*margin-left: 1\.5rem;\s*\}/);
+        expect(popupCss.slice(start, next)).not.toContain('job-match-notice-folded');
     });
 
     it('keeps the icon of a box with no button on its first line, and leaves the stale banner with a button centred', () => {
