@@ -823,7 +823,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
-    const ensureConversation = async (createNew: boolean): Promise<number> => {
+    // Resolves to null when the account changed while the request was out:
+    // the answer belongs to the previous account and is written nowhere.
+    const ensureConversation = async (createNew: boolean): Promise<number | null> => {
+        const epoch = purgeEpochRef.current;
         const body = createNew ? {create_new: true} : {};
         const res = await csrfFetch('/api/agent/conversations/', {
             method: 'POST',
@@ -833,6 +836,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             throw new Error('start-failed');
         }
         const data = (await res.json()) as Conversation;
+        if (purgeEpochRef.current !== epoch) return null;
         setConversationId(data.id);
         setMessages(data.messages);
         return data.id;
@@ -1018,6 +1022,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     if (!opts?.retriedAfterClose) {
                         try {
                             const newId = await ensureConversation(false);
+                            // The account changed during the lookup: nothing of this send is written or replayed.
+                            if (newId === null) return;
                             clearInflightTurn(turnConversationId, key);
                             // Adopt the new conversation synchronously so the
                             // replay's stale-conversation guard accepts it.
@@ -1031,6 +1037,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                             // Recovery failed; surface the original error below.
                         }
                     }
+                    if (viewChanged()) return;
                     setError(serverMsg);
                     setErrorType(serverType);
                     lastSent.current = sentTurn;
@@ -1253,7 +1260,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         let targetId = conversationId;
         if (targetId === null) {
             try {
-                targetId = await ensureConversation(true);
+                const created = await ensureConversation(true);
+                // The account changed while the conversation was being created: this question is not theirs to send.
+                if (created === null) return;
+                targetId = created;
                 conversationIdRef.current = targetId;
             } catch {
                 setInitError('Could not start a conversation. Please try again.');
