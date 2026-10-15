@@ -23,9 +23,11 @@ from crank.models.preference import UserPreference
 
 
 def has_enabled_job_source() -> bool:
-    """Whether any job source is enabled, i.e. job inventory can exist.
+    """Whether any job source has ``enabled=True``; approval is not considered.
 
-    The one read-only check behind the ``source_disabled`` state.
+    The one read-only check behind the ``source_disabled`` state. It is not the
+    company jobs endpoint's availability rule, which also requires the source to
+    be approved (``LIVE_SOURCE`` in ``crank/views/company_view.py``).
     """
     return JobSourceCatalog.objects.filter(enabled=True).exists()
 
