@@ -125,7 +125,7 @@ async function renderChat(existingMessages: ChatMessage[] = []) {
     );
     render(<JobSearchChat/>);
     // Wait until resume resolves and the input is enabled. The composer is
-    // enabled while history is still loading, but a submit  until
+    // enabled while history is still loading, but a submit is dropped until
     // loading clears, so wait for the loading indicator to go away too.
     await screen.findByLabelText('Message');
     await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
@@ -4114,7 +4114,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBeNull();
     });
 
-    test('an apply response that lands after a purge  (no diff, no Undo, no revision)', async () => {
+    test('an apply response that lands after a purge is dropped (no diff, no Undo, no revision)', async () => {
         await submitTurnWithProposal({
             message: assistantMessage(32, 'I suggest this.', false),
             preferences_changed: false,
@@ -4171,7 +4171,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
             act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
         };
 
-        test('a successful undo that lands after a purge ', async () => {
+        test('a successful undo that lands after a purge is dropped', async () => {
             const button = await applied();
             const settle = holdNextFetch(global.fetch as jest.Mock);
             fireEvent.click(button);
@@ -4181,7 +4181,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
             expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
         });
 
-        test('a failed undo that lands after a purge ', async () => {
+        test('a failed undo that lands after a purge is dropped', async () => {
             const button = await applied();
             const settle = holdNextFetch(global.fetch as jest.Mock);
             fireEvent.click(button);
@@ -4190,7 +4190,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
             expect(screen.queryByTestId('preference-undo-error')).not.toBeInTheDocument();
         });
 
-        test('a network failure on undo after a purge ', async () => {
+        test('a network failure on undo after a purge is dropped', async () => {
             const button = await applied();
             const settle = holdNextFetch(global.fetch as jest.Mock);
             fireEvent.click(button);
@@ -4807,7 +4807,7 @@ describe('validated page context and assistant actions (issue #484)', () => {
         expect(screen.getByLabelText('Message')).toHaveValue('hello');
     });
 
-    test('an open_company action for a company the reply does not name ', async () => {
+    test('an open_company action for a company the reply does not name is dropped', async () => {
         await renderChat([]);
         act(() => setWorkspaceContext({surface: 'rankings'}));
         const revision = getWorkspaceSnapshot().contextRevision;
@@ -5704,6 +5704,67 @@ describe('preference notices in the transcript (issue #483)', () => {
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByText('Answered.');
             expect(postBodies(mock, '/api/agent/conversations/44/')).toHaveLength(1);
+        });
+
+        // The status check a send waits for before anything else (issue #457) is a third request outside /chat/.
+        const sentAnywhere = (mock: jest.Mock, text: string) => mock.mock.calls.filter(([, init]) => String((init as RequestInit | undefined)?.body ?? '').includes(text));
+        const statusCalls = (mock: jest.Mock) => mock.mock.calls.filter(([url]) => String(url).includes('assistant-status'));
+
+        test('a pre-send status check answered after an account switch sends and creates nothing for a first message', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            let settleStatus: (outcome: Response | Error) => void = () => {};
+            await switchAccountWhile(async () => {
+                settleStatus = holdNextFetch(mock);
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account first question'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await waitFor(() => expect(statusCalls(mock)).toHaveLength(2));
+            });
+            await act(async () => { settleStatus(statusResponse('ready')); });
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(lookupPosts(mock)).toHaveLength(0);
+            expect(sentAnywhere(mock, 'old account first question')).toHaveLength(0);
+            expect(screen.queryByText('old account first question')).not.toBeInTheDocument();
+            expectNewAccountUntouched(mock, 57);
+            await expectNewAccountCanSend(mock);
+        });
+
+        test('a pre-send status check answered after an account switch posts nothing to the old conversation', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            let settleStatus: (outcome: Response | Error) => void = () => {};
+            await switchAccountWhile(async () => {
+                settleStatus = holdNextFetch(mock);
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await waitFor(() => expect(statusCalls(mock)).toHaveLength(2));
+            });
+            await act(async () => { settleStatus(statusResponse('ready')); });
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(conversationPostsFor(mock, 42)).toHaveLength(0);
+            expect(sentAnywhere(mock, 'old account private question')).toHaveLength(0);
+            expect(screen.queryByText('old account private question')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('pending-turn')).not.toBeInTheDocument();
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+            expect(storedFor(55)).toEqual([]);
+            await expectNewAccountCanSend(mock);
+        });
+
+        test('in the same account a slow pre-send status check still lets the question go', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            const settleStatus = holdNextFetch(mock);
+            mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(80, 'Answered.'), preferences_changed: false}, 201));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await act(async () => { settleStatus(statusResponse('ready')); });
+            await screen.findByText('Answered.');
+            expect(postBodies(mock, '/api/agent/conversations/42/').map((b) => b.content)).toEqual(['my question']);
         });
 
         async function sendClosedThenSwitchWhileLooking() {
