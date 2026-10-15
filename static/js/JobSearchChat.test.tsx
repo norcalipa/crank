@@ -5632,6 +5632,167 @@ describe('preference notices in the transcript (issue #483)', () => {
             expect(mock.mock.calls.slice(callsBefore).some(([, init]) => String((init as RequestInit | undefined)?.body ?? '').includes('old account private question'))).toBe(false);
         });
 
+        // A send waits on two requests that are not part of /chat/: the creation of
+        // the conversation on the first message and the lookup after "conversation closed".
+        const closed409 = () => jsonResponse({error: {type: 'conversation_closed', message: 'This conversation was reset or deleted while the assistant was responding.'}}, 409);
+        const conversationPostsFor = (mock: jest.Mock, id: number) => mock.mock.calls.filter(([url]) => String(url) === `/api/agent/conversations/${id}/`);
+        const storedFor = (id: number) => Object.keys(window.localStorage).filter((k) => new RegExp(`:${id}(:|$)`).test(k));
+        const lookupPosts = (mock: jest.Mock) => mock.mock.calls.filter(([url, init]) => String(url) === '/api/agent/conversations/' && (init as RequestInit | undefined)?.method === 'POST');
+
+        async function switchAccountWhile(request: () => Promise<void>) {
+            const mock = global.fetch as jest.Mock;
+            await request();
+            // The account switch: the purge, then the new account's own conversation.
+            mock.mockResolvedValue(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('New account reply.');
+            return mock;
+        }
+
+        function expectNewAccountUntouched(mock: jest.Mock, strayConversation: number) {
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByText('Old account other tab reply.')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+            expect(conversationPostsFor(mock, strayConversation)).toHaveLength(0);
+            expect(conversationPostsFor(mock, 55)).toHaveLength(0);
+            expect(storedFor(strayConversation)).toEqual([]);
+            expect(storedFor(55)).toEqual([]);
+        }
+
+        // The stale answer must not leave the view half switched: the new account's next send goes to its own conversation.
+        async function expectNewAccountCanSend(mock: jest.Mock) {
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(90, 'New account answer.'), preferences_changed: false}, 201));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'new account question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('New account answer.');
+            expect(postBodies(mock, '/api/agent/conversations/55/').map((b) => b.content)).toEqual(['new account question']);
+        }
+
+        test('a first-message conversation creation answered after an account switch writes nothing into the new account', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            let settleCreate: (outcome: Response | Error) => void = () => {};
+            await switchAccountWhile(async () => {
+                settleCreate = holdNextFetch(mock);
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account first question'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await waitFor(() => expect(lookupPosts(mock)).toHaveLength(1));
+            });
+            await act(async () => { settleCreate(jsonResponse(emptyConversation(44, []))); });
+            expectNewAccountUntouched(mock, 44);
+            await expectNewAccountCanSend(mock);
+            expect(screen.queryByText('old account first question')).not.toBeInTheDocument();
+        });
+
+        test('in the same account a first-message creation is still adopted and the question sent', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(44, [])));
+            mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(9, 'Answered.'), preferences_changed: false}, 201));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'first question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('Answered.');
+            expect(postBodies(mock, '/api/agent/conversations/44/')).toHaveLength(1);
+        });
+
+        async function sendClosedThenSwitchWhileLooking() {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(closed409());
+            let settleLookup: (outcome: Response | Error) => void = () => {};
+            await switchAccountWhile(async () => {
+                settleLookup = holdNextFetch(mock);
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await waitFor(() => expect(lookupPosts(mock)).toHaveLength(1));
+            });
+            return {mock, settleLookup};
+        }
+
+        test('a conversation lookup after "conversation closed" that answers after an account switch writes and replays nothing', async () => {
+            const {mock, settleLookup} = await sendClosedThenSwitchWhileLooking();
+            await act(async () => {
+                settleLookup(jsonResponse(emptyConversation(43, [userMessage('old account other tab question'), assistantMessage(31, 'Old account other tab reply.')])));
+            });
+            expectNewAccountUntouched(mock, 43);
+            await expectNewAccountCanSend(mock);
+            expect(screen.queryByText('old account other tab question')).not.toBeInTheDocument();
+            expect(screen.queryByText('old account private question')).not.toBeInTheDocument();
+            expect(mock.mock.calls.filter(([, init]) => String((init as RequestInit | undefined)?.body ?? '').includes('old account private question'))).toHaveLength(1);
+        });
+
+        test('a conversation lookup after "conversation closed" that fails after an account switch arms no error and no Retry', async () => {
+            const {mock, settleLookup} = await sendClosedThenSwitchWhileLooking();
+            await act(async () => { settleLookup(jsonResponse({error: {type: 'service_error', message: 'nope'}}, 500)); });
+            expectNewAccountUntouched(mock, 43);
+            await expectNewAccountCanSend(mock);
+            expect(screen.queryByText(/reset or deleted/)).not.toBeInTheDocument();
+        });
+
+        test('in the same account a failed lookup after "conversation closed" still shows the error with Retry', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(closed409());
+            mock.mockResolvedValueOnce(jsonResponse({}, 500));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            expect(await screen.findByText(/reset or deleted/)).toBeInTheDocument();
+            expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+        });
+
+        test('Retry posts nothing for a send made before a same-account re-login', async () => {
+            // The typed error lands after the account re-signed in and the same conversation
+            // came back: only the Retry comparison stops the old send from being replayed.
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            const settlePost = holdNextFetch(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await postedKeyAfterSend(mock);
+            mock.mockResolvedValue(jsonResponse(emptyConversation(42, [assistantMessage(1, 'Old account reply.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('Old account reply.');
+            await act(async () => { settlePost(jsonResponse({error: {type: 'service_error', message: 'Broke.'}}, 500)); });
+            fireEvent.click(screen.getByTestId('retry-button'));
+            await act(async () => { await Promise.resolve(); });
+            expect(postBodies(mock, messageUrl()).filter((b) => b.content === 'old account private question')).toHaveLength(1);
+        });
+
+        test('an uncertain failure whose check lands after a same-account re-login shows no error from the old send', async () => {
+            await renderChat([assistantMessage(1, 'Reply one.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(new Response('plain text error', {status: 502}));
+            const settleGet = holdNextFetch(mock);
+            const getsBefore = conversationGets(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = await postedKeyAfterSend(mock);
+            // The send's own POST and the check on its way both address this URL.
+            await waitFor(() => expect(conversationGets(mock)).toBe(getsBefore + 2));
+            const served = emptyConversation(42, [assistantMessage(1, 'Reply one.'), userTurn('my question', key, 'failed', 2)]);
+            mock.mockResolvedValue(jsonResponse(served));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('Reply one.');
+            await act(async () => { settleGet(jsonResponse(served)); });
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+        });
+
         test('New conversation leaves no failed send to retry', async () => {
             await renderChat([assistantMessage(1, 'Old account reply.')]);
             const mock = global.fetch as jest.Mock;
