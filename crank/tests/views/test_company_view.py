@@ -6,7 +6,7 @@ from datetime import timedelta
 from unittest import mock
 
 from django.contrib.auth.models import User
-from django.core.cache import cache
+from django.core.cache import cache, caches
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -350,6 +350,17 @@ class FitEndpointTests(CompanyViewTestBase):
         self.client.force_login(self.other)
         self.fit()
         self.assertEqual(cache.get(key), mine)
+
+    def test_a_fit_and_a_jobs_read_fill_no_other_cache_entry(self):
+        # The whole key set, so an answer stored for the reader under a new
+        # per-company key (the fit answer, the jobs list) fails here too.
+        UserPreference.objects.create(
+            user=self.user, preferences=prefs(funding_stage=["A"]), schema_version=3
+        )
+        self.fit()
+        self.client.get(self.url("organization-jobs"))
+        written = {key.split(":", 2)[-1] for key in caches["default"]._cache}
+        self.assertEqual(written, {organization_avg_scores_cache_key(self.org.pk)})
 
     def test_a_cold_read_costs_one_more_query_than_a_warm_one(self):
         UserPreference.objects.create(
