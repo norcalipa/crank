@@ -1255,7 +1255,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // turn when it now reports a futile state. The notice is already updated
     // by refreshStatus; a failed check (null) proceeds with the send.
     const submitTurn = async (content: string) => {
+        const submitEpoch = purgeEpochRef.current;
         const status = await refreshStatus();
+        // The account changed while the status was being checked: this question is not theirs to send.
+        if (purgeEpochRef.current !== submitEpoch) return;
         if (status && isGatedState(status.state)) return;
         let targetId = conversationId;
         if (targetId === null) {
