@@ -241,7 +241,9 @@ test.describe('Updated results available (stored results)', () => {
         });
         await notice.getByRole('button', {name: 'Refresh results'}).click();
         await expect(page.getByTestId('notice-folded')).toContainText('Still showing the results you had');
-        await expect(page.getByTestId('read-announcement')).toContainText('weren’t ready');
+        // Announced once: by the notice's own live region, not by the panel's announcer as well.
+        await expect(page.getByTestId('read-announcement')).not.toContainText('weren’t ready');
+        await expect(notice).toHaveAttribute('role', 'status');
         await expect(notice).toBeVisible();
         await expect(notice.getByRole('button', {name: 'Refresh results'})).not.toHaveAttribute('aria-disabled', 'true');
         await expect(chip(page)).toHaveAttribute('data-evidence-state', 'missing');
