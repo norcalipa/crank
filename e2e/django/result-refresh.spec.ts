@@ -36,10 +36,13 @@ async function setVisibility(page: Page, state: 'visible' | 'hidden'): Promise<v
 
 // Counts requests to the revision read; the status read must never be polled.
 function countRequests(page: Page) {
-    const seen = {revision: 0, status: 0};
+    const seen = {revision: 0, revisionDone: 0, status: 0};
     page.on('request', (request) => {
         if (request.url().includes('/api/job-matches/revision/')) seen.revision += 1;
         if (request.url().includes('/api/job-matches/status/')) seen.status += 1;
+    });
+    page.on('requestfinished', (request) => {
+        if (request.url().includes('/api/job-matches/revision/')) seen.revisionDone += 1;
     });
     return seen;
 }
@@ -329,6 +332,46 @@ test.describe('Updated results available (stored results)', () => {
         await expect(page.getByTestId('read-announcement')).toHaveText('Showing updated results.');
         await page.mouse.wheel(0, 40);
         await expect(page.getByTestId('results-updated-badge')).toHaveCount(0);
+    });
+
+    test('typing in the composer does not clear the mark of an idle auto-apply', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 800});
+        await open(page);
+        await expect(chip(page)).toHaveAttribute('data-evidence-state', 'missing');
+        await page.evaluate(() => window.scrollTo({top: 0, left: 0, behavior: 'instant'}));
+        const composer = page.getByTestId('assistant-composer');
+        await composer.focus();
+        await composer.pressSequentially('which of these');
+        await setVisibility(page, 'hidden');
+        await page.clock.runFor(5 * 60_000);
+        fixture('settle');
+        await setVisibility(page, 'visible');
+        await expect(chip(page)).toHaveAttribute('data-evidence-state', 'sourced');
+        await expect(page.getByTestId('results-updated-badge')).toBeVisible();
+        // The reader goes on typing: that is not about the list.
+        await composer.pressSequentially(' is best');
+        await expect(composer).toHaveValue('which of these is best');
+        await expect(page.getByTestId('results-updated-badge')).toBeVisible();
+        await page.mouse.wheel(0, 40);
+        await expect(page.getByTestId('results-updated-badge')).toHaveCount(0);
+    });
+
+    test('a reader who keeps switching tabs does not take the request rate past the interval (AC 9)', async ({page}) => {
+        const seen = countRequests(page);
+        await open(page);
+        const start = seen.revision;
+        // Away 1 s, back 10 s, for 10 simulated minutes.
+        for (let elapsed = 0; elapsed < 10 * 60_000; elapsed += 11_000) {
+            await setVisibility(page, 'hidden');
+            await page.clock.runFor(1_000);
+            await setVisibility(page, 'visible');
+            await page.clock.runFor(10_000);
+            // Let the answer land (the clock is simulated, the network is not):
+            // a request still out would hide the rate the poller allows.
+            await expect.poll(() => seen.revisionDone).toBe(seen.revision);
+        }
+        // One timer check and at most one early check per 60 s interval.
+        expect(seen.revision - start).toBeLessThanOrEqual(20);
     });
 
     // The mark wraps the timestamp line on phones: it must be painted, and its
