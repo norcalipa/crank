@@ -91,24 +91,90 @@ describe('createPoller', () => {
         poller.stop();
     });
 
-    it('does not ask on return when the interval has not passed, then asks when it has', async () => {
+    it('a flip back within seconds waits for the timer, and that check is not the return check', async () => {
         const request = jest.fn().mockResolvedValue(answer(60));
         const {poller, results} = make(request);
         poller.start();
         await tick(60_000);
         expect(request).toHaveBeenCalledTimes(1);
-        await tick(10_000);
+        await tick(2_000);
         setVisibility('hidden');
-        await tick(5_000);
+        await tick(3_000);
         setVisibility('visible');
         await tick(0);
         expect(request).toHaveBeenCalledTimes(1);
-        await tick(45_000);
+        await tick(55_000);
         expect(request).toHaveBeenCalledTimes(2);
-        // The first answer after the return carries the flag; the next does not.
-        expect(results.map((r) => r.afterReturn)).toEqual([false, true]);
+        // The delayed check is not "the first check after the return" (issue
+        // #485 review): it never carries the flag.
+        expect(results.map((r) => r.afterReturn)).toEqual([false, false]);
+        poller.stop();
+    });
+
+    it('asks at once on a return after 10 s or more, even before the interval has passed', async () => {
+        const request = jest.fn().mockResolvedValue(answer(60));
+        const {poller, results} = make(request);
+        poller.start();
+        await tick(60_000);
+        await tick(10_000);
+        setVisibility('hidden');
+        await tick(15_000);
+        setVisibility('visible');
+        await tick(0);
+        expect(request).toHaveBeenCalledTimes(2);
+        // Only that one check carries the flag; the next does not.
         await tick(60_000);
         expect(results.map((r) => r.afterReturn)).toEqual([false, true, false]);
+        poller.stop();
+    });
+
+    it('a failed check at the return consumes the flag: the retry is not an after-return check', async () => {
+        const request = jest.fn()
+            .mockResolvedValueOnce(answer(60))
+            .mockRejectedValueOnce(new Error('down'))
+            .mockResolvedValue(answer(60, 2));
+        const {poller, results} = make(request);
+        poller.start();
+        await tick(60_000);
+        setVisibility('hidden');
+        await tick(5 * 60_000);
+        setVisibility('visible');
+        await tick(0);
+        expect(request).toHaveBeenCalledTimes(2);
+        await tick(120_000);
+        expect(request).toHaveBeenCalledTimes(3);
+        expect(results.map((r) => r.afterReturn)).toEqual([false, false]);
+        poller.stop();
+    });
+
+    it('a return while a request is out starts no second one and flags nothing', async () => {
+        let resolve!: (value: PollOutcome<number>) => void;
+        const request = jest.fn().mockImplementation(() => new Promise((r) => { resolve = r; }));
+        const {poller, results} = make(request);
+        poller.start();
+        await tick(60_000);
+        setVisibility('hidden');
+        await tick(20_000);
+        setVisibility('visible');
+        resolve(answer(60, 6));
+        await tick(0);
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(results).toEqual([{value: 6, afterReturn: false}]);
+        poller.stop();
+    });
+
+    it('start() on a running poller with a request out sends nothing and keeps the back-off', async () => {
+        let resolve!: (value: PollOutcome<number>) => void;
+        const request = jest.fn().mockImplementation(() => new Promise((r) => { resolve = r; }));
+        const {poller, results} = make(request);
+        poller.start();
+        await tick(60_000);
+        poller.start();
+        await tick(5 * 60_000);
+        expect(request).toHaveBeenCalledTimes(1);
+        resolve(answer(60, 7));
+        await tick(0);
+        expect(results).toHaveLength(1);
         poller.stop();
     });
 

@@ -377,6 +377,33 @@ test.describe('Updated results available (stored results)', () => {
         await expect(chip(page)).toHaveAttribute('data-evidence-state', 'missing');
     });
 
+    test('a quick return does not make the next scheduled check an idle apply, even with the reader typing', async ({page}) => {
+        const seen = countRequests(page);
+        await open(page);
+        await page.clock.runFor(INTERVAL_MS + 1000);
+        expect(seen.revision).toBe(1);
+        await page.evaluate(() => {
+            window.scrollTo({top: 0, left: 0, behavior: 'instant'});
+            (document.activeElement as HTMLElement | null)?.blur();
+        });
+        // Away for 5 s: the return waits for the scheduled check.
+        await page.clock.runFor(2000);
+        await setVisibility(page, 'hidden');
+        await page.clock.runFor(5000);
+        await setVisibility(page, 'visible');
+        await page.clock.runFor(100);
+        expect(seen.revision).toBe(1);
+        const composer = page.getByTestId('assistant-composer');
+        await composer.fill('half a sentence');
+        fixture('settle');
+        await page.clock.runFor(INTERVAL_MS);
+        await expect(page.getByTestId('updated-results-notice')).toBeVisible();
+        await expect(chip(page)).toHaveAttribute('data-evidence-state', 'missing');
+        await expect(page.getByTestId('results-updated-badge')).toHaveCount(0);
+        await expect(composer).toBeFocused();
+        await expect(composer).toHaveValue('half a sentence');
+    });
+
     test('a draft in the composer survives the notice and Refresh results', async ({page}) => {
         await open(page);
         const composer = page.getByTestId('assistant-composer');

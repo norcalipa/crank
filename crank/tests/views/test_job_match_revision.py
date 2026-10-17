@@ -4,6 +4,7 @@
 from unittest import mock
 
 from django.contrib.auth.models import User
+from django.contrib.sessions.models import Session
 from django.db import connection
 from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -220,10 +221,22 @@ class JobMatchRevisionTests(TestCase):
 
     def test_the_session_is_not_modified(self):
         self.client.force_login(self.user)
+        key = self.client.session.session_key
+        before = Session.objects.values_list("expire_date", "session_data").get(
+            session_key=key
+        )
         response = self.client.get(URL)
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(self.client.session.modified)
+        # `client.session` builds a fresh store on every access, so its
+        # `modified` flag proves nothing: compare the stored row.
+        self.assertEqual(
+            Session.objects.values_list("expire_date", "session_data").get(
+                session_key=key
+            ),
+            before,
+        )
         self.assertNotIn("sessionid", response.cookies)
+        self.assertNotIn("Set-Cookie", response)
 
     def test_the_read_writes_nothing(self):
         before = (

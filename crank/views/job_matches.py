@@ -10,6 +10,8 @@ from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db import transaction
+from django.db.models import Count, OuterRef, Subquery
+from django.db.models.functions import Coalesce
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -337,27 +339,44 @@ def _probe_cap() -> int:
         return 3
 
 
-def _status_count(user):
-    """``(count, result_generation)`` for the status endpoint: one ``COUNT``.
+def _poll_after_seconds():
+    """Seconds between revision checks; ``None`` is the kill switch (0)."""
+    return max(0, int(getattr(settings, "RESULT_REVISION_POLL_SECONDS", 60))) or None
 
-    Uses the committed generation when reads are enabled and one exists
-    (one statement, pinned by a subquery on the state row), else the live
-    filter and a ``None`` generation. A missing preference always counts
-    zero (owner decision). The generation comes from the same state-row read
-    that decides which branch to take, so it adds no query (issue #485).
+
+def _status_count(user):
+    """``(count, result_generation)`` for the status endpoint.
+
+    Uses the committed generation when reads are enabled and one exists, else
+    the live filter and a ``None`` generation. A missing preference always
+    counts zero (owner decision). The generation and the count of its rows
+    are one statement on the state row (issue #485 review): a publish that
+    commits in between cannot give generation N with the count of N + 1.
     """
     if not _preference_exists(user):
         return 0, None
     if match_results.read_enabled():
-        generation = (
-            MatchResultState.objects.filter(
-                user=user, current_generation__isnull=False
+        rows = (
+            JobMatch.objects.filter(
+                user=OuterRef("user"),
+                dismissed=False,
+                listing__status=JobListing.Status.ACTIVE,
+                result_generation=OuterRef("current_generation"),
             )
-            .values_list("current_generation", flat=True)
+            .order_by()
+            .values("user")
+            .annotate(total=Count("pk"))
+            .values("total")
+        )
+        found = (
+            MatchResultState.objects.filter(user=user, current_generation__isnull=False)
+            .annotate(total=Coalesce(Subquery(rows), 0))
+            .values_list("current_generation", "total")
             .first()
         )
-        if generation is not None:
-            return match_results.current_match_count(user), generation
+        if found is not None:
+            generation, count = found
+            return count, generation
     count = JobMatch.objects.filter(
         user=user, dismissed=False, listing__status=JobListing.Status.ACTIVE
     ).count()
@@ -386,6 +405,11 @@ def job_match_status(request):
     # issue #485: lets the client check that the three reads of one load
     # describe the same committed generation (null for live results).
     payload["result_generation"] = result_generation
+    # The same answer the revision endpoint gives, so the kill switch is known
+    # at load and a page with polling off never asks (issue #485 review).
+    payload["poll_after_seconds"] = (
+        _poll_after_seconds() if result_generation is not None else None
+    )
     monitoring.record_event(
         "availability_state", {"surface": "job_matches", "state": state.state}
     )
@@ -418,7 +442,6 @@ def job_match_revision(request):
     queries: the read and recompute switches, the state and preference rows
     (one join) and the data watermark.
     """
-    seconds = max(0, int(getattr(settings, "RESULT_REVISION_POLL_SECONDS", 60)))
     payload = {
         "result_generation": None,
         "pending": False,
@@ -448,7 +471,7 @@ def job_match_revision(request):
             stale=revision["stale"],
             preference_revision=revision["preference_revision"],
             generated_at=revision["generated_at"],
-            poll_after_seconds=seconds or None,
+            poll_after_seconds=_poll_after_seconds(),
         )
     response = JsonResponse(payload)
     response["Cache-Control"] = "private, no-store"

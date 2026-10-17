@@ -3,7 +3,7 @@
 //
 // Bounded background poller (issue #485). One timer, armed only while the
 // document is visible; a hidden tab sends nothing and a tab that returns asks
-// once if the interval has passed. One request at a time, with its OWN latest
+// promptly (see RETURN_MIN_GAP_MS). One request at a time, with its OWN latest
 // guard: sharing a load's guard would abort the load (`begin()` aborts the
 // previous request). A failure backs off; a "stop" answer ends polling until
 // `start()` is called again (a purge, then the next hydration).
@@ -12,6 +12,13 @@ import {createLatestGuard} from './requests';
 
 export const MIN_POLL_SECONDS = 30;
 export const MAX_POLL_SECONDS = 600;
+/** A tab that returns after this long since the last check asks at once,
+ * whether or not the interval has passed; a quicker flip waits for the timer. */
+export const RETURN_MIN_GAP_MS = 10_000;
+
+// Monotonic: a wall-clock step (manual change, a resumed virtual machine) must
+// not stretch or shrink the wait.
+const now = (): number => performance.now();
 
 /** Thrown by `request` when polling must stop until `start()` (a redirect to
  * sign-in, a 401): never data, never a retry. */
@@ -24,7 +31,9 @@ export interface PollOutcome<T> {
 }
 
 export interface PollInfo {
-    /** True for the first answer after the tab became visible again. */
+    /** True only for the check sent at the moment the tab became visible
+     * again. A check that was delayed, retried or sent later is never it, so
+     * the flag cannot outlive that one check. */
     afterReturn: boolean;
 }
 
@@ -57,7 +66,6 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
     let delayMs = intervalMs;
     let failures = 0;
     let lastCheckAt = 0;
-    let returned = false;
 
     const clearTimer = () => {
         if (timer !== null) {
@@ -71,7 +79,7 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
         if (running && isVisible()) {
             timer = setTimeout(() => {
                 timer = null;
-                void check();
+                void check(false);
             }, waitMs);
         }
     };
@@ -83,12 +91,11 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
         document.removeEventListener('visibilitychange', onVisibility);
     };
 
-    async function check(): Promise<void> {
+    async function check(afterReturn: boolean): Promise<void> {
         // Only a timer or a return to visible calls this, and neither is armed
         // while a request is out, hidden or stopped: single flight holds.
         inFlight = true;
-        lastCheckAt = Date.now();
-        const afterReturn = returned;
+        lastCheckAt = now();
         const request = guard.begin();
         let outcome: PollOutcome<T>;
         try {
@@ -108,7 +115,6 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
         if (!request.isLatest()) return;
         inFlight = false;
         failures = 0;
-        returned = false;
         if (outcome.pollAfterSeconds === null) {
             halt();
         } else {
@@ -126,11 +132,10 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
             clearTimer();
             return;
         }
-        returned = true;
         if (inFlight) return;
-        const waited = Date.now() - lastCheckAt;
-        if (waited >= delayMs) {
-            void check();
+        const waited = now() - lastCheckAt;
+        if (waited >= Math.min(delayMs, RETURN_MIN_GAP_MS)) {
+            void check(true);
         } else {
             arm(delayMs - waited);
         }
@@ -142,10 +147,9 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
             running = true;
             inFlight = false;
             failures = 0;
-            returned = false;
             intervalMs = clampPollSeconds(options.intervalSeconds) * 1000;
             delayMs = intervalMs;
-            lastCheckAt = Date.now();
+            lastCheckAt = now();
             document.addEventListener('visibilitychange', onVisibility);
             arm(delayMs);
         },

@@ -46,6 +46,8 @@ interface Server {
     revision: () => Response | Promise<Response>;
     loads: number;
     extras?: RowExtras;
+    // What the status read names as the interval (absent: an older server).
+    pollSeconds?: number | null;
 }
 
 const json = (payload: unknown, status = 200) => new Response(JSON.stringify(payload), {
@@ -81,6 +83,7 @@ function install(server: Server) {
             return Promise.resolve(json({
                 state: 'ok', title: 'OK', message: 'OK', actions: [],
                 result_generation: stamped === undefined ? generation : stamped,
+                ...(server.pollSeconds === undefined ? {} : {poll_after_seconds: server.pollSeconds}),
             }));
         }
         const rows = generation === null ? [] : (server.jobs[generation] ?? []);
@@ -406,7 +409,13 @@ describe('Refresh results', () => {
         expect(notice()).toBeInTheDocument();
         expect(getWorkspaceSnapshot().context?.resultGeneration).toBe(1);
         expect(document.activeElement).not.toBe(document.getElementById('job-match-panel-title'));
-        expect(screen.getByTestId('read-announcement')).toHaveTextContent('weren’t ready');
+        // Announced once: by the notice's own live region, not also by the
+        // panel's announcer (issue #485 review).
+        expect(notice()).toHaveTextContent('weren’t ready');
+        expect(screen.getByTestId('read-announcement')).not.toHaveTextContent('weren’t ready');
+        expect(screen.getAllByText(/weren’t ready/)).toHaveLength(1);
+        await press();
+        expect(screen.getAllByText(/weren’t ready/)).toHaveLength(1);
     });
 
     test('a disagreement that clears on the retry is applied', async () => {
@@ -732,6 +741,18 @@ describe('holding the reader\u2019s row and one message (visual review, round 1)
         expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
     });
 
+    test('a notice with a folded reason carries the class that keeps its icon on the sentence\u2019s line', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        server.generation = 2;
+        await advance(POLL);
+        const banner = await screen.findByTestId('updated-results-notice');
+        expect(banner.querySelector('.job-match-stale-banner--folded')).toBeNull();
+        server.statusGeneration = () => 3;
+        await press();
+        expect(banner.querySelector('.job-match-stale-banner--folded .job-match-stale-icon')).not.toBeNull();
+    });
+
     test('a stale count-only view folds the same way', async () => {
         const server = makeServer(1);
         server.extras = {revision: {stale: true}};
@@ -929,5 +950,332 @@ describe('privacy (issue #485, AC 14)', () => {
         await advance(10 * 60_000);
         expect(calls('/revision/')).toBe(asked);
         expect(jest.getTimerCount()).toBe(0);
+    });
+});
+
+describe('review round 1 (adversarial): empty generations, the idle rule at its moment, restarts', () => {
+    const purge = () => act(() => {
+        document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+    });
+    const hydrate = (detail: Record<string, unknown>) => act(() => {
+        document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail}));
+    });
+    // Holds every read except the revision one until released.
+    function holdReads() {
+        const original = global.fetch as jest.Mock;
+        const held: Array<() => void> = [];
+        global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => (String(url).includes('/revision/')
+            ? original(url, init)
+            : new Promise((resolve) => { held.push(() => resolve(original(url, init))); })));
+        return async () => {
+            global.fetch = original;
+            await act(async () => {
+                held.splice(0).forEach((go) => go());
+                await jest.advanceTimersByTimeAsync(0);
+            });
+            await advance(0);
+        };
+    }
+    async function returnWithNewerGeneration(server: Server) {
+        setVisibility('hidden');
+        await advance(5 * 60_000);
+        server.generation = 2;
+    }
+
+    test('Refresh results onto a generation with no matches clears the notice', async () => {
+        const server = makeServer(1);
+        server.jobs[2] = [];
+        await mount(server);
+        server.generation = 2;
+        await advance(POLL);
+        await screen.findByTestId('updated-results-notice');
+        await press();
+        expect(screen.queryByTestId('ranked-job-1')).not.toBeInTheDocument();
+        expect(notice()).not.toBeInTheDocument();
+        expect(getWorkspaceSnapshot().context?.resultGeneration).toBe(2);
+        expect(screen.getByTestId('read-announcement')).toHaveTextContent('Showing updated results.');
+        // And the empty generation is the one on screen: no notice for it later.
+        await advance(POLL);
+        expect(notice()).not.toBeInTheDocument();
+    });
+
+    test('an older empty answer cannot replace newer results', async () => {
+        const server = makeServer(2);
+        await mount(server);
+        server.jobs[1] = [];
+        server.generation = 1;
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+        });
+        await advance(0);
+        expect(screen.getByTestId('ranked-job-3')).toBeInTheDocument();
+    });
+
+    test('a panel whose generation has no matches still polls', async () => {
+        const server = makeServer(1);
+        server.jobs[1] = [];
+        install(server);
+        render(<JobMatchPanel/>);
+        await advance(0);
+        await advance(POLL);
+        expect(calls('/revision/')).toBe(1);
+        server.generation = 2;
+        await advance(POLL);
+        expect(await screen.findByTestId('updated-results-notice')).toBeInTheDocument();
+    });
+
+    test('a failed first check after the return does not let a later check auto-apply', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        await returnWithNewerGeneration(server);
+        server.generation = 1;
+        const ok = server.revision;
+        server.revision = () => json({}, 503);
+        setVisibility('visible');
+        await advance(0);
+        server.revision = ok;
+        server.generation = 2;
+        await advance(120_000);
+        expect(screen.queryByTestId('ranked-job-3')).not.toBeInTheDocument();
+        expect(notice()).toBeInTheDocument();
+    });
+
+    test('a check that is only the scheduled one after a quick return never auto-applies, whatever the reader is doing', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        await advance(POLL);
+        // Away for 5 s, back; the reader goes on typing in the composer.
+        await advance(2_000);
+        setVisibility('hidden');
+        await advance(5_000);
+        setVisibility('visible');
+        const composer = document.createElement('textarea');
+        document.body.appendChild(composer);
+        composer.focus();
+        fireEvent.change(composer, {target: {value: 'half a sentence'}});
+        server.generation = 2;
+        await advance(POLL);
+        expect(await screen.findByTestId('updated-results-notice')).toBeInTheDocument();
+        expect(screen.queryByTestId('ranked-job-3')).not.toBeInTheDocument();
+        expect(document.activeElement).toBe(composer);
+        expect(composer).toHaveValue('half a sentence');
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+        composer.remove();
+    });
+
+    test('the idle apply keeps the notice when the reader scrolled before the read landed', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        await returnWithNewerGeneration(server);
+        const release = holdReads();
+        setVisibility('visible');
+        await advance(0);
+        (window as unknown as {scrollY: number}).scrollY = 400;
+        await release();
+        expect(screen.queryByTestId('ranked-job-3')).not.toBeInTheDocument();
+        expect(notice()).toBeInTheDocument();
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+        // Nothing is stuck: the notice still applies the newer results.
+        (window as unknown as {scrollY: number}).scrollY = 0;
+        await press();
+        expect(await screen.findByTestId('ranked-job-3')).toBeInTheDocument();
+    });
+
+    test('the idle apply keeps the notice when focus entered the panel before the read landed', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        await returnWithNewerGeneration(server);
+        const release = holdReads();
+        setVisibility('visible');
+        await advance(0);
+        screen.getByTestId('job-match-refresh').focus();
+        await release();
+        expect(screen.queryByTestId('ranked-job-3')).not.toBeInTheDocument();
+        expect(notice()).toBeInTheDocument();
+        expect(document.activeElement).toBe(screen.getByTestId('job-match-refresh'));
+    });
+
+    test('an idle apply that backs out holds the row where the notice arrives', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        await returnWithNewerGeneration(server);
+        const release = holdReads();
+        setVisibility('visible');
+        await advance(0);
+        jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const id = (this as HTMLElement).dataset?.testid ?? '';
+            const up = !!document.querySelector('[data-testid="updated-results-notice"]');
+            const top = id === 'ranked-job-1' ? 120 + (up ? 78 : 0) : id === 'ranked-job-2' ? 400 : 0;
+            return {top, bottom: top + 100, left: 0, right: 10, width: 10, height: 100, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+        const scrollBy = jest.fn();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        (window as unknown as {scrollY: number}).scrollY = 30;
+        await release();
+        expect(notice()).toBeInTheDocument();
+        expect(scrollBy).toHaveBeenCalledWith({top: 78, left: 0, behavior: 'instant'});
+    });
+
+    test('the same generation found on the first check after a return reads nothing', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        const reads = calls('/status/');
+        setVisibility('hidden');
+        await advance(5 * 60_000);
+        setVisibility('visible');
+        await advance(0);
+        expect(calls('/revision/')).toBe(1);
+        expect(calls('/status/')).toBe(reads);
+    });
+
+    test('the notice never shows while an idle auto-apply is reading', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        await returnWithNewerGeneration(server);
+        const release = holdReads();
+        setVisibility('visible');
+        await advance(0);
+        expect(notice()).not.toBeInTheDocument();
+        await release();
+        await screen.findByTestId('ranked-job-3');
+        expect(notice()).not.toBeInTheDocument();
+    });
+
+    test('nothing of the notice or the Updated mark reaches the next account', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        await returnWithNewerGeneration(server);
+        setVisibility('visible');
+        await advance(0);
+        await screen.findByTestId('results-updated-badge');
+        server.jobs[4] = [[4, 'Later'], [1, 'Alpha']];
+        server.generation = 4;
+        await advance(POLL);
+        await screen.findByTestId('updated-results-notice');
+        purge();
+        server.generation = 1;
+        server.jobs[1] = [[8, 'Bee one'], [9, 'Bee two']];
+        hydrate({authenticated: true, username: 'bob'});
+        await screen.findByTestId('ranked-job-8');
+        expect(notice()).not.toBeInTheDocument();
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+        server.jobs[3] = [[10, 'Bee three']];
+        server.generation = 3;
+        await advance(POLL);
+        await screen.findByTestId('updated-results-notice');
+        expect(screen.queryByTestId('notice-folded')).not.toBeInTheDocument();
+    });
+
+    test('a redirect to the sign-in page (an HTML answer) stops polling', async () => {
+        const server = makeServer(1);
+        server.revision = () => ({
+            redirected: true, ok: true, status: 200, url: '/accounts/login/?next=x',
+            json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+        } as unknown as Response);
+        await mount(server);
+        await advance(POLL);
+        await advance(30 * 60_000);
+        expect(calls('/revision/')).toBe(1);
+    });
+
+    test('an observed hydration while a revision request is out sends no second one', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        server.revision = () => new Promise<Response>(() => undefined);
+        await advance(POLL);
+        hydrate({authenticated: true, username: 'alice'});
+        await advance(5 * POLL);
+        expect(calls('/revision/')).toBe(1);
+    });
+
+    test('the kept sentence is announced once, by the notice', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        server.generation = 2;
+        await advance(POLL);
+        await screen.findByTestId('updated-results-notice');
+        server.statusGeneration = () => 3;
+        await press();
+        expect(screen.getAllByText(/weren’t ready/)).toHaveLength(1);
+        expect(screen.getByTestId('read-announcement')).toHaveTextContent('');
+    });
+
+    test('polling that ended on a null answer starts again with the next load that succeeds', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        server.revision = () => revisionAnswer(1, null);
+        await advance(POLL);
+        await advance(10 * 60_000);
+        expect(calls('/revision/')).toBe(1);
+        server.revision = () => revisionAnswer(server.generation);
+        server.generation = 2;
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+        });
+        await advance(0);
+        await screen.findByTestId('ranked-job-3');
+        server.generation = 3;
+        await advance(POLL);
+        expect(calls('/revision/')).toBe(2);
+        expect(await screen.findByTestId('updated-results-notice')).toBeInTheDocument();
+    });
+
+    test('an observed hydration of a signed-out account does not restart a stopped poller', async () => {
+        const server = makeServer(1);
+        server.revision = () => revisionAnswer(1, null);
+        await mount(server);
+        await advance(POLL);
+        expect(calls('/revision/')).toBe(1);
+        server.revision = () => revisionAnswer(1);
+        hydrate({authenticated: false, username: null});
+        await advance(10 * 60_000);
+        expect(calls('/revision/')).toBe(1);
+    });
+
+    test('a status read that names no interval (the off switch) never starts a poll', async () => {
+        const server = makeServer(1);
+        server.pollSeconds = null;
+        await mount(server);
+        await advance(30 * 60_000);
+        expect(calls('/revision/')).toBe(0);
+        expect(jest.getTimerCount()).toBe(0);
+    });
+
+    test('the interval the status read names is the first one used, clamped by the poller', async () => {
+        const server = makeServer(1);
+        server.pollSeconds = 120;
+        await mount(server);
+        await advance(POLL);
+        expect(calls('/revision/')).toBe(0);
+        await advance(POLL);
+        expect(calls('/revision/')).toBe(1);
+    });
+
+    test('the hold through a re-check outcome that needs no re-read', async () => {
+        const server = makeServer(1);
+        server.extras = {requirements: [{
+            path: 'work_location.modes', status: 'match', source_kind: 'evidence', source_id: 9,
+            evidence_status: {state: 'superseded'},
+        }]};
+        await mount(server);
+        const original = global.fetch as jest.Mock;
+        global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => (String(url).includes('/api/job-matches/refresh/')
+            ? Promise.resolve(json({status: 'disabled'}))
+            : original(url, init)));
+        jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+            const id = (this as HTMLElement).dataset?.testid ?? '';
+            const kind = (document.querySelector('[data-testid="evidence-changed-notice"]') as HTMLElement | null)?.dataset.recheck;
+            const top = id === 'ranked-job-1' ? 120 + (kind === 'running' ? 21 : kind === 'paused' ? 40 : 0) : id === 'ranked-job-2' ? 400 : 0;
+            return {top, bottom: top + 100, left: 0, right: 10, width: 10, height: 100, x: 0, y: top, toJSON: () => ({})} as DOMRect;
+        });
+        const scrollBy = jest.fn();
+        window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('evidence-changed-refresh'));
+        });
+        await advance(0);
+        expect(screen.getByTestId('evidence-changed-notice')).toHaveAttribute('data-recheck', 'paused');
+        expect(scrollBy).toHaveBeenCalledWith({top: 21, left: 0, behavior: 'instant'});
+        expect(scrollBy).toHaveBeenCalledWith({top: 19, left: 0, behavior: 'instant'});
     });
 });

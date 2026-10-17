@@ -28,6 +28,9 @@ interface EmptyStatePayload {
     // Committed generation the status read was counted against (issue #485);
     // null for live results, absent from older servers.
     result_generation?: number | null;
+    // Seconds between revision checks; null is the server's off switch
+    // (absent from older servers: the client's default applies).
+    poll_after_seconds?: number | null;
     state: string;
     title: string;
     message: string;
@@ -142,14 +145,19 @@ function jobGenerations(payload: RankedMatchesPayload | null): number[] {
 }
 
 // Generation of the list actually shown: the ranked job entries' own when
-// present, else (no job entries at all) the `/api/job-matches/` page's.
-// Null when the payload carries none (org-only, live results).
-function displayedGeneration(payload: RankedMatchesPayload | null, matchGeneration: number | null): number | null {
+// present, else (no job entries at all) the `/api/job-matches/` page's, else
+// the status read's: a committed generation with no matches carries it nowhere
+// else (issue #485 review). Null when the payload carries none (org-only, live).
+function displayedGeneration(
+    payload: RankedMatchesPayload | null,
+    matchGeneration: number | null,
+    statusGeneration: number | null,
+): number | null {
     const values = jobGenerations(payload);
     if (values.length > 0) {
         return Math.max(...values);
     }
-    return (payload?.job_matches?.length ?? 0) === 0 ? matchGeneration : null;
+    return (payload?.job_matches?.length ?? 0) === 0 ? (matchGeneration ?? statusGeneration) : null;
 }
 
 // A refresh may replace the displayed list unless it is provably older: a
@@ -161,6 +169,7 @@ function acceptsGeneration(
     shown: number | null,
     payload: RankedMatchesPayload | null,
     matchGeneration: number | null,
+    statusGeneration: number | null = null,
 ): boolean {
     if (shown === null) {
         return true;
@@ -175,7 +184,8 @@ function acceptsGeneration(
     if (values.length === 1) {
         return values[0] >= shown && (matchGeneration === null || matchGeneration === values[0]);
     }
-    return matchGeneration === null || matchGeneration >= shown;
+    const carried = matchGeneration ?? statusGeneration;
+    return carried === null || carried >= shown;
 }
 
 // The three reads of one load describe one generation: every generation they
@@ -226,6 +236,14 @@ async function requestRevision(signal: AbortSignal) {
         pollAfterSeconds: typeof seconds === 'number' && seconds > 0 ? seconds : null,
     };
 }
+
+// The idle test, read at the moment it matters: nothing inside the panel has
+// focus and the page is at the top (`afterReturn` is the poller's flag).
+const panelIsIdle = (afterReturn: boolean): boolean => shouldAutoApplyRefresh({
+    foundOnFirstCheckAfterReturn: afterReturn,
+    scrollY: window.scrollY,
+    focusInsidePanel: !!document.activeElement?.closest('[data-testid="job-match-panel"]'),
+});
 
 // Result cards in the viewport, with where they sit: after newer results are
 // applied the first one that is still listed is put back at its offset.
@@ -875,7 +893,7 @@ function NoticeBox({tone, testid, icon, children, button, folded}: {
 }) {
     return (
         <div className={`alert alert-${tone} py-2 small mb-3`} role="status" aria-live="polite" data-testid={testid}>
-            <div className={`job-match-stale-banner${button ? '' : ' job-match-stale-banner--plain'}`}>
+            <div className={`job-match-stale-banner${button ? '' : ' job-match-stale-banner--plain'}${folded ? ' job-match-stale-banner--folded' : ''}`}>
                 <Icon name={icon} className="job-match-stale-icon" />
                 <span className="job-match-stale-message">
                     {children}
@@ -1094,6 +1112,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [shownGeneration, setShownGeneration] = React.useState<number | null>(null);
     const [seenGeneration, setSeenGeneration] = React.useState<number | null>(null);
     const [autoApplying, setAutoApplying] = React.useState(false);
+    // The interval the status read names: undefined before any read (and from
+    // older servers) means the default, null is the off switch.
+    const [pollSeconds, setPollSeconds] = React.useState<number | null | undefined>(undefined);
     // Why the newer results are still not on screen after a press (a failed
     // or mismatched read), shown inside the notice; and the "Updated" badge
     // that marks an idle auto-apply until the reader scrolls or presses.
@@ -1166,6 +1187,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         shownGenerationRef.current = null;
         setShownGeneration(null);
         setSeenGeneration(null);
+        setPollSeconds(undefined);
         setAutoApplying(false);
         setKeptNote(null);
         setUpdatedBadge('off');
@@ -1250,7 +1272,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 }
             }
             const revision = matchData?.results?.[0]?.revision ?? null;
-            if (!acceptsGeneration(shownGenerationRef.current, rankedData, revision?.result_generation ?? null)
+            if (!acceptsGeneration(shownGenerationRef.current, rankedData, revision?.result_generation ?? null,
+                                   statusData.result_generation ?? null)
                 || (shownGenerationRef.current !== null && !agree())) {
                 // Older, unverifiable or endpoint-mismatched result set:
                 // keep what is shown (and the notice, when it is up).
@@ -1264,13 +1287,28 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     }
                     setKeptNote(KEPT_SENTENCE);
                 }
-                setReadNote(mode === 'read' ? 'Finished checking your job matches.' : KEPT_SENTENCE);
+                // The notice announces its own added sentence: say it once.
+                setReadNote(mode === 'read' ? 'Finished checking your job matches.' : '');
                 setSettled((n) => n + 1);
                 setPhase('ready');
                 return;
             }
-            const generation = displayedGeneration(rankedData, revision?.result_generation ?? null);
+            if (mode === 'auto' && !panelIsIdle(true)) {
+                // The reader scrolled or focused something in the panel while
+                // the reads were out: show the notice instead and change
+                // nothing (issue #485, the idle rule at the moment it lands).
+                anchorRef.current = captureAnchor();
+                setAutoApplying(false);
+                setRefreshRunning(false);
+                setReadNote('');
+                setSettled((n) => n + 1);
+                setPhase('ready');
+                return;
+            }
+            const generation = displayedGeneration(
+                rankedData, revision?.result_generation ?? null, statusData.result_generation ?? null);
             setEmptyState(statusData);
+            setPollSeconds(statusData.poll_after_seconds);
             if (matchData) {
                 setMatchCount(matchData.count || 0);
                 setStoredRevision(revision);
@@ -1313,6 +1351,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setReadNote(changed ? 'Showing updated results.' : quiet ? 'Finished checking your job matches.' : '');
             setSettled((n) => n + 1);
             setPhase('ready');
+            // A poller that ended (a null answer, a sign-in redirect) starts
+            // again with the next load that succeeds; a running one is untouched.
+            pollerRef.current?.start();
         } catch (e) {
             if (!request.isLatest()) {
                 return;
@@ -1412,23 +1453,22 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         }
         setSeenGeneration((seen) => Math.max(seen ?? 0, generation));
         if (refreshRunningRef.current || recheckRunningRef.current) return;
-        if (shouldAutoApplyRefresh({
-            foundOnFirstCheckAfterReturn: info.afterReturn,
-            scrollY: window.scrollY,
-            focusInsidePanel: !!document.activeElement?.closest('[data-testid="job-match-panel"]'),
-        })) {
+        if (panelIsIdle(info.afterReturn)) {
             void loadStatus(true, 'auto');
         }
     };
+    const pollSecondsRef = React.useRef(pollSeconds);
+    pollSecondsRef.current = pollSeconds;
     const onPolledRef = React.useRef(onPolled);
     onPolledRef.current = onPolled;
-    const pollingActive = authed && !pollBlocked && phase === 'ready' && shownGeneration !== null;
+    const pollingActive = authed && !pollBlocked && phase === 'ready' && shownGeneration !== null
+        && pollSeconds !== null;
     React.useEffect(() => {
         if (!pollingActive) return undefined;
         const poller = createPoller<RevisionAnswer>({
             request: requestRevision,
             onResult: (value, info) => onPolledRef.current(value, info),
-            intervalSeconds: DEFAULT_POLL_SECONDS,
+            intervalSeconds: pollSecondsRef.current ?? DEFAULT_POLL_SECONDS,
         });
         pollerRef.current = poller;
         poller.start();
@@ -1452,7 +1492,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         if (!anchor) return;
         anchorRef.current = null;
         restoreAnchor(anchor);
-    }, [rankedMatches, shownGeneration, seenGeneration, recheck, keptNote]);
+    }, [rankedMatches, shownGeneration, seenGeneration, recheck, keptNote, autoApplying]);
     const recheckRunningRef = React.useRef(false);
     // Bumped by a private-state purge: an answer that arrives for an earlier
     // account is dropped without a re-read, a message or a focus move.
@@ -1571,7 +1611,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 // hydration says nothing about the account, so it neither
                 // starts nor stops polling (#527).
                 setPollBlocked(false);
-                pollerRef.current?.start();
+                if (detail.authenticated) pollerRef.current?.start();
             }
             if (!awaitingHydrationRef.current) return;
             awaitingHydrationRef.current = false;

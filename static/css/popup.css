@@ -1527,6 +1527,13 @@ body.app-nav-drawer-open {
     margin-top: 0.125rem;
 }
 
+/* A notice with a reason folded into its message column keeps its icon on
+   the sentence's line, like a box with no button. */
+#job-match-panel .job-match-stale-banner--folded .job-match-stale-icon {
+    align-self: start;
+    margin-top: 0.125rem;
+}
+
 /* "Updated results available" (issue #485, 485b): the button label never
    wraps inside the button, at 320px included; the notice keeps the panel's
    44px control floor from .job-match-stale-refresh. */
