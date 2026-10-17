@@ -10,6 +10,8 @@ from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db import transaction
+from django.db.models import Count, OuterRef, Subquery
+from django.db.models.functions import Coalesce
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -337,22 +339,48 @@ def _probe_cap() -> int:
         return 3
 
 
-def _status_count(user):
-    """Match count for the polled status endpoint: a single ``COUNT``.
+def _poll_after_seconds():
+    """Seconds between revision checks; ``None`` is the kill switch (0)."""
+    return max(0, int(getattr(settings, "RESULT_REVISION_POLL_SECONDS", 60))) or None
 
-    Uses the committed generation when reads are enabled and one exists
-    (one statement, pinned by a subquery on the state row), else the live
-    filter. A missing preference always counts zero (owner decision).
+
+def _status_count(user):
+    """``(count, result_generation)`` for the status endpoint.
+
+    Uses the committed generation when reads are enabled and one exists, else
+    the live filter and a ``None`` generation. A missing preference always
+    counts zero (owner decision). The generation and the count of its rows
+    are one statement on the state row (issue #485 review): a publish that
+    commits in between cannot give generation N with the count of N + 1.
     """
     if not _preference_exists(user):
-        return 0
-    if match_results.read_enabled() and MatchResultState.objects.filter(
-        user=user, current_generation__isnull=False
-    ).exists():
-        return match_results.current_match_count(user)
-    return JobMatch.objects.filter(
+        return 0, None
+    if match_results.read_enabled():
+        rows = (
+            JobMatch.objects.filter(
+                user=OuterRef("user"),
+                dismissed=False,
+                listing__status=JobListing.Status.ACTIVE,
+                result_generation=OuterRef("current_generation"),
+            )
+            .order_by()
+            .values("user")
+            .annotate(total=Count("pk"))
+            .values("total")
+        )
+        found = (
+            MatchResultState.objects.filter(user=user, current_generation__isnull=False)
+            .annotate(total=Coalesce(Subquery(rows), 0))
+            .values_list("current_generation", "total")
+            .first()
+        )
+        if found is not None:
+            generation, count = found
+            return count, generation
+    count = JobMatch.objects.filter(
         user=user, dismissed=False, listing__status=JobListing.Status.ACTIVE
     ).count()
+    return count, None
 
 
 @login_required
@@ -370,10 +398,18 @@ def job_match_status(request):
     ``coverage``, ``active_constraints``, ``inventory``,
     ``relaxation_preview``) are emitted only when meaningful.
     """
-    match_count = _status_count(request.user)
+    match_count, result_generation = _status_count(request.user)
     state = derive_state(user=request.user, match_count=match_count)
     is_staff = bool(request.user.is_staff)
     payload = state.to_dict(include_staff=is_staff)
+    # issue #485: lets the client check that the three reads of one load
+    # describe the same committed generation (null for live results).
+    payload["result_generation"] = result_generation
+    # The same answer the revision endpoint gives, so the kill switch is known
+    # at load and a page with polling off never asks (issue #485 review).
+    payload["poll_after_seconds"] = (
+        _poll_after_seconds() if result_generation is not None else None
+    )
     monitoring.record_event(
         "availability_state", {"surface": "job_matches", "state": state.state}
     )
@@ -384,6 +420,62 @@ def job_match_status(request):
             limit=MAX_MATCH_RESULTS,
         )
     return JsonResponse(payload)
+
+
+@login_required
+@require_GET
+def job_match_revision(request):
+    """The cheap, session-only read behind "Updated results available".
+
+    A few small facts about the requester's own committed generation, so an
+    open tab can learn that newer results exist without re-reading them
+    (issue #485). It is not ``job_match_status``: that view records an
+    ``availability_state`` event per request (the value of release gate
+    ``job-matches-source-unavailable``) and may run ranking passes, so it
+    must never be polled. This one records no event, writes nothing and does
+    not touch the session, so ``SESSION_SAVE_EVERY_REQUEST`` stays moot.
+
+    With the read gate off, or no committed generation yet, the answer is
+    ``result_generation: null`` and ``poll_after_seconds: null``: nothing to
+    watch, so no client polls. ``RESULT_REVISION_POLL_SECONDS=0`` answers
+    ``poll_after_seconds: null`` for everyone (the kill switch). At most four
+    queries: the read and recompute switches, the state and preference rows
+    (one join) and the data watermark.
+    """
+    payload = {
+        "result_generation": None,
+        "pending": False,
+        "stale": False,
+        "preference_revision": None,
+        "generated_at": None,
+        "poll_after_seconds": None,
+    }
+    state = None
+    if match_results.read_enabled():
+        # One join reads the state row and the preference row together.
+        state = (
+            MatchResultState.objects.filter(
+                user=request.user, current_generation__isnull=False
+            )
+            .select_related("user__preferences")
+            .first()
+        )
+    pref = getattr(state.user, "preferences", None) if state else None
+    if pref is not None:
+        revision = match_results.revision_block(
+            state, stale=match_results.is_stale(state, pref)
+        )
+        payload.update(
+            result_generation=revision["result_generation"],
+            pending=revision["pending"],
+            stale=revision["stale"],
+            preference_revision=revision["preference_revision"],
+            generated_at=revision["generated_at"],
+            poll_after_seconds=_poll_after_seconds(),
+        )
+    response = JsonResponse(payload)
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 _CHANGED_EVIDENCE_STATES = frozenset({"superseded", "missing"})

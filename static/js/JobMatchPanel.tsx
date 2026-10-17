@@ -5,6 +5,7 @@ import EvidenceBadge from './evidence/EvidenceBadge';
 import {EVIDENCE_CHANGED_MARKER, EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS, formatEvidenceDate, fundingRoundLabel, rtoPolicyLabel} from './labels';
 import {csrfFetch} from './priorities/csrf';
 import {installPositionTracking, restoreResultPosition} from './workspace/position';
+import {createPoller, PollStop} from './workspace/poller';
 import {createLatestGuard} from './workspace/requests';
 import {
     getWorkspaceSnapshot,
@@ -24,6 +25,12 @@ import {
  */
 
 interface EmptyStatePayload {
+    // Committed generation the status read was counted against (issue #485);
+    // null for live results, absent from older servers.
+    result_generation?: number | null;
+    // Seconds between revision checks; null is the server's off switch
+    // (absent from older servers: the client's default applies).
+    poll_after_seconds?: number | null;
     state: string;
     title: string;
     message: string;
@@ -138,14 +145,19 @@ function jobGenerations(payload: RankedMatchesPayload | null): number[] {
 }
 
 // Generation of the list actually shown: the ranked job entries' own when
-// present, else (no job entries at all) the `/api/job-matches/` page's.
-// Null when the payload carries none (org-only, live results).
-function displayedGeneration(payload: RankedMatchesPayload | null, matchGeneration: number | null): number | null {
+// present, else (no job entries at all) the `/api/job-matches/` page's, else
+// the status read's: a committed generation with no matches carries it nowhere
+// else (issue #485 review). Null when the payload carries none (org-only, live).
+function displayedGeneration(
+    payload: RankedMatchesPayload | null,
+    matchGeneration: number | null,
+    statusGeneration: number | null,
+): number | null {
     const values = jobGenerations(payload);
     if (values.length > 0) {
         return Math.max(...values);
     }
-    return (payload?.job_matches?.length ?? 0) === 0 ? matchGeneration : null;
+    return (payload?.job_matches?.length ?? 0) === 0 ? (matchGeneration ?? statusGeneration) : null;
 }
 
 // A refresh may replace the displayed list unless it is provably older: a
@@ -157,6 +169,7 @@ function acceptsGeneration(
     shown: number | null,
     payload: RankedMatchesPayload | null,
     matchGeneration: number | null,
+    statusGeneration: number | null = null,
 ): boolean {
     if (shown === null) {
         return true;
@@ -171,8 +184,105 @@ function acceptsGeneration(
     if (values.length === 1) {
         return values[0] >= shown && (matchGeneration === null || matchGeneration === values[0]);
     }
-    return matchGeneration === null || matchGeneration >= shown;
+    const carried = matchGeneration ?? statusGeneration;
+    return carried === null || carried >= shown;
 }
+
+// The three reads of one load describe one generation: every generation they
+// carry (the ranked job entries', the matches page's, the status payload's) is
+// the same one (issue #485). Reads that carry none agree trivially.
+function readsAgree(
+    payload: RankedMatchesPayload | null,
+    matchGeneration: number | null,
+    statusGeneration: number | null,
+): boolean {
+    const carried = [...jobGenerations(payload), matchGeneration, statusGeneration]
+        .filter((value): value is number => typeof value === 'number');
+    return new Set(carried).size <= 1;
+}
+
+/** The idle rule (issue #485, owner decision): newer results are applied
+ * without asking only when they were found on the first check after the tab
+ * became visible again, the page is at the top, and nothing inside the panel
+ * has focus. Any other case shows the notice and changes nothing. */
+export function shouldAutoApplyRefresh(state: {
+    foundOnFirstCheckAfterReturn: boolean;
+    scrollY: number;
+    focusInsidePanel: boolean;
+}): boolean {
+    return state.foundOnFirstCheckAfterReturn && state.scrollY === 0 && !state.focusInsidePanel;
+}
+
+interface RevisionAnswer {
+    result_generation: number | null;
+}
+
+// The poll request: a redirect (the login page) or a 401 means the session
+// ended, which stops polling until the next hydration and is never shown.
+const REVISION_URL = '/api/job-matches/revision/';
+const DEFAULT_POLL_SECONDS = 60;
+async function requestRevision(signal: AbortSignal) {
+    const res = await fetch(REVISION_URL, {signal, headers: {Accept: 'application/json'}});
+    if (res.redirected === true || res.status === 401) {
+        throw new PollStop();
+    }
+    if (!res.ok) {
+        throw new Error(`revision ${res.status}`);
+    }
+    const body = await res.json() as {result_generation?: unknown; poll_after_seconds?: unknown};
+    const seconds = body.poll_after_seconds;
+    return {
+        value: {result_generation: typeof body.result_generation === 'number' ? body.result_generation : null},
+        pollAfterSeconds: typeof seconds === 'number' && seconds > 0 ? seconds : null,
+    };
+}
+
+// The idle test, read at the moment it matters: nothing inside the panel has
+// focus and the page is at the top (`afterReturn` is the poller's flag).
+const panelIsIdle = (afterReturn: boolean): boolean => shouldAutoApplyRefresh({
+    foundOnFirstCheckAfterReturn: afterReturn,
+    scrollY: window.scrollY,
+    focusInsidePanel: !!document.activeElement?.closest('[data-testid="job-match-panel"]'),
+});
+
+// Result cards in the viewport, with where they sit: after newer results are
+// applied the first one that is still listed is put back at its offset.
+interface ResultAnchor {
+    rows: Array<{testid: string; top: number}>;
+}
+const RESULT_CARD_SELECTOR = '[data-testid^="ranked-job-"]:not([data-testid="ranked-job-matches"]), [data-testid^="ranked-org-"]:not([data-testid="ranked-org-matches"])';
+function captureAnchor(): ResultAnchor {
+    // The reader's row is the first card that starts inside the visible area
+    // (below the phone's sticky bar); a card mostly above it is the fallback.
+    const bar = document.querySelector<HTMLElement>('.app-mobile-topbar');
+    const visibleTop = bar ? Math.max(0, bar.getBoundingClientRect().bottom) : 0;
+    const whole: ResultAnchor['rows'] = [];
+    const partial: ResultAnchor['rows'] = [];
+    document.querySelectorAll<HTMLElement>(RESULT_CARD_SELECTOR).forEach((card) => {
+        const rect = card.getBoundingClientRect();
+        if (rect.bottom > 0 && rect.top < window.innerHeight) {
+            (rect.top >= visibleTop ? whole : partial).push({testid: card.dataset.testid!, top: rect.top});
+        }
+    });
+    return {rows: [...whole, ...partial]};
+}
+function restoreAnchor(anchor: ResultAnchor): void {
+    for (const row of anchor.rows) {
+        const card = Array.from(document.querySelectorAll<HTMLElement>(RESULT_CARD_SELECTOR))
+            .find((candidate) => candidate.dataset.testid === row.testid);
+        if (card) {
+            const delta = card.getBoundingClientRect().top - row.top;
+            if (delta !== 0) {
+                window.scrollBy({top: delta, left: 0, behavior: 'instant' as ScrollBehavior});
+            }
+            return;
+        }
+    }
+}
+
+type LoadMode = 'read' | 'accept' | 'auto';
+
+const KEPT_SENTENCE = 'The newer results weren’t ready. Still showing the results you had.';
 
 type PanelPhase = 'loading' | 'error' | 'ready';
 
@@ -666,16 +776,20 @@ const recheckSentence = (recheck: RecheckState, stale: boolean): string => {
  * `aria-disabled` (it keeps focus), and while re-checking is paused there is
  * no button, because pressing it could not succeed; the header's refresh
  * still asks again and re-reads whatever the answer. */
-function EvidenceChangedNotice({matches, recheck, stale, onRefresh}: {
+function EvidenceChangedNotice({matches, recheck, stale, held, onRefresh}: {
     matches: {requirements?: RequirementOutcome[]}[];
     recheck: RecheckState;
     stale: boolean;
+    /** Newer results are waiting behind "Refresh results": this notice keeps
+     * its sentence but offers no second refresh until they are loaded. */
+    held: boolean;
     onRefresh: (event: React.MouseEvent<HTMLElement>) => void;
 }) {
     if (!anyEvidenceChanged(matches)) {
         return null;
     }
     const running = recheck.kind === 'running';
+    const heldNow = held && !running;
     return (
         <div className="alert alert-warning py-2 small mb-3" role="status" aria-live="polite" id="job-match-notice"
              data-testid="evidence-changed-notice" data-recheck={recheck.kind} aria-busy={running || undefined}>
@@ -683,9 +797,9 @@ function EvidenceChangedNotice({matches, recheck, stale, onRefresh}: {
                 <Icon name="clock" className="job-match-stale-icon" />
                 <span className="job-match-stale-message">
                     Some company evidence changed after these matches were computed.{' '}
-                    {recheckSentence(recheck, stale)}
+                    {heldNow ? 'Refresh results above to see the latest.' : recheckSentence(recheck, stale)}
                 </span>
-                {recheck.kind !== 'paused' && !(running && recheck.wasPaused) && (
+                {!heldNow && recheck.kind !== 'paused' && !(running && recheck.wasPaused) && (
                     <button type="button"
                             className={`btn btn-sm btn-outline-light job-match-stale-refresh${running ? ' job-match-refresh-busy' : ''}`}
                             onClick={onRefresh} aria-disabled={running || undefined}
@@ -758,9 +872,11 @@ type ReloadHandler = (event: React.MouseEvent<HTMLElement>) => void;
 /** The one alert box above the results (issue #485). `aria-disabled` and the
  * spinner mark a read in flight; the label never changes, so the control keeps
  * its size and its focus. */
-function ReloadButton({label, testid, running, onReload}: {label: string; testid: string; running: boolean; onReload: ReloadHandler}) {
+function ReloadButton({label, testid, running, onReload, extraClass}: {
+    label: string; testid: string; running: boolean; onReload: ReloadHandler; extraClass?: string;
+}) {
     return (
-        <button type="button" className="btn btn-sm btn-outline-light job-match-stale-refresh" onClick={onReload}
+        <button type="button" className={`btn btn-sm btn-outline-light job-match-stale-refresh${extraClass ? ` ${extraClass}` : ''}`} onClick={onReload}
                 aria-disabled={running || undefined} data-testid={testid}>
             <Icon name={running ? 'spinner' : 'refresh-cw'} className="me-1" />{label}
         </button>
@@ -777,17 +893,20 @@ function NoticeBox({tone, testid, icon, children, button, folded}: {
 }) {
     return (
         <div className={`alert alert-${tone} py-2 small mb-3`} role="status" aria-live="polite" data-testid={testid}>
-            <div className={`job-match-stale-banner${button ? '' : ' job-match-stale-banner--plain'}`}>
+            <div className={`job-match-stale-banner${button ? '' : ' job-match-stale-banner--plain'}${folded ? ' job-match-stale-banner--folded' : ''}`}>
                 <Icon name={icon} className="job-match-stale-icon" />
-                <span className="job-match-stale-message">{children}</span>
+                <span className="job-match-stale-message">
+                    {children}
+                    {folded && <span className="job-match-notice-folded d-block text-muted mt-1" data-testid="notice-folded">{folded}</span>}
+                </span>
                 {button}
             </div>
-            {folded && <div className="job-match-notice-folded text-muted mt-1" data-testid="notice-folded">{folded}</div>}
         </div>
     );
 }
 
 const STALE_SENTENCE = 'Newer data or priorities exist.';
+const STALE_FOLDED_SENTENCE = 'The results below were computed before your latest priorities or data.';
 
 /** Exactly one alert box, whatever is true (issue #485). Priority: a failed
  * refresh, degraded coverage, stale results, a crawl in flight. The box
@@ -897,7 +1016,13 @@ const hasInventoryAge = (emptyState: EmptyStatePayload): boolean => emptyState.s
 /** Results-generated timestamp (issue #467 round-2): a visible, readable
  * <time> line shown in both healthy and stale views so the user can see when
  * the matches were computed. */
-function ResultTimestamp({revision, paired = false}: {revision?: RevisionBlock | null; paired?: boolean}) {
+function ResultTimestamp({revision, paired = false, updated = 'off'}: {
+    revision?: RevisionBlock | null;
+    paired?: boolean;
+    /** An idle auto-apply just replaced the list: mark it until the reader acts
+     * ('seen' keeps the mark's box, hidden, so its line never re-wraps under a press). */
+    updated?: 'off' | 'on' | 'seen';
+}) {
     const iso = revision?.generated_at;
     const when = formatWhen(iso);
     if (!iso || !when) {
@@ -908,6 +1033,11 @@ function ResultTimestamp({revision, paired = false}: {revision?: RevisionBlock |
         <p className={`text-muted small ${paired ? 'mb-1' : 'mb-3'}`} data-testid="results-timestamp">
             Results generated at{' '}
             <time dateTime={iso}>{when}</time>
+            {updated !== 'off' && (
+                <span className={`badge text-bg-info ms-2${updated === 'seen' ? ' invisible' : ''}`}
+                      data-testid={updated === 'on' ? 'results-updated-badge' : 'results-updated-badge-seen'}
+                      aria-hidden={updated === 'seen' || undefined}>Updated</span>
+            )}
         </p>
     );
 }
@@ -976,6 +1106,27 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     // result_generation is lower than the one on screen is discarded.
     const guardRef = React.useRef(createLatestGuard());
     const shownGenerationRef = React.useRef<number | null>(null);
+    // Issue #485: the generation on screen (for the notice), the newest one a
+    // poll has seen, and whether an idle auto-apply is running (the notice
+    // stays hidden while it does, so it never flashes).
+    const [shownGeneration, setShownGeneration] = React.useState<number | null>(null);
+    const [seenGeneration, setSeenGeneration] = React.useState<number | null>(null);
+    const [autoApplying, setAutoApplying] = React.useState(false);
+    // The interval the status read names: undefined before any read (and from
+    // older servers) means the default, null is the off switch.
+    const [pollSeconds, setPollSeconds] = React.useState<number | null | undefined>(undefined);
+    // Why the newer results are still not on screen after a press (a failed
+    // or mismatched read), shown inside the notice; and the "Updated" badge
+    // that marks an idle auto-apply until the reader scrolls or presses.
+    const [keptNote, setKeptNote] = React.useState<string | null>(null);
+    const [updatedBadge, setUpdatedBadge] = React.useState<'off' | 'on' | 'seen'>('off');
+    const keptNoteRef = React.useRef<string | null>(null);
+    keptNoteRef.current = keptNote;
+    // Set by a purge: no revision request is sent until a hydration that
+    // observed the account (an `unobserved` one neither starts nor stops it).
+    const [pollBlocked, setPollBlocked] = React.useState(false);
+    const pollerRef = React.useRef<{start: () => void; stop: () => void} | null>(null);
+    const anchorRef = React.useRef<ResultAnchor | null>(null);
 
     // Account this panel fetches for. Starts at the server-rendered value and
     // is re-resolved from the next `crank:auth-hydrated` after a cross-tab
@@ -1034,6 +1185,13 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         hasResultsRef.current = false;
         refocusRef.current = null;
         shownGenerationRef.current = null;
+        setShownGeneration(null);
+        setSeenGeneration(null);
+        setPollSeconds(undefined);
+        setAutoApplying(false);
+        setKeptNote(null);
+        setUpdatedBadge('off');
+        anchorRef.current = null;
         setRefreshFailed(false);
         setRefreshRunning(false);
         setReadNote('');
@@ -1045,7 +1203,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         setPhase('loading');
     }, [setRefreshFailed, setRefreshRunning]);
 
-    const loadStatus = React.useCallback(async (quietRequested: boolean) => {
+    const loadStatus = React.useCallback(async (quietRequested: boolean, mode: LoadMode = 'read') => {
         if (!authed) return;
         const quiet = quietRequested || hasResultsRef.current;
         const request = guardRef.current.begin();
@@ -1058,8 +1216,14 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setRefreshRunning(true);
             setReadNote('Checking your job matches…');
         }
+        setAutoApplying(mode === 'auto');
+        // The kept sentence leaves with this press: hold the row through it.
+        if (keptNoteRef.current !== null && hasResultsRef.current) {
+            anchorRef.current = captureAnchor();
+        }
+        setKeptNote(null);
         setErrorMsg(null);
-        try {
+        const readAll = async () => {
             const [statusRes, matchRes, rankedRes] = await Promise.all([
                 fetch('/api/job-matches/status/', {signal: request.signal}),
                 fetch('/api/job-matches/?page=1&page_size=1', {signal: request.signal}),
@@ -1089,29 +1253,81 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             const rankedData: RankedMatchesPayload | null = rankedRes.ok
                 ? await parseJson<RankedMatchesPayload>(rankedRes)
                 : null;
+            return {statusData, matchData, rankedData};
+        };
+        try {
+            let {statusData, matchData, rankedData} = await readAll();
             if (!request.isLatest()) {
                 return;
             }
+            const agree = () => readsAgree(
+                rankedData, matchData?.results?.[0]?.revision?.result_generation ?? null,
+                statusData.result_generation ?? null);
+            if (mode !== 'read' && !agree()) {
+                // The three reads straddled a publish: one more try, then keep
+                // what is shown (issue #485, AC 11).
+                ({statusData, matchData, rankedData} = await readAll());
+                if (!request.isLatest()) {
+                    return;
+                }
+            }
             const revision = matchData?.results?.[0]?.revision ?? null;
-            if (!acceptsGeneration(shownGenerationRef.current, rankedData, revision?.result_generation ?? null)) {
+            if (!acceptsGeneration(shownGenerationRef.current, rankedData, revision?.result_generation ?? null,
+                                   statusData.result_generation ?? null)
+                || (shownGenerationRef.current !== null && !agree())) {
                 // Older, unverifiable or endpoint-mismatched result set:
-                // keep what is shown.
+                // keep what is shown (and the notice, when it is up).
                 setRefreshRunning(false);
                 setRefreshFailed(false);
-                setReadNote('Finished checking your job matches.');
+                setAutoApplying(false);
+                if (mode !== 'read') {
+                    // The sentence grows the notice above the list: hold the row.
+                    if (hasResultsRef.current) {
+                        anchorRef.current = captureAnchor();
+                    }
+                    setKeptNote(KEPT_SENTENCE);
+                }
+                // The notice announces its own added sentence: say it once.
+                setReadNote(mode === 'read' ? 'Finished checking your job matches.' : '');
                 setSettled((n) => n + 1);
                 setPhase('ready');
                 return;
             }
-            const generation = displayedGeneration(rankedData, revision?.result_generation ?? null);
+            if (mode === 'auto' && !panelIsIdle(true)) {
+                // The reader scrolled or focused something in the panel while
+                // the reads were out: show the notice instead and change
+                // nothing (issue #485, the idle rule at the moment it lands).
+                anchorRef.current = captureAnchor();
+                setAutoApplying(false);
+                setRefreshRunning(false);
+                setReadNote('');
+                setSettled((n) => n + 1);
+                setPhase('ready');
+                return;
+            }
+            const generation = displayedGeneration(
+                rankedData, revision?.result_generation ?? null, statusData.result_generation ?? null);
             setEmptyState(statusData);
+            setPollSeconds(statusData.poll_after_seconds);
             if (matchData) {
                 setMatchCount(matchData.count || 0);
                 setStoredRevision(revision);
             }
+            const changed = generation !== null && shownGenerationRef.current !== null
+                && generation > shownGenerationRef.current;
             if (generation !== null) {
                 shownGenerationRef.current = generation;
+                setShownGeneration(generation);
             }
+            // Every quiet read that replaces a set on screen holds the row
+            // being read: the notice, the stale box and the header all go with
+            // it, so the row would move whichever control asked.
+            if (hasResultsRef.current) {
+                anchorRef.current = captureAnchor();
+            }
+            // After the capture: a hidden mark's box leaving is held like the rest.
+            setUpdatedBadge(mode === 'auto' && changed ? 'on' : 'off');
+            setAutoApplying(false);
             setRankedMatches(rankedData);
             // Issue #484: the server compares these with its own revisions to
             // tell the assistant when the user's view is outdated. The revision
@@ -1132,14 +1348,18 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setLastLoadedAt(new Date().toISOString());
             setRefreshRunning(false);
             setRefreshFailed(false);
-            setReadNote(quiet ? 'Finished checking your job matches.' : '');
+            setReadNote(changed ? 'Showing updated results.' : quiet ? 'Finished checking your job matches.' : '');
             setSettled((n) => n + 1);
             setPhase('ready');
+            // A poller that ended (a null answer, a sign-in redirect) starts
+            // again with the next load that succeeds; a running one is untouched.
+            pollerRef.current?.start();
         } catch (e) {
             if (!request.isLatest()) {
                 return;
             }
             setRefreshRunning(false);
+            setAutoApplying(false);
             setSettled((n) => n + 1);
             if (e instanceof SessionExpiredError) {
                 // The session ended: show the signed-out card and nothing of
@@ -1188,7 +1408,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         refocusRef.current = null;
         if (!control.isConnected) {
             // Every phase renders the heading, so it is always there to take focus.
-            document.getElementById('job-match-panel-title')!.focus();
+            // preventScroll: the anchor restore has put the reader's row back,
+            // and focusing the heading must not scroll it away again.
+            document.getElementById('job-match-panel-title')!.focus({preventScroll: true});
         }
     }, [phase, settled]);
     // Press a control that is replaced when its read brings results: remember
@@ -1200,6 +1422,66 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     }, [fetchStatus]);
     const reloadFromNotice = React.useCallback(
         (event: React.MouseEvent<HTMLElement>) => reloadFrom(event.currentTarget), [reloadFrom]);
+    // Issue #485: "Refresh results" is one quiet read; the notice (and the
+    // button) leave with it, so focus follows to the heading.
+    const acceptFromNotice = React.useCallback((event: React.MouseEvent<HTMLElement>) => {
+        if (refreshRunningRef.current || recheckRunningRef.current) return;
+        refocusRef.current = event.currentTarget;
+        void loadStatus(true, 'accept');
+    }, [loadStatus]);
+    const noticeUp = seenGeneration !== null && shownGeneration !== null && seenGeneration > shownGeneration;
+    // The "Updated" mark goes at the reader's next scroll, press or key: their
+    // own input only (the panel's hold and scroll anchoring scroll the page
+    // too), and it keeps its box so nothing moves under the press.
+    React.useEffect(() => {
+        if (updatedBadge !== 'on') return undefined;
+        // Input in the Assistant (typing in the composer, a tap in the phone
+        // sheet) is not about the list: it leaves the mark up.
+        const clear = (event: Event) => {
+            if ((event.target as Element | null)?.closest?.('#assistant-panel')) return;
+            setUpdatedBadge('seen');
+        };
+        const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+        events.forEach((name) => window.addEventListener(name, clear, {passive: true}));
+        return () => events.forEach((name) => window.removeEventListener(name, clear));
+    }, [updatedBadge]);
+    // A poll answered with a generation above the one on screen: say so, and
+    // apply it only in the idle state (see `shouldAutoApplyRefresh`).
+    const onPolled = (answer: RevisionAnswer, info: {afterReturn: boolean}) => {
+        const generation = answer.result_generation;
+        const shown = shownGenerationRef.current;
+        if (generation === null || shown === null || generation <= shown) return;
+        // The notice is about to appear above the list: keep the row being
+        // read where it is (the layout effect below puts it back).
+        if (!noticeUp) {
+            anchorRef.current = captureAnchor();
+        }
+        setSeenGeneration((seen) => Math.max(seen ?? 0, generation));
+        if (refreshRunningRef.current || recheckRunningRef.current) return;
+        if (panelIsIdle(info.afterReturn)) {
+            void loadStatus(true, 'auto');
+        }
+    };
+    const pollSecondsRef = React.useRef(pollSeconds);
+    pollSecondsRef.current = pollSeconds;
+    const onPolledRef = React.useRef(onPolled);
+    onPolledRef.current = onPolled;
+    const pollingActive = authed && !pollBlocked && phase === 'ready' && shownGeneration !== null
+        && pollSeconds !== null;
+    React.useEffect(() => {
+        if (!pollingActive) return undefined;
+        const poller = createPoller<RevisionAnswer>({
+            request: requestRevision,
+            onResult: (value, info) => onPolledRef.current(value, info),
+            intervalSeconds: pollSecondsRef.current ?? DEFAULT_POLL_SECONDS,
+        });
+        pollerRef.current = poller;
+        poller.start();
+        return () => {
+            poller.stop();
+            pollerRef.current = null;
+        };
+    }, [pollingActive]);
     // Stored matches that cite replaced evidence are only resolved by a
     // recompute, so this asks for one and acts on the answer (issue #473).
     // The list stays on screen while it runs; only an answer that can have
@@ -1207,6 +1489,15 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [recheck, setRecheck] = React.useState<RecheckState>(RECHECK_IDLE);
     const [recheckAnnouncement, setRecheckAnnouncement] = React.useState('');
     const [recheckFocus, setRecheckFocus] = React.useState<{control: HTMLElement} | null>(null);
+    // After newer results are applied, a notice appears or leaves, or a re-check
+    // changes the notice's sentence, the first listed result that is still there
+    // goes back to the offset it had.
+    React.useLayoutEffect(() => {
+        const anchor = anchorRef.current;
+        if (!anchor) return;
+        anchorRef.current = null;
+        restoreAnchor(anchor);
+    }, [rankedMatches, shownGeneration, seenGeneration, recheck, keptNote, autoApplying]);
     const recheckRunningRef = React.useRef(false);
     // Bumped by a private-state purge: an answer that arrives for an earlier
     // account is dropped without a re-read, a message or a focus move.
@@ -1216,6 +1507,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         if (recheckRunningRef.current || refreshRunningRef.current) return;
         recheckRunningRef.current = true;
         const epoch = recheckEpochRef.current;
+        // The notice's sentence changes with each step: hold the row through them.
+        anchorRef.current = captureAnchor();
         setRecheck((current) => ({kind: 'running', wasPaused: current.kind === 'paused'}));
         setRecheckAnnouncement('');
         const answer = await requestRecheck();
@@ -1225,6 +1518,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             if (epoch !== recheckEpochRef.current) return;
         }
         recheckRunningRef.current = false;
+        anchorRef.current = captureAnchor();
         setRecheck(answer.state);
         setRecheckAnnouncement(answer.announcement);
         // The pressed control keeps focus unless the outcome removed it (the
@@ -1242,7 +1536,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     React.useEffect(() => {
         if (!recheckFocus) return;
         if (!recheckFocus.control.isConnected) {
-            document.getElementById('job-match-panel-title')!.focus();
+            document.getElementById('job-match-panel-title')!.focus({preventScroll: true});
         }
     }, [recheckFocus]);
     // A read with no changed evidence closes the episode, so a later change
@@ -1294,6 +1588,10 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     }, [authed, sessionEnded]);
     React.useEffect(() => {
         const handlePurged = () => {
+            // Nothing is asked, and an answer on its way is dropped, until a
+            // hydration that observed the account (issue #485, AC 14).
+            pollerRef.current?.stop();
+            setPollBlocked(true);
             guardRef.current.cancel();
             setSessionEnded(false);
             endedFocusRef.current = false;
@@ -1310,10 +1608,18 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             awaitingHydrationRef.current = true;
         };
         const handleHydrated = (event: Event) => {
-            if (!awaitingHydrationRef.current) return;
-            awaitingHydrationRef.current = false;
             const detail = (event as CustomEvent).detail as
                 {authenticated?: boolean; unobserved?: boolean} | undefined;
+            if (detail && !detail.unobserved) {
+                // An observed account lets polling run again, and starts a
+                // poller that ended on a sign-in redirect; an `unobserved`
+                // hydration says nothing about the account, so it neither
+                // starts nor stops polling (#527).
+                setPollBlocked(false);
+                if (detail.authenticated) pollerRef.current?.start();
+            }
+            if (!awaitingHydrationRef.current) return;
+            awaitingHydrationRef.current = false;
             // A failed whoami says nothing about the account: keep the last
             // known one and retry the fetch. When the panel itself ended the
             // session, the last known account is the page's own: read again,
@@ -1418,6 +1724,26 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             {readNote}
         </span>
     );
+
+    // One notice above the list when a poll has seen a newer generation than
+    // the one on screen. Nothing else on the page changes until it is pressed.
+    // When the shown results are also flagged stale, the notice carries that
+    // as its one muted line and the stale box and its button stand down: the
+    // newer results are the answer to both.
+    const showUpdatedNotice = noticeUp && !autoApplying;
+    const updatedNoticeFor = (staleShown: boolean) => {
+        if (!showUpdatedNotice) return null;
+        const folded = [keptNote, staleShown ? STALE_FOLDED_SENTENCE : null].filter(Boolean).join(' ') || null;
+        return (
+            <NoticeBox tone="info" testid="updated-results-notice" icon="info" folded={folded}
+                       button={<ReloadButton label="Refresh results" testid="updated-results-refresh"
+                                             running={refreshRunning} onReload={acceptFromNotice}
+                                             extraClass="job-match-updated-refresh" />}>
+                <strong>Updated results available.</strong>
+            </NoticeBox>
+        );
+    };
+    const updatedNotice = updatedNoticeFor(false);
 
     if (phase === 'loading') {
         return (
@@ -1525,12 +1851,15 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     </button>
                 </div>
                 <div className="card-body" aria-busy={refreshRunning || undefined}>
+                    {updatedNoticeFor(staleResults && !evidenceChangedResults)}
                     <NoticeStack emptyState={emptyState!} failed={failedFor(resultRevision, 'listed')}
-                                 stale={staleResults && !evidenceChangedResults} pending={pendingResults}
+                                 stale={staleResults && !evidenceChangedResults && !showUpdatedNotice} pending={pendingResults}
                                  running={refreshRunning || recheck.kind === 'running'} onReload={reloadFromNotice} />
-                    <EvidenceChangedNotice matches={[...jobs, ...orgs]} recheck={recheck} stale={staleResults} onRefresh={recheckMatches} />
+                    <EvidenceChangedNotice matches={[...jobs, ...orgs]} recheck={recheck} stale={staleResults}
+                                           held={showUpdatedNotice} onRefresh={recheckMatches} />
                     <MatchLegend />
-                    <ResultTimestamp revision={resultRevision} paired={inventoryPaired || unsupported.length > 0} />
+                    <ResultTimestamp revision={resultRevision} paired={inventoryPaired || unsupported.length > 0}
+                                     updated={updatedBadge} />
                     <InventoryAge emptyState={emptyState!} paired={unsupported.length > 0} />
                     <UnsupportedNotice unsupported={unsupported} />
                     {jobs.length > 0 && (
@@ -1633,10 +1962,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     </button>
                 </div>
                 <div className="card-body" aria-busy={refreshRunning || undefined}>
+                    {updatedNoticeFor(!!storedRevision?.stale)}
                     <NoticeStack emptyState={emptyState!} failed={failedFor(storedRevision, 'count')}
-                                 stale={!!storedRevision?.stale} pending={!!storedRevision?.pending}
+                                 stale={!!storedRevision?.stale && !showUpdatedNotice} pending={!!storedRevision?.pending}
                                  running={refreshRunning || recheck.kind === 'running'} onReload={reloadFromNotice} />
-                    <ResultTimestamp revision={storedRevision} paired={hasInventoryAge(emptyState!)} />
+                    <ResultTimestamp revision={storedRevision} paired={hasInventoryAge(emptyState!)} updated={updatedBadge} />
                     <InventoryAge emptyState={emptyState!} />
                     <p className="mb-0" role="status" aria-live="polite">
                         <Icon name="check-circle" className="text-success me-1" />
@@ -1665,6 +1995,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 </button>
             </div>
             <div className="card-body" aria-busy={refreshRunning || undefined}>
+                {updatedNotice}
                 <NoticeStack emptyState={state} failed={failedFor(null, 'nothing')} stale={false} pending={false}
                              running={refreshRunning || recheck.kind === 'running'} onReload={reloadFromNotice} />
                 <InventoryAge emptyState={state} />

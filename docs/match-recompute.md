@@ -131,6 +131,41 @@ computation unchanged — pre-rollout users and the `seed_e2e` Playwright
 journey keep working. Injected `match_service` calls (this-search-only
 preference overrides, orchestrator injections) always stay live.
 
+`GET /api/job-matches/revision/` (issue #485) is the cheap read an open
+`/chat/` tab polls to learn that a newer generation exists. It answers
+`result_generation`, `pending`, `stale`, `preference_revision`,
+`generated_at` and `poll_after_seconds` for the requester only, with
+`Cache-Control: private, no-store`, in at most four queries (the two
+capability switches, the state and preference rows as one join, the data
+watermark). It records no monitoring event and does not touch the session:
+`GET /api/job-matches/status/` records one `availability_state` event per
+request, which is the value of release gate `job-matches-source-unavailable`,
+so the status endpoint is never polled. `GET /api/job-matches/status/` also
+carries `result_generation`, read in the same statement as its count so the
+pair always describes one generation, and `poll_after_seconds`, so the client
+that has just loaded learns the interval (or the `0` off switch) without
+asking the revision endpoint. With the read gate off, or before a
+generation exists, the revision answers `result_generation: null` and
+`poll_after_seconds: null` and no client polls. `RESULT_REVISION_POLL_SECONDS`
+(default 60; the client clamps it to 30–600) sets the interval, and `0` turns
+polling off for every client: set it in the ConfigMap and redeploy.
+
+The endpoint has no server-side rate limit; `poll_after_seconds` is advice
+the client follows, so the client is the only rate control. The kill-switch
+levers differ in speed:
+
+- Poll-only off switch: `RESULT_REVISION_POLL_SECONDS=0` in the ConfigMap,
+  then a rolling deploy. A page loaded afterwards sends no revision request;
+  a tab that is already open stops at its next answer (within one interval,
+  up to 600 s when backed off). Only exactly `0` (or a negative number)
+  turns polling off; an unparseable value falls back to 60.
+- Instant lever: the `match_results_read` capability switch. It acts at once
+  without a deploy, but it also turns committed reads off for every surface,
+  not only the poll.
+
+A poll-only switch that acts without a deploy, or a server-side throttle, is
+tracked in #596 and should land before the read gate is enabled.
+
 ## Rollout order
 
 1. Migrate `0039_match_result_generation` — additive; old pods ignore the

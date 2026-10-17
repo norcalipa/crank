@@ -899,10 +899,10 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         expect(popupCss.slice(start, next)).toMatch(/#job-match-panel a\.btn \{\s*display: inline-flex;\s*align-items: center;\s*justify-content: center;\s*\}/);
     });
 
-    it('indents the folded line under the message, past the icon column', () => {
+    it('needs no indent for the folded line: it sits inside the message column', () => {
         const start = popupCss.indexOf('/* issue #485 result refresh */');
         const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
-        expect(popupCss.slice(start, next)).toMatch(/#job-match-panel \.job-match-notice-folded \{\s*margin-left: 1\.5rem;\s*\}/);
+        expect(popupCss.slice(start, next)).not.toContain('job-match-notice-folded');
     });
 
     it('keeps the icon of a box with no button on its first line, and leaves the stale banner with a button centred', () => {
@@ -913,6 +913,22 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         );
         // The wide-screen rule that centres the items is still there, for the box with a button.
         expect(popupCss).toMatch(/@media \(min-width: 576px\) \{\s*#job-match-panel \.job-match-stale-banner \{\s*grid-template-columns: auto minmax\(0, 1fr\) auto;\s*align-items: center;/);
+    });
+
+    it('keeps the icon of a notice with a folded reason on the sentence\u2019s line, button or not', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        expect(popupCss.slice(start, next)).toMatch(
+            /#job-match-panel \.job-match-stale-banner--folded \.job-match-stale-icon \{\s*align-self: start;\s*margin-top: 0\.125rem;\s*\}/,
+        );
+    });
+
+    it('never wraps the label of the Refresh results button, and keeps it a 44px control', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        expect(popupCss.slice(start, next)).toMatch(/#job-match-panel \.job-match-updated-refresh \{\s*white-space: nowrap;\s*\}/);
+        // The 44px floor comes from the panel-wide button rule, which the notice button inherits.
+        expect(popupCss).toMatch(/#job-match-panel \.btn \{\s*min-height: 44px;\s*min-width: 44px;\s*\}/);
     });
 
     it('scopes the heading scroll margin to the widths that show the sticky top bar', () => {

@@ -201,6 +201,10 @@ function stubPanelApis(stateKey: string): void {
                 organization_matches: withResults ? PANEL_RANKED_ORGS : [],
             });
         }
+        // Nothing to poll in the fixture (issue #485): the panel never asks twice.
+        if (url.includes('/api/job-matches/revision/')) {
+            return json({result_generation: null, poll_after_seconds: null});
+        }
         if (url.includes('/api/job-matches/')) {
             return json({count: withResults ? 3 : 0, next: null, previous: null, results: []});
         }

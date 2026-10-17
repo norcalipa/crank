@@ -211,11 +211,222 @@ class JobMatchStatusViewTests(TestCase):
         counts = [
             q["sql"]
             for q in queries
-            if q["sql"].startswith("SELECT COUNT") and "crank_jobmatch" in q["sql"]
+            if "COUNT(" in q["sql"] and "crank_jobmatch" in q["sql"]
         ]
         self.assertEqual(len(counts), 1, counts)
+        # The generation comes out of that same statement (issue #485 review).
+        self.assertIn("current_generation", counts[0])
         self.assertFalse(
             [q for q in queries if "crank_jobmatch" in q["sql"] and "requirements" in q["sql"]]
+        )
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_status_carries_the_committed_result_generation(self):
+        """issue #485: the three reads of one load can be compared."""
+        from crank.models.job_match import MatchResultState
+
+        self.make_preference(self.user)
+        MatchResultState.objects.create(
+            user=self.user, current_generation=5, issued_generation=5
+        )
+        self.client.force_login(self.user)
+        self.assertEqual(
+            self.client.get("/api/job-matches/status/").json()["result_generation"], 5
+        )
+
+    @override_settings(
+        MATCH_RESULTS_READ_ENABLED=True,
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    )
+    def test_status_generation_and_count_describe_the_same_generation(self):
+        """issue #485 review: generation 7 keeps three rows, 8 only one; the
+        pair is read from the state row, never mixed."""
+        from crank.models.job_match import MatchResultState
+
+        pref = self.make_preference(
+            self.user, preferences={"work_location": {"modes": ["remote"]}}
+        )
+        source = self.make_source(enabled=True)
+        source.last_crawl_at = timezone.now()
+        source.save()
+        now = timezone.now()
+
+        def _row(title, generation):
+            JobMatch.objects.create(
+                user=self.user,
+                listing=self.make_listing(source, title),
+                preference_version=pref.schema_version,
+                ranker_version="v1",
+                score=50,
+                preference_revision=pref.revision,
+                generated_at=now,
+                factors=[],
+                first_matched_at=now,
+                last_matched_at=now,
+                result_generation=generation,
+            )
+
+        for title in ("A", "B", "C"):
+            _row(title, 7)
+        _row("D", 8)
+        state = MatchResultState.objects.create(
+            user=self.user, current_generation=7, issued_generation=8
+        )
+        self.client.force_login(self.user)
+        payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(payload["result_generation"], 7)
+        self.assertEqual(payload["state"], "ok")
+        state.current_generation = 8
+        state.save()
+        self.assertEqual(
+            self.client.get("/api/job-matches/status/").json()["result_generation"], 8
+        )
+        # A generation with no rows still names itself (the panel needs it).
+        state.current_generation = 9
+        state.issued_generation = 9
+        state.save()
+        payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(payload["result_generation"], 9)
+        self.assertEqual(payload["state"], "no_matches")
+
+    def _generation_row(self, user, pref, listing, generation, **extra):
+        now = timezone.now()
+        return JobMatch.objects.create(
+            user=user,
+            listing=listing,
+            preference_version=pref.schema_version,
+            ranker_version="v1",
+            score=50,
+            preference_revision=pref.revision,
+            generated_at=now,
+            factors=[],
+            first_matched_at=now,
+            last_matched_at=now,
+            result_generation=generation,
+            **extra,
+        )
+
+    @override_settings(
+        MATCH_RESULTS_READ_ENABLED=True, RESULT_REVISION_POLL_SECONDS=60
+    )
+    def test_status_names_the_interval_only_with_a_committed_generation(self):
+        """issue #485 review: the status read names the interval (so the
+        panel's off switch works before the first poll), and only when there
+        is a committed generation and the setting is positive."""
+        from crank.models.job_match import MatchResultState
+
+        self.make_preference(self.user)
+        self.client.force_login(self.user)
+        self.assertIsNone(
+            self.client.get("/api/job-matches/status/").json()["poll_after_seconds"]
+        )
+        MatchResultState.objects.create(
+            user=self.user, current_generation=5, issued_generation=5
+        )
+        self.assertEqual(
+            self.client.get("/api/job-matches/status/").json()["poll_after_seconds"],
+            60,
+        )
+        with self.settings(RESULT_REVISION_POLL_SECONDS=0):
+            self.assertIsNone(
+                self.client.get("/api/job-matches/status/").json()[
+                    "poll_after_seconds"
+                ]
+            )
+        with self.settings(RESULT_REVISION_POLL_SECONDS=120):
+            self.assertEqual(
+                self.client.get("/api/job-matches/status/").json()[
+                    "poll_after_seconds"
+                ],
+                120,
+            )
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_status_count_is_the_users_own_listed_rows(self):
+        """issue #485 review: generation numbers are per-user tickets, so the
+        count must skip dismissed rows, closed listings and other accounts'
+        rows at the same number."""
+        from crank.models.job_match import MatchResultState
+
+        pref = self.make_preference(
+            self.user, preferences={"work_location": {"modes": ["remote"]}}
+        )
+        other = self.staff_user
+        other_pref = self.make_preference(
+            other, preferences={"work_location": {"modes": ["remote"]}}
+        )
+        source = self.make_source(enabled=True)
+        source.last_crawl_at = timezone.now()
+        source.save()
+        # This user's generation 7 has only rows the count must skip; another
+        # account's generation 7 has a listed row.
+        self._generation_row(
+            self.user, pref, self.make_listing(source, "Dismissed"), 7, dismissed=True
+        )
+        self._generation_row(
+            self.user,
+            pref,
+            self.make_listing(source, "Closed", JobListing.Status.CLOSED),
+            7,
+        )
+        self._generation_row(other, other_pref, self.make_listing(source, "Theirs"), 7)
+        MatchResultState.objects.create(
+            user=self.user, current_generation=7, issued_generation=7
+        )
+        MatchResultState.objects.create(
+            user=other, current_generation=7, issued_generation=7
+        )
+        self.client.force_login(self.user)
+        payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(payload["result_generation"], 7)
+        self.assertEqual(payload["state"], "no_matches")
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_generation_and_count_are_one_statement(self):
+        """issue #485 review: one statement reads the state row, with the
+        count as a subquery; two statements could straddle a publish."""
+        from crank.models.job_match import MatchResultState
+
+        self.make_preference(self.user)
+        MatchResultState.objects.create(
+            user=self.user, current_generation=5, issued_generation=5
+        )
+        self.client.force_login(self.user)
+        self.client.get("/api/job-matches/status/")
+        with CaptureQueriesContext(connection) as queries:
+            self.client.get("/api/job-matches/status/")
+        state_reads = [
+            q["sql"] for q in queries if "crank_matchresultstate" in q["sql"]
+        ]
+        self.assertEqual(len(state_reads), 1, state_reads)
+        self.assertIn("COUNT(", state_reads[0])
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_status_generation_is_null_without_a_committed_generation(self):
+        from crank.models.job_match import MatchResultState
+
+        self.client.force_login(self.user)
+        # No preference row at all.
+        self.assertIsNone(
+            self.client.get("/api/job-matches/status/").json()["result_generation"]
+        )
+        # A preference but no published generation.
+        self.make_preference(self.user)
+        MatchResultState.objects.create(user=self.user, issued_generation=1)
+        self.assertIsNone(
+            self.client.get("/api/job-matches/status/").json()["result_generation"]
+        )
+
+    def test_status_generation_is_null_while_reads_are_off(self):
+        from crank.models.job_match import MatchResultState
+
+        self.make_preference(self.user)
+        MatchResultState.objects.create(
+            user=self.user, current_generation=5, issued_generation=5
+        )
+        self.client.force_login(self.user)
+        self.assertIsNone(
+            self.client.get("/api/job-matches/status/").json()["result_generation"]
         )
 
     def test_no_preferences_counts_zero_without_match_queries(self):
