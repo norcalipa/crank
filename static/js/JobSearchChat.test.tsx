@@ -4398,6 +4398,125 @@ describe('an account switch leaves the previous account nothing to act with (iss
         });
     });
 
+    describe('an answer whose body is still being read when the account switches', () => {
+        // The headers have arrived; the body is still on its way. Each check must come after the body read.
+        function heldBody(kind: 'blob' | 'json') {
+            let release: (value: unknown) => void = () => undefined;
+            const body = new Promise((resolve) => { release = resolve; });
+            let arrive: () => void = () => undefined;
+            const reading = new Promise<void>((resolve) => { arrive = resolve; });
+            const res = {ok: true, status: 200, headers: new Headers(),
+                [kind]: () => { arrive(); return body; }} as unknown as Response;
+            return {res, reading, release};
+        }
+        const oldNotice = {state: 'no_matches', title: 'Old account notice', message: 'Old account availability.'};
+
+        test('an Export whose blob is still being read at the switch is not saved', async () => {
+            const createUrl = jest.fn().mockReturnValue('blob:old-account');
+            Object.defineProperty(URL, 'createObjectURL', {value: createUrl, configurable: true});
+            Object.defineProperty(URL, 'revokeObjectURL', {value: jest.fn(), configurable: true});
+            const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+            await mountOld();
+            const body = heldBody('blob');
+            route(when('GET', `${CONVERSATIONS_URL}42/export/`), () => body.res, true);
+            chooseMenuItem('conversation-export');
+            await body.reading;
+            await switchAccount();
+            await act(async () => { body.release(new Blob(['{"user":"old"}'])); });
+            expect(createUrl).not.toHaveBeenCalled();
+            expect(click).not.toHaveBeenCalled();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+        });
+
+        test('a New conversation whose body is still being read at the switch is not adopted', async () => {
+            await mountOld();
+            const body = heldBody('json');
+            route(when('POST', `${CONVERSATIONS_URL}42/reset/`), () => body.res, true);
+            startNewConversation();
+            await body.reading;
+            await switchAccount();
+            await act(async () => { body.release(emptyConversation(555)); });
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(getWorkspaceSnapshot().conversationId).toBe(55);
+            expect(storedFor(555)).toEqual([]);
+        });
+
+        test('an availability notice whose body is still being read at the switch is not shown', async () => {
+            const body = heldBody('json');
+            route(isAvailability, () => body.res, true);
+            await mountOld();
+            await body.reading;
+            await switchAccount();
+            await waitFor(() => expect(callsTo(AVAILABILITY_URL, 'GET')).toHaveLength(2));
+            await act(async () => { body.release(oldNotice); });
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(screen.queryByText('Old account notice')).not.toBeInTheDocument();
+        });
+
+        test('an availability notice whose body is still being read without a switch is shown', async () => {
+            const body = heldBody('json');
+            route(isAvailability, () => body.res, true);
+            await mountOld();
+            await body.reading;
+            await act(async () => { body.release(oldNotice); });
+            expect(await screen.findByText('Old account notice')).toBeInTheDocument();
+        });
+
+        test('a conversation created for the first message, its body still being read at the switch, posts nothing', async () => {
+            await mountOldWithoutConversation();
+            const body = heldBody('json');
+            route(isCreate, () => body.res, true);
+            answer(when('POST', `${CONVERSATIONS_URL}77/`), {message: assistantMessage(9, 'Answer for 77.'), preferences_changed: false}, 201);
+            type('previous account question');
+            send();
+            await body.reading;
+            await switchAccount();
+            await act(async () => { body.release(emptyConversation(77)); });
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(messagePosts(77)).toHaveLength(0);
+            expect(getWorkspaceSnapshot().conversationId).toBe(55);
+            expect(screen.queryByText('previous account question')).not.toBeInTheDocument();
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+        });
+
+        test('a conversation created for the first message, its body still being read without a switch, takes the message', async () => {
+            await mountOldWithoutConversation();
+            const body = heldBody('json');
+            route(isCreate, () => body.res, true);
+            answer(when('POST', `${CONVERSATIONS_URL}77/`), {message: assistantMessage(9, 'Answer for 77.'), preferences_changed: false}, 201);
+            type('my question');
+            send();
+            await body.reading;
+            await act(async () => { body.release(emptyConversation(77)); });
+            await screen.findByText('Answer for 77.');
+            expect(messagePosts(77)).toHaveLength(1);
+        });
+    });
+
+    describe('Start a conversation answered after the switch does not move focus', () => {
+        test('the next reader\'s focus stays where they put it', async () => {
+            jest.useFakeTimers({doNotFake: ['queueMicrotask', 'nextTick', 'setImmediate']});
+            try {
+                route(isResume, () => jsonResponse({}, 404));
+                route(isCreate, () => jsonResponse({}, 500), true);
+                render(<JobSearchChat createOnMount/>);
+                const start = await screen.findByRole('button', {name: 'Start a conversation'});
+                const create = hold(isCreate);
+                fireEvent.click(start);
+                await create.arrived;
+                await switchAccount();
+                act(() => { jest.runOnlyPendingTimers(); });
+                const more = screen.getByTestId('conversation-more');
+                act(() => { more.focus(); });
+                await act(async () => { create.settle(jsonResponse(emptyConversation(556))); });
+                act(() => { jest.runOnlyPendingTimers(); });
+                expect(more).toHaveFocus();
+            } finally {
+                jest.useRealTimers();
+            }
+        });
+    });
+
     describe('a press in the instant after the switch', () => {
         const proposal = {
             id: 'prop-588', scope: 'account', changes: [{path: 'notes', old: '', new: 'prefers remote-first teams'}], change_count: 1,
