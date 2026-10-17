@@ -456,6 +456,106 @@ describe('company view visual review round 3 (issue #486)', () => {
     });
 });
 
+describe('company view fit and open jobs (issue #486c)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
+    const rule = (selector: string): string => {
+        const start = section.indexOf(`${selector} {`);
+        expect(start).toBeGreaterThanOrEqual(0);
+        return section.slice(start, section.indexOf('}', start));
+    };
+
+    test('a fit that is being read again is dimmed without changing its height, and the loading placeholder is not', () => {
+        const dim = rule('.company-fit [aria-busy="true"]:not([role="status"])');
+        expect(dim).toMatch(/opacity:\s*\.75;/);
+        expect(dim).not.toMatch(/height|display|visibility/);
+    });
+
+    test('the new rules live inside the #486 section and use no raw z-index', () => {
+        expect(section).toContain('.company-fit-figures');
+        expect(section).toContain('.company-job-row');
+        expect(section.slice(section.indexOf('Fit and open jobs'))).not.toMatch(/z-index/);
+    });
+
+    test('the three figures stack as label / value rows when the view is narrow', () => {
+        expect(rule('.company-fit-figures')).toContain('repeat(3, minmax(0, 1fr))');
+        const narrow = section.slice(section.indexOf('@container company-view (max-width: 28rem) {\n    .company-fit-figures'));
+        expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)');
+    });
+
+    test('rows wrap and long text breaks, so nothing overflows sideways', () => {
+        expect(rule('.company-fit-row,\n.company-job-row')).toContain('flex-wrap: wrap');
+        for (const selector of ['.company-fit-label', '.company-fit-value', '.company-job-meta']) {
+            expect(rule(selector)).toContain('min-width: 0');
+            expect(rule(selector)).toContain('overflow-wrap: anywhere');
+        }
+    });
+
+    test('a stand-alone link in the sections is at least 44px high', () => {
+        const link = section.slice(section.indexOf('.company-job-link,'));
+        expect(link).toContain('min-height: 44px');
+        expect(link).toContain("[data-testid='fit-sign-in']");
+    });
+
+    test('the action row wraps so View jobs sits beside Ask or under it', () => {
+        expect(rule('.company-view .popup-company-actions')).toContain('flex-wrap: wrap');
+    });
+});
+
+describe('company view visual review round 1 fixes (issue #486c)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
+    const body = (selector: string, from = section): string => {
+        const start = from.indexOf(`${selector} {`);
+        expect(start).toBeGreaterThanOrEqual(0);
+        return from.slice(start, from.indexOf('}', start));
+    };
+
+    test('a jump heading clears the phone top bar, at the breakpoint where the top bar is shown', () => {
+        expect(body('.company-view .company-jump-heading')).toContain('scroll-margin-top: 1rem');
+        // The top bar's own rule is the max-width 767.98px query higher up.
+        const phones = section.slice(section.indexOf('@media (max-width: 767.98px) {\n    .company-view .company-jump-heading'));
+        expect(body('.company-view .company-jump-heading', phones)).toContain('scroll-margin-top: 4.5rem');
+        expect(popupCss.indexOf('.app-mobile-topbar {\n        position: sticky')).toBeGreaterThan(0);
+    });
+
+    test('a jump heading reached from the keyboard shows a ring that outranks the old outline:none', () => {
+        const ring = body('.company-view h3.company-jump-heading[tabindex]:focus-visible');
+        expect(ring).toMatch(/outline:\s*2px solid/);
+        expect(ring).not.toContain('outline: none');
+        expect(popupCss).toContain('.popup-details h3[tabindex="-1"]:focus {\n    outline: none;');
+        expect(popupCss.indexOf('.popup-details h3[tabindex="-1"]:focus {')).toBeLessThan(popupCss.indexOf('/* issue #486 company view */'));
+    });
+
+    test('the two jump buttons share one row on phones', () => {
+        expect(body('.company-view .popup-company-jumps')).toContain('display: flex');
+        const phones = section.slice(section.indexOf('@media (max-width: 767.98px) {\n    .company-view .popup-company-jumps'));
+        expect(body('.company-view .popup-company-jumps', phones)).toContain('flex: 1 1 100%');
+        expect(body('.company-view .popup-company-jumps .btn', phones)).toContain('white-space: nowrap');
+    });
+
+    test('a value sits near its label, and the three numbers share a baseline', () => {
+        expect(body('.company-fit-label')).toContain('flex: 0 1 14rem');
+        expect(body('.company-fit-figures .job-match-figure')).toContain('justify-content: space-between');
+    });
+
+    test('a limit on what a fact covers is in a colour that is not the muted one', () => {
+        expect(body('.company-view .evidence-scope-limited')).toContain('color: #f5c26b');
+        expect(body('.company-fit-out-of-scope')).toContain('color: #f5c26b');
+    });
+
+    test('the assistant card\'s in-app action is bordered and semibold; Website stays a link', () => {
+        const rule = body('.org-card .org-card-view-company');
+        expect(rule).toContain('border: 1px solid currentColor');
+        expect(rule).toContain('font-weight: 600');
+    });
+
+    test('the disclosure summary and the no-link note are 44px high', () => {
+        expect(body('.company-fit-legend .how-ranking-works-summary')).toContain('min-height: 44px');
+        expect(body('.company-job-no-link')).toContain('min-height: 44px');
+    });
+});
+
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const containerBlock = popupCss.match(/@container organization-results \(max-width: 56rem\) \{[\s\S]*?\n\}\n/)![0];

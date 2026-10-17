@@ -22,6 +22,16 @@ from crank.models.job_match import JobMatch
 from crank.models.preference import UserPreference
 
 
+def has_enabled_job_source() -> bool:
+    """Whether any job source has ``enabled=True``; approval is not considered.
+
+    The one read-only check behind the ``source_disabled`` state. It is not the
+    company jobs endpoint's availability rule, which also requires the source to
+    be approved (``LIVE_SOURCE`` in ``crank/views/company_view.py``).
+    """
+    return JobSourceCatalog.objects.filter(enabled=True).exists()
+
+
 def _source_catalog_health(*, now, enabled_sources, freshness_window):
     """Count how many *enabled_sources* currently fail to deliver listings.
 
@@ -310,9 +320,8 @@ def derive_state(
 
     # --- inventory-level signals -----------------------------------------
 
-    sources_qs = JobSourceCatalog.objects.all()
-    has_any_source = sources_qs.exists()
-    has_enabled_source = sources_qs.filter(enabled=True).exists()
+    has_any_source = JobSourceCatalog.objects.exists()
+    has_enabled_source = has_enabled_job_source()
 
     if not has_any_source:
         return EmptyState(

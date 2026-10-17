@@ -244,6 +244,50 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.getByTestId('company-view')).toBeVisible();
     });
 
+    test('an assistant company card has "View company": it opens the view on the rankings and navigates from the chat page', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        const alphaId = await page.locator('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')
+            .locator('visible=true').first().getAttribute('data-organization-id');
+        expect(alphaId).not.toBeNull();
+        // The reply is the real one; only its results gain a company card. The page's own fetch is
+        // wrapped (a Playwright route cannot reach this host name from the test process).
+        const card = {id: Number(alphaId), name: 'E2E Alpha Corp', url: 'https://e2e.example.test/', funding_round: 'P', rto_policy: 'H'};
+        await page.addInitScript((organization) => {
+            const real = window.fetch.bind(window);
+            window.fetch = async (input, init) => {
+                const response = await real(input, init);
+                const address = typeof input === 'string' ? input : (input as Request).url;
+                if (init?.method === 'POST' && /\/api\/agent\/conversations\/\d+\/$/.test(new URL(address, window.location.href).pathname)) {
+                    const body = await response.clone().json();
+                    body.message.results = {jobs: [], organizations: [organization]};
+                    return new Response(JSON.stringify(body), {status: response.status, headers: response.headers});
+                }
+                return response;
+            };
+        }, card);
+        await page.reload();
+        await openAssistant(page);
+        await ask(page, 'Which companies fit?');
+        const companyCard = page.getByRole('article', {name: 'Organization: E2E Alpha Corp'});
+        await expect(companyCard).toBeVisible();
+        await expect(companyCard.getByRole('link', {name: /Website of E2E Alpha Corp/})).toHaveAttribute('href', 'https://e2e.example.test/');
+        await companyCard.getByTestId(`view-company-${alphaId}`).click();
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        await expect(page.locator('#organization-details-title')).toHaveText('E2E Alpha Corp');
+        await expect.poll(() => new URL(page.url()).searchParams.get('company')).toBe(alphaId);
+        expect(new URL(page.url()).pathname).toBe('/');
+
+        // Where no list is mounted the same link navigates to the rankings page.
+        await page.goto('/chat/');
+        await ask(page, 'Which companies fit?');
+        const chatCard = page.getByRole('article', {name: 'Organization: E2E Alpha Corp'});
+        await expect(chatCard).toBeVisible();
+        await chatCard.getByTestId(`view-company-${alphaId}`).click();
+        await page.waitForURL((url) => url.pathname === '/' && url.searchParams.get('company') === alphaId);
+        await expect(page.getByTestId('company-view')).toBeVisible();
+    });
+
     test('signing in as another account leaves no actions behind', async ({page}) => {
         await login(page);
         await openAssistant(page);

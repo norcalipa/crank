@@ -128,3 +128,78 @@ export const formatEvidenceDate = (iso: string | null | undefined, long = false)
         year: 'numeric', month: long ? 'long' : 'short', day: 'numeric',
     });
 };
+
+// What a fact covers, in words (issue #486). Evidence stores a scope as raw
+// keys (`countries`, `role_families`); no surface prints those keys. A fact
+// with no declared scope covers the whole company.
+export const COMPANY_WIDE_LABEL = 'Company-wide';
+
+const SCOPE_WORDS: Record<string, string> = {
+    countries: 'Location',
+    role_families: 'Roles',
+};
+
+export const formatScopeWords = (scope: Record<string, unknown> | null | undefined): string => {
+    const parts: string[] = [];
+    let other = false;
+    for (const [key, value] of Object.entries(scope || {})) {
+        // Attribution (which domain a crawler claimed), not a limit on what the fact covers.
+        if (key === 'claimed_domain') continue;
+        const values = (Array.isArray(value) ? value : [value])
+            .filter(item => typeof item === 'string' || typeof item === 'number')
+            .map(String)
+            .filter(item => item !== '');
+        if (values.length === 0) continue;
+        if (Object.prototype.hasOwnProperty.call(SCOPE_WORDS, key)) {
+            parts.push(`${SCOPE_WORDS[key]}: ${values.join(', ')}`);
+        } else {
+            other = true;
+        }
+    }
+    if (other) parts.push('Limited scope');
+    return parts.length > 0 ? parts.join('; ') : COMPANY_WIDE_LABEL;
+};
+
+/** The limit of a fact that covers only part of the company, in words; null for a company-wide one. */
+export const partialScopeWords = (scope: Record<string, unknown> | null | undefined): string | null => {
+    const words = formatScopeWords(scope);
+    return words === COMPANY_WIDE_LABEL ? null : words;
+};
+
+// The reader's own requirements, by canonical path (the labels the match
+// panel's chips use). An unknown path reads as its last segment.
+const REQUIREMENT_LABELS: Record<string, string> = {
+    'compensation.minimum_salary': 'Minimum salary',
+    'compensation.equity_minimum_percent': 'Equity',
+    'compensation.require_public_company': 'Public company',
+    'work_location.modes': 'Work mode',
+    'work_location.countries': 'Country',
+    'work_location.max_in_office_days': 'In-office days',
+    'geography.regions': 'Region',
+    'geography.remote_friendly': 'Remote-friendly',
+    'industry': 'Industry',
+    'funding_stage': 'Funding stage',
+    'culture': 'Culture',
+    'vesting.max_cliff_months': 'Cliff',
+    'vesting.max_vesting_months': 'Vesting length',
+    'vesting.prefer_accelerated': 'Accelerated vesting',
+    // The priorities the editor offers but the matching engine cannot check yet
+    // (the server's names for them, crank.services.preferences CRITERION_LABELS).
+    'roles.families': 'Role families',
+    'roles.titles': 'Role titles',
+    'roles.seniority': 'Seniority',
+    'compensation.minimum_total_compensation': 'Minimum total compensation',
+    'compensation.equity_liquidity_required': 'Equity liquidity required',
+    'compensation.acceptable_liquidity_events': 'Acceptable liquidity events',
+    'compensation.basis': 'Salary basis',
+    'compensation.period': 'Salary period',
+    'work_location.require_onsite': 'Require on-site',
+    'work_location.office_days_exact': 'Exact office days per week',
+    'scope.countries': 'Scope countries',
+    'scope.role_families': 'Scope role families',
+    'notes': 'Notes',
+};
+
+export const requirementLabel = (path: string): string =>
+    (Object.prototype.hasOwnProperty.call(REQUIREMENT_LABELS, path) ? REQUIREMENT_LABELS[path] : '')
+    || path.split('.').pop() || path;

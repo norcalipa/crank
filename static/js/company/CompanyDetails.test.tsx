@@ -1,13 +1,14 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {fireEvent, render, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as React from 'react';
 
 import CompanyView from './CompanyView';
 import CompanyDetails, {CompanyDetailsOrganization} from './CompanyDetails';
+import {getWorkspaceSnapshot, resetWorkspaceForTests} from '../workspace/store';
 
 const company = (id: number, overrides: Partial<CompanyDetailsOrganization> = {}): CompanyDetailsOrganization => ({
     id, name: `Company ${id}`, ranking: id, avg_score: 4.2, funding_round: 'S', rto_policy: 'R',
@@ -451,6 +452,227 @@ describe('CompanyDetails', () => {
 
             expect(screen.getByText('Leadership')).toBeInTheDocument();
             expect(screen.queryByText('Culture')).not.toBeInTheDocument();
+        });
+    });
+});
+
+describe('CompanyDetails: fit, jobs and View jobs (issue #486, AC 15-18)', () => {
+    const answer = (body: unknown) => ({ok: true, status: 200, redirected: false, json: () => Promise.resolve(body)});
+    let errorSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        resetWorkspaceForTests();
+        mockFetch([
+            ['/api/organizations/1/scores/', reply([{type__name: 'Culture', avg_score: 4.5}])],
+            ['/api/organizations/1/provenance/', reply(provenance(1))],
+            ['/api/organizations/1/fit/', answer({
+                organization_id: 1, has_preferences: false, fit_score: null, company_score: null, coverage: null,
+                requirements: [],
+            }) as unknown as Reply],
+            ['/api/organizations/1/jobs/', answer({
+                organization_id: 1, inventory: 'available', count: 0, results: [],
+            }) as unknown as Reply],
+            ['/api/company-corrections/', reply({corrections: []})],
+        ]);
+    });
+
+    afterEach(() => {
+        errorSpy.mockRestore();
+        resetWorkspaceForTests();
+    });
+
+    const renderDetails = (props: Partial<React.ComponentProps<typeof CompanyDetails>> = {}) => render(
+        <CompanyDetails organization={company(1)} isAuthenticated onAsk={() => {}} onSuggestCorrection={() => {}}
+                        {...props}/>);
+
+    test('the sections sit between the profile and the evidence, with headings in order', async () => {
+        renderDetails();
+        await screen.findByTestId('fit-no-priorities');
+        await screen.findByTestId('jobs-empty');
+        const order = ['company-handoff-actions', 'popup-details-grid', 'company-fit', 'company-jobs', 'provenance-section'];
+        await screen.findByTestId('provenance-section');
+        const nodes = order.map(id => screen.getByTestId(id));
+        for (let i = 1; i < nodes.length; i += 1) {
+            expect(nodes[i - 1].compareDocumentPosition(nodes[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        }
+        const headings = screen.getAllByRole('heading').map(heading => heading.textContent);
+        expect(headings.indexOf('Fit with your priorities')).toBeLessThan(headings.indexOf('Open jobs'));
+        expect(headings.indexOf('Open jobs')).toBeLessThan(headings.indexOf('Data Freshness & Sources'));
+    });
+
+    test('View jobs moves focus to the Jobs heading and scrolls it into view', async () => {
+        const scrollIntoView = jest.fn();
+        Element.prototype.scrollIntoView = scrollIntoView;
+        renderDetails();
+        fireEvent.click(screen.getByTestId('company-view-jobs'));
+        const heading = screen.getByRole('heading', {name: 'Open jobs'});
+        expect(heading).toHaveFocus();
+        expect(scrollIntoView).toHaveBeenCalledWith({block: 'start'});
+        await screen.findByTestId('jobs-empty');
+        expect(screen.getByTestId('company-view-jobs')).toHaveTextContent('View jobs');
+    });
+
+    test('View jobs is there when signed out and lands on the sign-in prompt, with no request', async () => {
+        Element.prototype.scrollIntoView = jest.fn();
+        renderDetails({isAuthenticated: false, signInUrlTemplate: '/accounts/login/?next=%2F%3Fcompany%3D__COMPANY_ID__'});
+        fireEvent.click(screen.getByTestId('company-view-jobs'));
+        expect(screen.getByRole('heading', {name: 'Open jobs'})).toHaveFocus();
+        expect(screen.getByTestId('jobs-sign-in')).toBeInTheDocument();
+        expect(screen.getByTestId('fit-sign-in').querySelector('a')).toHaveAttribute(
+            'href', '/accounts/login/?next=%2F%3Fcompany%3D1');
+        await screen.findByTestId('provenance-section');
+        const urls = (global.fetch as jest.Mock).mock.calls.map(([url]) => String(url));
+        expect(urls.filter(url => url.includes('/fit/') || url.includes('/jobs/'))).toEqual([]);
+    });
+
+    test('the priorities control opens the editor and the assistant', async () => {
+        renderDetails();
+        fireEvent.click(await screen.findByTestId('fit-set-priorities'));
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        expect(getWorkspaceSnapshot().visibility).toBe('open');
+    });
+
+    test('View jobs does nothing visible without the jobs heading mounted', () => {
+        // Defensive: the handler never throws if the heading is gone.
+        renderDetails();
+        const button = screen.getByTestId('company-view-jobs');
+        screen.getByRole('heading', {name: 'Open jobs'}).remove();
+        expect(() => fireEvent.click(button)).not.toThrow();
+    });
+    test('"See your fit" comes first in the action row, before "View jobs", and focuses the fit heading', async () => {
+        const scrollIntoView = jest.fn();
+        Element.prototype.scrollIntoView = scrollIntoView;
+        renderDetails();
+        const jumps = screen.getByTestId('company-see-fit').parentElement as HTMLElement;
+        expect(Array.from(jumps.querySelectorAll('button')).map(button => button.textContent))
+            .toEqual(['See your fit', 'View jobs']);
+        fireEvent.click(screen.getByTestId('company-see-fit'));
+        expect(screen.getByRole('heading', {name: 'Fit with your priorities'})).toHaveFocus();
+        expect(scrollIntoView).toHaveBeenCalledWith({block: 'start'});
+        await screen.findByTestId('fit-no-priorities');
+    });
+
+    describe('a late fit answer and the heading a jump focused (F7)', () => {
+        let release: () => void;
+        let scrollIntoView: jest.Mock;
+        const holdFit = () => {
+            const fitAnswer = answer({
+                organization_id: 1, has_preferences: false, fit_score: null, company_score: null, coverage: null,
+                requirements: [],
+            });
+            const held = new Promise<Reply>(resolve => {
+                release = () => resolve(fitAnswer as unknown as Reply);
+            });
+            mockFetch([
+                ['/api/organizations/1/scores/', reply([])],
+                ['/api/organizations/1/provenance/', reply(provenance(1))],
+                ['/api/organizations/1/fit/', held],
+                ['/api/organizations/1/jobs/', answer({
+                    organization_id: 1, inventory: 'available', count: 0, results: [],
+                }) as unknown as Reply],
+                ['/api/company-corrections/', reply({corrections: []})],
+            ]);
+        };
+        beforeEach(() => {
+            scrollIntoView = jest.fn();
+            Element.prototype.scrollIntoView = scrollIntoView;
+            holdFit();
+        });
+
+        const settle = async () => {
+            await act(async () => {
+                release();
+            });
+            await screen.findByTestId('fit-no-priorities');
+        };
+
+        test('the heading is brought back into view when the answer lands and the reader has not moved', async () => {
+            renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            expect(scrollIntoView).toHaveBeenCalledTimes(1);
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(2);
+            expect(scrollIntoView).toHaveBeenLastCalledWith({block: 'start'});
+        });
+
+        test.each([
+            ['a wheel', () => fireEvent.wheel(window)],
+            ['a touch drag', () => fireEvent.touchMove(window)],
+            ['a pointer press', () => fireEvent.pointerDown(window)],
+            ['Page Down', () => fireEvent.keyDown(window, {key: 'PageDown'})],
+        ])('%s since the jump: the page is not moved', async (_name, move) => {
+            renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            move();
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        });
+
+        test.each(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '])(
+            'the scroll key %j since the jump: the page is not moved', async key => {
+                renderDetails();
+                fireEvent.click(screen.getByTestId('company-view-jobs'));
+                fireEvent.keyDown(window, {key});
+                await settle();
+                expect(scrollIntoView).toHaveBeenCalledTimes(1);
+            });
+
+        test('every listener a jump adds is removed when the next jump replaces it and when the view unmounts', () => {
+            const added = jest.spyOn(window, 'addEventListener');
+            const removed = jest.spyOn(window, 'removeEventListener');
+            const names = ['wheel', 'touchmove', 'pointerdown', 'keydown'];
+            const count = (spy: jest.SpyInstance, name: string) => spy.mock.calls.filter(call => call[0] === name).length;
+            try {
+                const view = renderDetails();
+                fireEvent.click(screen.getByTestId('company-view-jobs'));
+                for (const name of names) expect(count(added, name)).toBe(1);
+                for (const name of names) expect(count(removed, name)).toBe(0);
+                fireEvent.click(screen.getByTestId('company-see-fit'));
+                // The second jump stops the first before it starts its own.
+                for (const name of names) expect(count(added, name)).toBe(2);
+                for (const name of names) expect(count(removed, name)).toBe(1);
+                view.unmount();
+                for (const name of names) expect(count(removed, name)).toBe(2);
+            } finally {
+                added.mockRestore();
+                removed.mockRestore();
+            }
+        });
+
+        test('a key that does not scroll leaves the guard on', async () => {
+            renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            fireEvent.keyDown(window, {key: 'a'});
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(2);
+        });
+
+        test('focus elsewhere: the page is not moved', async () => {
+            renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            screen.getByTestId('company-see-fit').focus();
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(1);
+        });
+
+        test('a second jump replaces the first; leaving the view releases the listeners', async () => {
+            const view = renderDetails();
+            fireEvent.click(screen.getByTestId('company-view-jobs'));
+            fireEvent.click(screen.getByTestId('company-see-fit'));
+            expect(scrollIntoView).toHaveBeenCalledTimes(2);
+            await settle();
+            expect(scrollIntoView).toHaveBeenCalledTimes(3);
+            view.unmount();
+            const before = scrollIntoView.mock.calls.length;
+            fireEvent.wheel(window);
+            expect(scrollIntoView).toHaveBeenCalledTimes(before);
+        });
+
+        test('without a jump the answer moves nothing', async () => {
+            renderDetails();
+            await settle();
+            expect(scrollIntoView).not.toHaveBeenCalled();
         });
     });
 });
