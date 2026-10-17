@@ -467,7 +467,7 @@ describe('CompanyDetails: fit, jobs and View jobs (issue #486, AC 15-18)', () =>
             ['/api/organizations/1/scores/', reply([{type__name: 'Culture', avg_score: 4.5}])],
             ['/api/organizations/1/provenance/', reply(provenance(1))],
             ['/api/organizations/1/fit/', answer({
-                organization_id: 1, has_preferences: false, fit_score: null, company_score: null, coverage: null,
+                organization_id: 1, has_preferences: false, priorities_met: null, company_score: null, coverage: null,
                 requirements: [],
             }) as unknown as Reply],
             ['/api/organizations/1/jobs/', answer({
@@ -558,7 +558,7 @@ describe('CompanyDetails: fit, jobs and View jobs (issue #486, AC 15-18)', () =>
         let scrollIntoView: jest.Mock;
         const holdFit = () => {
             const fitAnswer = answer({
-                organization_id: 1, has_preferences: false, fit_score: null, company_score: null, coverage: null,
+                organization_id: 1, has_preferences: false, priorities_met: null, company_score: null, coverage: null,
                 requirements: [],
             });
             const held = new Promise<Reply>(resolve => {

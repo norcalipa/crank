@@ -6,22 +6,22 @@ import * as React from 'react';
 
 import * as store from '../workspace/store';
 import {EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS} from '../labels';
-import FitSection, {COMPANY_SCORE_TERM, CompanyFit, FIT_NUMBER_NOTE, FitRequirement, fitGroupOf, observedText} from './FitSection';
+import FitSection, {COMPANY_SCORE_TERM, CompanyFit, FitRequirement, PRIORITIES_MET_TERM, PRIORITIES_NONE_TEXT, fitGroupOf, observedText} from './FitSection';
 import {retryFrom, useHoldReaderBelow, useOwnCompanyRead} from './useOwnCompanyRead';
 
 const req = (overrides: Partial<FitRequirement> = {}): FitRequirement => ({
     path: 'funding_stage', status: 'match', hard: false, observed: 'a', scope_ok: true, scope: null,
-    evidence_status: {state: 'verified', last_verified_at: '2026-01-01T00:00:00Z'}, ...overrides,
+    evidence_status: {state: 'verified', last_verified_at: '2026-01-01T00:00:00Z'}, counted: true, ...overrides,
 });
 
 const fit = (overrides: Partial<CompanyFit> = {}): CompanyFit => ({
-    organization_id: 4, has_preferences: true, fit_score: 71.25, company_score: 4.2, coverage: 0.6,
+    organization_id: 4, has_preferences: true, priorities_met: {met: 1, counted: 3}, company_score: 4.2, coverage: 0.6,
     requirements: [
         req(),
         req({path: 'work_location.max_in_office_days', status: 'mismatch', hard: true, observed: 5}),
         req({path: 'compensation.require_public_company', status: 'mismatch', hard: false, observed: false,
             evidence_status: {state: 'profile'}}),
-        req({path: 'industry', status: 'unknown', observed: null, evidence_status: null}),
+        req({path: 'industry', status: 'unknown', observed: null, evidence_status: null, counted: false}),
     ],
     ...overrides,
 });
@@ -64,12 +64,12 @@ describe('FitSection (issue #486, AC 15-16)', () => {
     test('four groups, three separately labelled numbers, every requirement exactly once', async () => {
         renderFit();
         await screen.findByTestId('fit-ready');
-        expect(screen.getByTestId('fit-score')).toHaveTextContent(/^71\.3$/);
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent(/^1 of 3$/);
         expect(screen.getByTestId('fit-company-score')).toHaveTextContent('4.2 / 5');
         expect(screen.getByTestId('fit-coverage')).toHaveTextContent('60%');
         const labels = within(screen.getByRole('list', {name: 'Match figures'})).getAllByRole('listitem');
         expect(labels.map(item => item.querySelector('.job-match-figure-label')?.textContent)).toEqual(
-            ['Fit', 'Average rating', 'Requirement coverage']);
+            ['Priorities met', 'Average rating', 'Requirement coverage']);
         const groupOf = (path: string) => screen.getByTestId(`fit-row-${path}`).closest('[data-testid^="fit-group-"]')!.getAttribute('data-testid');
         expect(groupOf('funding_stage')).toBe('fit-group-meets');
         expect(groupOf('work_location.max_in_office_days')).toBe('fit-group-does-not-meet');
@@ -144,9 +144,9 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         global.fetch = jest.fn().mockResolvedValue(answer(fit({requirements: [
             req({path: 'industry', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
             req({path: 'funding_stage', status: 'match', evidence_status: null, source_kind: 'field'}),
-            req({path: 'compensation.minimum_salary', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
-            req({path: 'geography.remote_friendly', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
-            req({path: 'geography.regions', status: 'unknown', observed: null, evidence_status: null, source_kind: null}),
+            req({path: 'compensation.minimum_salary', status: 'unknown', observed: null, evidence_status: null, source_kind: null, counted: false}),
+            req({path: 'geography.remote_friendly', status: 'unknown', observed: null, evidence_status: null, source_kind: null, counted: false}),
+            req({path: 'geography.regions', status: 'unknown', observed: null, evidence_status: null, source_kind: null, counted: false}),
         ]})));
         renderFit();
         await screen.findByTestId('fit-ready');
@@ -175,17 +175,13 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         }
         for (const mark of Object.values(REQUIREMENT_MARKS)) expect(text).toContain(mark.meaning);
         expect(text).toContain(EVIDENCE_STATUS_META.verified.meaning);
-        // The Fit number says what it is, and that it has no top of 100.
-        expect(text).toContain('The ranking\u2019s score for this company under your priorities');
-        expect(text).toContain('so it cannot reach 100');
-        expect(text).toContain('Only four of the ranking\u2019s eight factors can score for a company');
-        // A company has no industry, so the sentence must not promise points for one.
-        expect(text).not.toMatch(/industry|five of/i);
-        expect(text).toContain('funding stage, work mode and accelerated-vesting priorities');
-        // Why the number and the rows can disagree.
-        expect(text).toContain('Why the fit and the rows can disagree');
-        expect(text).toContain('the fit reads the profile values');
-        expect(text).toContain('A priority under Meets can add nothing to the fit');
+        // The first figure says what it counts, and the old disagreement text is gone.
+        expect(text).toContain(PRIORITIES_MET_TERM.label);
+        expect(text).toContain(PRIORITIES_MET_TERM.meaning);
+        expect(text).toContain('Unknown and not-counted rows count as not met; priorities checked for each job are not counted.');
+        expect(text).not.toContain('cannot reach 100');
+        expect(text).not.toContain('Why the fit and the rows can disagree');
+        expect(text).not.toContain('the fit reads the profile values');
         expect(text).toContain('Verified describes the fact in "Data Freshness & Sources"; Sourced, not confirmed describes how a row was decided from it.');
         // Cut to what a reader meets: no entry for a status this view cannot show, no run-together words.
         expect(text).not.toContain(MATCH_TERMS.changed.label);
@@ -195,42 +191,46 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(within(legend).getByText('What these labels mean').tagName).toBe('SUMMARY');
     });
 
-    test('a visible sentence under the numbers says the Fit is not a summary of the rows', async () => {
+    test('the disagreement note is gone: the figure is a count of the rows below', async () => {
         renderFit();
         const ready = await screen.findByTestId('fit-ready');
-        const note = within(ready).getByTestId('fit-number-note');
-        expect(note).toHaveTextContent(FIT_NUMBER_NOTE);
-        expect(note).toHaveTextContent('not a count of the rows below, and the two can disagree');
-        // Outside the closed disclosure, after the three numbers and before it.
-        expect(note.closest('details')).toBeNull();
-        const figures = screen.getByRole('list', {name: 'Match figures'});
-        expect(figures.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-        expect(note.compareDocumentPosition(screen.getByTestId('fit-legend')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(within(ready).queryByTestId('fit-number-note')).toBeNull();
+        expect(ready.textContent).not.toContain('the two can disagree');
+        expect(within(ready).queryByTestId('fit-priorities-none')).toBeNull();
     });
 
-    test('the company score is labelled as the plain average rating it is, not as a preset', async () => {
+    test('the figure reads "met of counted" and equals the number of rows under Meets', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            priorities_met: {met: 2, counted: 3},
+            requirements: [
+                req(),
+                req({path: 'work_location.modes', observed: 'hybrid'}),
+                req({path: 'work_location.max_in_office_days', status: 'mismatch', observed: 5}),
+                req({path: 'compensation.minimum_salary', status: 'unknown', observed: null, evidence_status: null, counted: false}),
+            ],
+        })));
         renderFit();
         await screen.findByTestId('fit-ready');
-        const label = screen.getByText(COMPANY_SCORE_TERM.label, {selector: '.job-match-figure-label'});
-        expect(label).toHaveAttribute('title', COMPANY_SCORE_TERM.meaning);
-        expect(COMPANY_SCORE_TERM.meaning).toContain('plain average');
-        expect(COMPANY_SCORE_TERM.meaning).toContain('whatever the ranking preset');
-        const text = screen.getByTestId('fit-ready').textContent || '';
-        expect(text).not.toMatch(/preset-weighted|Company score \(preset\)/);
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent(/^2 of 3$/);
+        expect(within(screen.getByTestId('fit-group-meets')).getAllByTestId(/^fit-row-/)).toHaveLength(2);
+        const counted = screen.getAllByTestId(/^fit-row-/).filter(row => !within(row).queryByText(/Checked for each job/));
+        expect(counted).toHaveLength(3);
+        const label = document.querySelector('.job-match-figure-label')!;
+        expect(label).toHaveTextContent('Priorities met');
+        expect(label.getAttribute('title')).toBe(PRIORITIES_MET_TERM.meaning);
     });
 
-    test('a reader who excluded this company is told so, once, above the numbers', async () => {
-        global.fetch = jest.fn().mockResolvedValue(answer(fit({excluded: true})));
+    test('with nothing a company can decide the figure is a dash and one sentence says why', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            priorities_met: null,
+            requirements: [req({path: 'compensation.minimum_salary', status: 'unknown', observed: null, evidence_status: null, counted: false})],
+        })));
         renderFit();
-        const ready = await screen.findByTestId('fit-ready');
-        const sentence = within(ready).getByTestId('fit-excluded');
-        expect(sentence).toHaveTextContent('You excluded Acme in your priorities, so the assistant’s company matches leave it out.');
-        expect(sentence).toHaveTextContent('Company rankings do not use your priorities.');
-        expect(sentence).not.toHaveTextContent('ranked results');
-        expect(sentence).toHaveTextContent('This page still shows how it fits the rest.');
-        expect(within(ready).getAllByTestId('fit-excluded')).toHaveLength(1);
-        expect(sentence.compareDocumentPosition(screen.getByRole('list', {name: 'Match figures'}))
-            & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        await screen.findByTestId('fit-ready');
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent(/^—$/);
+        const sentence = screen.getByTestId('fit-priorities-none');
+        expect(sentence).toHaveTextContent(PRIORITIES_NONE_TEXT);
+        expect(sentence.closest('details')).toBeNull();
     });
 
     test('a company that was not excluded says nothing about exclusion', async () => {
@@ -241,7 +241,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
 
     test('a reader whose only priority is an exclusion gets one sentence, no coverage and no empty groups', async () => {
         global.fetch = jest.fn().mockResolvedValue(answer(fit({
-            has_preferences: true, excluded: true, requirements: [], fit_score: 0, coverage: null,
+            has_preferences: true, excluded: true, requirements: [], priorities_met: null, coverage: null,
         })));
         renderFit();
         const only = await screen.findByTestId('fit-exclusions-only');
@@ -258,7 +258,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
 
     test('an exclusion-only reader whose company is not excluded gets the sentence without the exclusion note', async () => {
         global.fetch = jest.fn().mockResolvedValue(answer(fit({
-            has_preferences: true, excluded: false, requirements: [], fit_score: 0, coverage: null,
+            has_preferences: true, excluded: false, requirements: [], priorities_met: null, coverage: null,
         })));
         renderFit();
         await screen.findByTestId('fit-exclusions-only');
@@ -274,13 +274,6 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(prompt).toHaveTextContent('cannot be checked against a company yet: Role titles.');
         expect(screen.queryByTestId('fit-ready')).toBeNull();
         expect(screen.queryByTestId('fit-exclusions-only')).toBeNull();
-    });
-
-    test('the Fit number carries no scale it cannot reach', async () => {
-        renderFit();
-        await screen.findByTestId('fit-ready');
-        expect(screen.getByTestId('fit-score').textContent).not.toMatch(/100/);
-        expect(document.querySelector('.job-match-figure-label')!.getAttribute('title')).toContain('cannot reach 100');
     });
 
     test('the heading takes focus (a jump target) and the settle callback runs when the read lands', async () => {
@@ -320,10 +313,10 @@ describe('FitSection (issue #486, AC 15-16)', () => {
     });
 
     test('figures show a dash when a number is not known', async () => {
-        global.fetch = jest.fn().mockResolvedValue(answer(fit({fit_score: null, company_score: null, coverage: null})));
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({priorities_met: null, company_score: null, coverage: null})));
         renderFit();
         await screen.findByTestId('fit-ready');
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('—');
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent('—');
         expect(screen.getByTestId('fit-company-score')).toHaveTextContent('—');
         expect(screen.getByTestId('fit-coverage')).toHaveTextContent('—');
     });
@@ -495,8 +488,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
 });
 
 describe('the fit follows a saved priorities change (issue #486, F4)', () => {
-    const second = () => fit({fit_score: 33.5, requirements: [
-        req({path: 'industry', status: 'match', observed: 'software'})]});
+    const second = () => fit({priorities_met: {met: 1, counted: 1}, requirements: [req({path: 'funding_stage'})]});
     const calls = () => (global.fetch as jest.Mock).mock.calls.length;
     beforeEach(() => {
         store.resetWorkspaceForTests();
@@ -514,12 +506,12 @@ describe('the fit follows a saved priorities change (issue #486, F4)', () => {
         act(() => store.setPrioritiesRevision(7));
         expect(calls()).toBe(2);
         expect(screen.getByTestId('fit-ready')).toHaveAttribute('aria-busy', 'true');
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3');
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent('1 of 3');
         expect(screen.queryByTestId('fit-loading')).toBeNull();
         await act(async () => {
             release(answer(second()));
         });
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5');
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent('1 of 1');
         expect(screen.getByTestId('fit-ready')).not.toHaveAttribute('aria-busy');
         expect(calls()).toBe(2);
     });
@@ -556,7 +548,7 @@ describe('the fit follows a saved priorities change (issue #486, F4)', () => {
         await act(async () => {
             waiting[1](answer(second()));
         });
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5');
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent('1 of 1');
     });
 
     test('a second change while one read is out keeps only the last answer', async () => {
@@ -567,13 +559,13 @@ describe('the fit follows a saved priorities change (issue #486, F4)', () => {
         act(() => store.setPrioritiesRevision(8));
         act(() => store.setPrioritiesRevision(9));
         await act(async () => {
-            waiting[0](answer(fit({fit_score: 1})));
+            waiting[0](answer(fit({priorities_met: {met: 0, counted: 9}})));
         });
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('71.3');
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent('1 of 3');
         await act(async () => {
             waiting[1](answer(second()));
         });
-        expect(screen.getByTestId('fit-score')).toHaveTextContent('33.5');
+        expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent('1 of 1');
     });
 
     test('a purge during a re-read leaves nothing, and its late answer is dropped', async () => {
@@ -604,7 +596,7 @@ describe('the fit follows a saved priorities change (issue #486, F4)', () => {
         (global.fetch as jest.Mock).mockResolvedValueOnce(answer({}, {ok: false, status: 500}));
         act(() => store.setPrioritiesRevision(8));
         await screen.findByTestId('fit-error');
-        expect(screen.queryByTestId('fit-score')).toBeNull();
+        expect(screen.queryByTestId('fit-priorities-met')).toBeNull();
         fireEvent.click(screen.getByTestId('fit-retry'));
         await screen.findByTestId('fit-ready');
     });

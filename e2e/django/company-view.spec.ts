@@ -1163,16 +1163,16 @@ test.describe('company view fit, jobs and scope (issue #486c)', () => {
         await expect(view(page)).toBeVisible();
     };
     const fitBody = (overrides: Record<string, unknown> = {}) => ({
-        organization_id: 1, has_preferences: true, fit_score: 72.5, company_score: 4.2, coverage: 0.5,
+        organization_id: 1, has_preferences: true, priorities_met: {met: 1, counted: 3}, company_score: 4.2, coverage: 0.5,
         unsupported: [], revision: {preference_revision: 1, ranking_version: '1.0.0', data_revision: 1},
         requirements: [
-            {path: 'funding_stage', status: 'match', hard: false, observed: 'b', scope_ok: true, scope: null,
+            {path: 'funding_stage', counted: true, status: 'match', hard: false, observed: 'b', scope_ok: true, scope: null,
                 evidence_status: {state: 'verified', last_verified_at: null}},
-            {path: 'work_location.max_in_office_days', status: 'mismatch', hard: true, observed: 3, scope_ok: true,
+            {path: 'work_location.max_in_office_days', counted: true, status: 'mismatch', hard: true, observed: 3, scope_ok: true,
                 scope: null, evidence_status: {state: 'profile'}},
-            {path: 'compensation.require_public_company', status: 'mismatch', hard: false, observed: false,
+            {path: 'compensation.require_public_company', counted: true, status: 'mismatch', hard: false, observed: false,
                 scope_ok: true, scope: null, evidence_status: {state: 'sourced'}},
-            {path: 'industry', status: 'unknown', hard: false, observed: null, scope_ok: false,
+            {path: 'industry', counted: false, status: 'unknown', hard: false, observed: null, scope_ok: false,
                 scope: {countries: ['US'], role_families: ['Engineering']}, evidence_status: {state: 'stale'}},
         ],
         ...overrides,
@@ -1194,7 +1194,7 @@ test.describe('company view fit, jobs and scope (issue #486c)', () => {
             expect(response.headers()['cache-control']).toBe('private, no-store');
         }
         await expect(page.getByTestId('fit-ready')).toBeVisible();
-        for (const id of ['fit-score', 'fit-company-score', 'fit-coverage']) {
+        for (const id of ['fit-priorities-met', 'fit-company-score', 'fit-coverage']) {
             await expect(page.getByTestId(id)).toBeVisible();
         }
         await expect(page.getByTestId('fit-row-work_location.modes')).toBeVisible();
@@ -1264,7 +1264,7 @@ test.describe('company view fit, jobs and scope (issue #486c)', () => {
         // The engine's own values read as words.
         await expect(page.getByTestId('fit-row-funding_stage')).toContainText('Series B');
         await expect(page.getByTestId('fit-row-work_location.max_in_office_days')).toContainText('3 days a week in the office');
-        await expect(page.getByTestId('fit-score')).toHaveText('72.5');
+        await expect(page.getByTestId('fit-priorities-met')).toHaveText('1 of 3');
         await expect(page.getByTestId('fit-company-score')).toHaveText('4.2 / 5');
         await expect(page.getByTestId('fit-coverage')).toHaveText('50%');
         expect(await view(page).innerText()).not.toMatch(/countries|role_families/);
@@ -1798,8 +1798,8 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
         await summary.focus();
         await page.keyboard.press('Enter');
         await expect(legend).toHaveAttribute('open', '');
-        await expect(legend).toContainText('so it cannot reach 100');
-        await expect(legend).toContainText('Why the fit and the rows can disagree');
+        await expect(legend).toContainText('Your priorities that a fact about the company can decide');
+        await expect(legend).not.toContainText('Why the fit and the rows can disagree');
         await expect(legend).toContainText('Sourced, not confirmed describes how a row was decided from it');
         await expect(legend).not.toContainText('Refresh matches');
         await expect(legend).toContainText('Sourced, not confirmed');
@@ -1832,7 +1832,7 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
             await expect(panel).toContainText('Priorities saved');
             await panel.locator('.assistant-back-to-results').first().click();
             await expect(page.getByTestId('fit-ready')).toBeVisible();
-            for (const id of ['fit-score', 'fit-company-score', 'fit-coverage']) await expect(page.getByTestId(id)).toBeVisible();
+            for (const id of ['fit-priorities-met', 'fit-company-score', 'fit-coverage']) await expect(page.getByTestId(id)).toBeVisible();
             for (const key of ['meets', 'tradeoffs', 'does-not-meet', 'unknown']) await expect(page.getByTestId(`fit-group-${key}`)).toBeVisible();
             await expect(page.getByTestId('fit-no-priorities')).toHaveCount(0);
             // One save, one more fit request, and never another read of the jobs.
@@ -1989,17 +1989,24 @@ test.describe('company view, review round 1 (issue #486c)', () => {
         }
     });
 
-    test('the Fit number is explained where it is read, and the explanation is true of this scoring', async ({page}) => {
+    test('the first figure is a count of the rows below, and nothing says the two can disagree', async ({page}) => {
         await login(page);
         await page.goto('/');
         await opener(page).click();
-        const note = page.getByTestId('fit-number-note');
-        await expect(note).toBeVisible();
-        await expect(note).toHaveText('Fit is the ranking’s score, not a count of the rows below, and the two can disagree.');
+        await expect(page.getByTestId('fit-ready')).toBeVisible();
+        await expect(page.getByTestId('fit-number-note')).toHaveCount(0);
+        await expect(page.locator('.job-match-figure-label').first()).toHaveText('Priorities met');
         await expect(page.locator('.job-match-figure-label').nth(1)).toHaveText('Average rating');
+        const figure = (await page.getByTestId('fit-priorities-met').innerText()).match(/^(\d+) of (\d+)$/);
+        expect(figure).not.toBeNull();
+        const rows = page.locator('[data-testid^="fit-row-"]');
+        const perJob = rows.filter({hasText: 'Checked for each job, not for the company.'});
+        expect(await page.locator('[data-testid="fit-group-meets"] [data-testid^="fit-row-"]').count()).toBe(Number(figure![1]));
+        expect((await rows.count()) - (await perJob.count())).toBe(Number(figure![2]));
         const legend = page.getByTestId('fit-legend');
         await legend.locator('summary').click();
-        await expect(legend).toContainText('Only four of the ranking’s eight factors can score for a company');
-        await expect(legend).not.toContainText(/industry|five of/i);
+        await expect(legend).toContainText('Unknown and not-counted rows count as not met');
+        await expect(legend).not.toContainText('cannot reach 100');
+        await expect(legend).not.toContainText('Why the fit and the rows can disagree');
     });
 });
