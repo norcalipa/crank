@@ -272,6 +272,8 @@ export function ConversationMenu({
             return;
         }
         setConfirming(null);
+        // The confirmation held focus and is gone; a dropped answer adopts nothing that could take it.
+        if (outcome === DROPPED) moreRef.current?.focus();
     };
 
     const deleting = confirming === 'delete';

@@ -1355,9 +1355,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
 
     const handleComposerChange = (value: string) => {
-        setInput(value);
-        // Typed in the instant after a switch: the draft is not stored under the previous account's conversation.
+        // Typed in the instant after a switch: the value is still the previous account's draft plus the
+        // key, so it must reach neither the composer nor storage under the previous account's conversation.
         if (staleRender()) return;
+        setInput(value);
         if (effectiveAuthenticated) {
             writeComposerDraft(conversationId, value);
         } else {
@@ -1690,6 +1691,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 </span>
                 <button type="button" className="pref-change-dismiss" aria-label="Dismiss search filter notice"
                         onClick={() => {
+                            if (staleRender()) return;
                             setPrefSearchApplied(null);
                             setPrefDismissed(true);
                         }}>
@@ -1707,6 +1709,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             undoErrorType={prefUndoErrorType}
             onUndo={handleUndoPreferenceChange}
             onDismiss={() => {
+                if (staleRender()) return;
                 setPrefDismissed(true);
                 // The change is acknowledged: no plain banner returns under a later reply.
                 setPreferencesChanged(false);
@@ -1736,7 +1739,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 You can correct or remove a preference by telling the assistant what to change.
             </span>
             <button type="button" className="pref-change-dismiss" aria-label="Dismiss preference notice"
-                    onClick={() => setPrefDismissed(true)}>
+                    onClick={() => {
+                        if (staleRender()) return;
+                        setPrefDismissed(true);
+                    }}>
                 <i className="fa-solid fa-xmark" aria-hidden="true"></i>
             </button>
         </div>

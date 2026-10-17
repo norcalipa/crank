@@ -3965,8 +3965,8 @@ describe('an account switch leaves the previous account nothing to act with (iss
     }
     // A press made before the view has been redrawn without the control: the
     // purge is dispatched and the old control is pressed in the same instant.
-    async function pressAfterSwitch(press: () => void) {
-        newAccount();
+    async function pressAfterSwitch(press: () => void, nextAccount = newAccount) {
+        nextAccount();
         const quiet = jest.spyOn(console, 'error').mockImplementation(() => undefined);
         try {
             purgeEvent();
@@ -4122,8 +4122,11 @@ describe('an account switch leaves the previous account nothing to act with (iss
             ['an HTTP error', () => jsonResponse({}, 500)],
             ['a network error', () => new Error('offline')],
         ] as const;
-        const cases = actions.flatMap((action) => failures.flatMap((failure) => [[...action, ...failure, true], [...action, ...failure, false]] as const));
-        test.each(cases)('%s failing with %s (account switched: %s)', async (_name, start, path, method, copy, _kind, fail, switched) => {
+        const cases = actions.flatMap(([name, start, path, method, copy]) => failures.flatMap(([kind, fail]) => [
+            {name, kind, start, path, method, copy, fail, switched: true, outcome: 'is dropped after an account switch'},
+            {name, kind, start, path, method, copy, fail, switched: false, outcome: 'is reported in the same account'},
+        ]));
+        test.each(cases)('$name failing with $kind $outcome', async ({start, path, method, copy, fail, switched}) => {
             await mountOld();
             const held = hold(when(method, `${CONVERSATIONS_URL}42/${path}/`));
             start();
@@ -4153,6 +4156,20 @@ describe('an account switch leaves the previous account nothing to act with (iss
             expect(fetchMock.mock.calls.slice(callsBefore).filter(([u]) => String(u).endsWith(`/${path}/`))).toEqual([]);
             expect(getWorkspaceSnapshot().conversationId).toBe(55);
             expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument();
+        });
+
+        test.each([
+            ['New conversation', 'reset', startNewConversation],
+            ['Delete', 'delete', deleteConversation],
+        ])('%s dropped by a switch returns focus to More', async (_name, path, start) => {
+            await mountOld();
+            const held = hold(when('POST', `${CONVERSATIONS_URL}42/${path}/`));
+            start();
+            await held.arrived;
+            await switchAccount();
+            await act(async () => { held.settle(jsonResponse(path === 'reset' ? emptyConversation(555) : {deleted: true})); });
+            await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+            expect(screen.getByTestId('conversation-more')).toHaveFocus();
         });
 
         test('Export pressed after the switch asks the server nothing', async () => {
@@ -4404,6 +4421,38 @@ describe('an account switch leaves the previous account nothing to act with (iss
             expect(editorOpen()).toBe('sidebar');
         });
 
+        // The next account's own conversation comes back with a changed-preferences flag: its banner must show.
+        const nextAccountWithBanner = () => answer(isResume, {...emptyConversation(55, [assistantMessage(70, 'New account reply.')]), preferences_changed: true});
+        const nextAccountBanner = () => screen.queryByRole('status', {name: 'Preference update'});
+
+        test.each([
+            ['the change notice', async () => { await withAppliedChange(); return screen.getByRole('button', {name: /dismiss/i}); }],
+            ['the search-only notice', async () => {
+                await withProposal();
+                answer(when('POST', APPLY_URL), {applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []}});
+                fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+                await screen.findByTestId('preference-search-applied');
+                return screen.getByRole('button', {name: 'Dismiss search filter notice'});
+            }],
+            ['the preferences banner', async () => {
+                answer(isResume, {...emptyConversation(42, [assistantMessage(1, 'Old account reply.')]), preferences_changed: true});
+                render(<JobSearchChat/>);
+                await screen.findByText('Old account reply.');
+                return screen.findByRole('button', {name: 'Dismiss preference notice'});
+            }],
+        ])('Dismiss on %s pressed after the switch leaves the next account its own banner', async (_name, open) => {
+            const dismiss = await open();
+            await pressAfterSwitch(() => fireEvent.click(dismiss), nextAccountWithBanner);
+            expect(nextAccountBanner()).toBeInTheDocument();
+        });
+
+        test('Dismiss on the preferences banner pressed in the same account hides it', async () => {
+            answer(isResume, {...emptyConversation(42, [assistantMessage(1, 'Old account reply.')]), preferences_changed: true});
+            render(<JobSearchChat/>);
+            fireEvent.click(await screen.findByRole('button', {name: 'Dismiss preference notice'}));
+            expect(nextAccountBanner()).not.toBeInTheDocument();
+        });
+
         test('Undo pressed after the switch posts nothing', async () => {
             await withAppliedChange();
             await pressAfterSwitch(() => fireEvent.click(screen.getByTestId('preference-undo-button')));
@@ -4525,6 +4574,23 @@ describe('an account switch leaves the previous account nothing to act with (iss
             await mountOld();
             await pressAfterSwitch(() => type('typed at the switch'));
             expect(storedFor(42)).toEqual([]);
+        });
+
+        test('a keystroke in that instant does not carry the previous draft into the next account\'s composer or its Send', async () => {
+            await mountOld();
+            type('alice private draft');
+            await pressAfterSwitch(() => type('alice private draft!'));
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+            expect(storedFor(55)).toEqual([]);
+            answer(when('POST', `${CONVERSATIONS_URL}55/`), {message: assistantMessage(91, 'Answer.'), preferences_changed: false}, 201);
+            send();
+            expect(sentBodies().filter((b) => b.includes('alice private draft'))).toEqual([]);
+        });
+
+        test('a keystroke in the same account fills its composer', async () => {
+            await mountOld();
+            type('alice private draft');
+            expect(screen.getByLabelText('Message')).toHaveValue('alice private draft');
         });
 
         test('a keystroke in the same account is stored under its conversation', async () => {
