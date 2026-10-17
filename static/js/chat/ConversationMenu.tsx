@@ -15,15 +15,20 @@ export const ABOUT_HISTORY_COPY =
 
 type ConfirmKind = 'new' | 'delete';
 
+// What an action reports back: null when it worked, the failure copy to show,
+// or DROPPED when its answer belongs to a view that is gone (an account
+// switch) and must be shown nowhere: no status, no error.
+export const DROPPED = Symbol('dropped');
+export type HistoryOutcome = string | null | typeof DROPPED;
+
 export interface ConversationMenuProps {
     title: React.ReactNode;
     hasConversation: boolean;
     hasMessages: boolean;
     pending: boolean;
-    // Each action resolves to null on success or the failure copy to show.
-    onExport: () => Promise<string | null>;
-    onNewConversation: () => Promise<string | null>;
-    onDeleteConversation: () => Promise<string | null>;
+    onExport: () => Promise<HistoryOutcome>;
+    onNewConversation: () => Promise<HistoryOutcome>;
+    onDeleteConversation: () => Promise<HistoryOutcome>;
 }
 
 interface MenuItem {
@@ -201,12 +206,23 @@ export function ConversationMenu({
         next?.focus();
     };
 
+    // True when focus is on the page body (lost with a closed menu item or panel), or inside `closing`.
+    const focusHasFallen = (closing?: Element | null) => {
+        const active = document.activeElement;
+        return !active || active === document.body || !!closing?.contains(active);
+    };
+
     const runExport = async (keepFocus = false) => {
         setExportError(null);
         setStatus('');
-        const error = await onExport();
-        if (error) {
-            setExportError(error);
+        const outcome = await onExport();
+        if (outcome === DROPPED) {
+            // The menu item that held focus is gone; focus that fell to the page returns to More, focus the next reader placed stays.
+            if (!keepFocus && focusHasFallen()) moreRef.current?.focus();
+            return;
+        }
+        if (outcome) {
+            setExportError(outcome);
             return;
         }
         setStatus('Conversation exported');
@@ -259,13 +275,16 @@ export function ConversationMenu({
         if (began - confirmOpenedStampRef.current < CONFIRM_ARM_DELAY_MS) return;
         setWorking(true);
         setFailure(null);
-        const error = await (confirming === 'new' ? onNewConversation() : onDeleteConversation());
+        const outcome = await (confirming === 'new' ? onNewConversation() : onDeleteConversation());
         setWorking(false);
-        if (error) {
-            setFailure(error);
+        if (outcome && outcome !== DROPPED) {
+            setFailure(outcome);
             return;
         }
+        // Focus lost with the closing confirmation returns to More; focus the next reader placed elsewhere stays.
+        const focusLost = focusHasFallen(confirmHeadingRef.current?.parentElement);
         setConfirming(null);
+        if (outcome === DROPPED && focusLost) moreRef.current?.focus();
     };
 
     const deleting = confirming === 'delete';

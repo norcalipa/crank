@@ -1,12 +1,13 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {render, screen, fireEvent, waitFor} from '@testing-library/react';
+import {render, screen, fireEvent, waitFor, act} from '@testing-library/react';
 import * as React from 'react';
 
 import {CONFIRM_ARM_DELAY_MS} from './confirmArmDelay';
 import {
     ConversationMenu,
+    DROPPED,
     ConversationMenuProps,
     DELETE_CONVERSATION_COPY,
     NEW_CONVERSATION_COPY,
@@ -219,6 +220,35 @@ describe('ConversationMenu', () => {
         fireEvent.click(screen.getByTestId('export-error-dismiss'));
         expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
         expect(more()).toHaveFocus();
+    });
+
+    describe('an action whose answer was dropped (issue #588)', () => {
+        test('Export announces nothing and shows no error', async () => {
+            const onExport = jest.fn().mockResolvedValue(DROPPED);
+            setup({onExport});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+        });
+
+        test.each([
+            ['conversation-new', 'onNewConversation'],
+            ['conversation-delete', 'onDeleteConversation'],
+        ] as const)('%s closes its confirmation without a failure', async (item, prop) => {
+            const handler = jest.fn().mockResolvedValue(DROPPED);
+            setup({[prop]: handler});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId(item));
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect(document.getElementById('chat-confirm-failure')).toBeNull();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+        });
     });
 
     describe('revealing the focused retry above the pinned dismiss row', () => {
