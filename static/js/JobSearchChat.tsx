@@ -22,7 +22,7 @@ import {Composer} from './chat/Composer';
 import {JumpToLatest} from './chat/JumpToLatest';
 import {isUnscaledViewport, useTranscriptScroll} from './chat/useTranscriptScroll';
 import {useAccountGate} from './chat/useAccountGate';
-import {ConversationMenu} from './chat/ConversationMenu';
+import {ConversationMenu, DROPPED, type HistoryOutcome} from './chat/ConversationMenu';
 import {
     csrfFetch,
     newId,
@@ -315,10 +315,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const loadAvailability = React.useCallback(async () => {
         if (availabilityRequested.current) return;
         availabilityRequested.current = true;
+        const epoch = purgeEpochRef.current;
         try {
             const res = await fetch('/api/job-matches/status/');
             if (!res || !res.ok) return;
             const data = await res.json();
+            // A read started for the previous account is not the next account's notice.
+            if (purgeEpochRef.current !== epoch) return;
             if (data && typeof data.state === 'string' && typeof data.title === 'string') {
                 setAvailability(data as AvailabilityPayload);
             }
@@ -536,6 +539,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // fetch has already resolved and `abort()` no longer has any effect.
     const resumeAbortRef = React.useRef<AbortController | null>(null);
     const purgeEpochRef = React.useRef(0);
+    // The purge epoch this render was made under (issue #588). A handler built
+    // by an earlier render is stale once a purge has run: the click it serves
+    // was made on the previous account's screen and must do nothing.
+    const [renderEpoch, setRenderEpoch] = React.useState(0);
+    const staleRender = () => renderEpoch !== purgeEpochRef.current;
+    // One submit at a time (issue #588): set synchronously, before the status
+    // check and the conversation creation, which pendingRef does not yet cover.
+    const submittingRef = React.useRef(false);
+    const [submitting, setSubmitting] = React.useState(false);
 
     // Resume the user's most recent conversation on load. Skipped entirely
     // for a signed-out visitor (issue #465 AC-2): an anonymous GET must
@@ -651,6 +663,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // Bump first: a resume response already past `await` must see the
         // new epoch and discard itself even though abort() came too late.
         purgeEpochRef.current += 1;
+        setRenderEpoch(purgeEpochRef.current);
+        submittingRef.current = false;
+        setSubmitting(false);
         abortRef.current?.abort();
         resumeAbortRef.current?.abort();
         resumeAbortRef.current = null;
@@ -681,6 +696,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefSearchApplied(null);
         setPrefAnchors(NO_PREF_ANCHORS);
         setPrioritiesEditorOpen(null);
+        // The next account's availability is its own: asked afresh, never inherited.
+        setAvailability(null);
+        availabilityRequested.current = false;
         if (effectiveAuthenticated) {
             // Force the resume effect to re-run so the (possibly different)
             // account's own conversation loads fresh — never the stale
@@ -703,7 +721,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     // With create-on-mount suppressed, a null conversation is a valid
     // not-started state: the first send creates it.
-    const isReady = (conversationId !== null || !createOnMount) && !pending && !loading;
+    const isReady = (conversationId !== null || !createOnMount) && !pending && !loading && !submitting;
 
     // Composer gating from the advisory status (issue #457): only states where
     // sending is known-futile disable the input; a missing/failed status never
@@ -828,14 +846,21 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const ensureConversation = async (createNew: boolean): Promise<number | null> => {
         const epoch = purgeEpochRef.current;
         const body = createNew ? {create_new: true} : {};
-        const res = await csrfFetch('/api/agent/conversations/', {
-            method: 'POST',
-            body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-            throw new Error('start-failed');
+        let data: Conversation;
+        try {
+            const res = await csrfFetch('/api/agent/conversations/', {
+                method: 'POST',
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+                throw new Error('start-failed');
+            }
+            data = (await res.json()) as Conversation;
+        } catch (err) {
+            // A failure that belongs to the previous account is shown to nobody.
+            if (purgeEpochRef.current !== epoch) return null;
+            throw err;
         }
-        const data = (await res.json()) as Conversation;
         if (purgeEpochRef.current !== epoch) return null;
         setConversationId(data.id);
         setMessages(data.messages);
@@ -1246,6 +1271,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (staleRender()) return;
         const content = input.trim();
         if (!content || !isReady || composerGated) return;
         await submitTurn(content);
@@ -1255,7 +1281,22 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // turn when it now reports a futile state. The notice is already updated
     // by refreshStatus; a failed check (null) proceeds with the send.
     const submitTurn = async (content: string) => {
+        if (submittingRef.current) return;
         const submitEpoch = purgeEpochRef.current;
+        submittingRef.current = true;
+        setSubmitting(true);
+        try {
+            await runSubmit(content, submitEpoch);
+        } finally {
+            // After a purge the flag already belongs to the next account's submit.
+            if (purgeEpochRef.current === submitEpoch) {
+                submittingRef.current = false;
+                setSubmitting(false);
+            }
+        }
+    };
+
+    const runSubmit = async (content: string, submitEpoch: number) => {
         const status = await refreshStatus();
         // The account changed while the status was being checked: this question is not theirs to send.
         if (purgeEpochRef.current !== submitEpoch) return;
@@ -1282,6 +1323,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
 
     const handleRetryMessage = async (message: ChatMessage) => {
+        if (staleRender()) return;
         if (!message.idempotency_key) return;
         // The server's per-turn attempt cap is exhausted: no retry possible.
         if (message.retry_available === false) return;
@@ -1289,6 +1331,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
 
     const handleEditAsNew = (message: ChatMessage) => {
+        if (staleRender()) return;
         setInput(message.content);
         writeComposerDraft(conversationId, message.content);
         focusComposer();
@@ -1299,6 +1342,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
 
     const handleCheckResponse = async (message: ChatMessage) => {
+        if (staleRender()) return;
         if (!conversationId || !message.idempotency_key) return;
         const targetId = conversationId;
         const turnKey = message.idempotency_key;
@@ -1317,6 +1361,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const handleComposerChange = (value: string) => {
         setInput(value);
+        // Typed in the instant after a switch: the draft is not stored under the previous account's conversation.
+        if (staleRender()) return;
         if (effectiveAuthenticated) {
             writeComposerDraft(conversationId, value);
         } else {
@@ -1335,6 +1381,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
 
     const handleSend = () => {
+        if (staleRender()) return;
         const content = input.trim();
         if (content && isReady && !composerGated) {
             // Explicit send resolves the surfaced recovery draft (see
@@ -1354,6 +1401,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
 
     const handleCreateConversation = async () => {
+        if (staleRender()) return;
+        const epoch = purgeEpochRef.current;
         setInitError(null);
         setLoading(true);
         try {
@@ -1361,18 +1410,25 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         } catch {
             setInitError('Could not start a conversation. Please try again.');
         } finally {
-            setLoading(false);
-            // Defer focus past the React commit (see above).
-            window.setTimeout(focusComposer, 0);
+            // The next account's own loading state and focus are not this call's to end.
+            if (purgeEpochRef.current === epoch) {
+                setLoading(false);
+                // Defer focus past the React commit (see above).
+                window.setTimeout(focusComposer, 0);
+            }
         }
     };
 
-    const handleExport = async (): Promise<string | null> => {
+    const handleExport = async (): Promise<HistoryOutcome> => {
+        if (staleRender()) return DROPPED;
         if (!conversationId) return null;
+        const epoch = purgeEpochRef.current;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/export/`);
             if (!res.ok) throw new Error('export-failed');
             const blob = await res.blob();
+            // The file holds the previous account's conversation: never saved in the next session.
+            if (purgeEpochRef.current !== epoch) return DROPPED;
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = `job-search-${conversationId}.json`;
@@ -1380,6 +1436,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             URL.revokeObjectURL(a.href);
             return null;
         } catch {
+            if (purgeEpochRef.current !== epoch) return DROPPED;
             return 'Could not export your conversation.';
         }
     };
@@ -1399,12 +1456,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefAnchors(NO_PREF_ANCHORS);
     };
 
-    const handleReset = async (): Promise<string | null> => {
+    const handleReset = async (): Promise<HistoryOutcome> => {
+        if (staleRender()) return DROPPED;
         if (!conversationId) return null;  // # pragma: no cover - menu item is disabled without a conversation
+        const epoch = purgeEpochRef.current;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/reset/`, {method: 'POST'});
             if (!res.ok) throw new Error('reset-failed');
             const data = (await res.json()) as Conversation;
+            // The new conversation belongs to the previous account: adopted nowhere.
+            if (purgeEpochRef.current !== epoch) return DROPPED;
             // The old conversation is archived: clear its turn markers and
             // draft. Markers are keyed per conversation, so another
             // conversation's in-flight turns are untouched (issue #458).
@@ -1426,15 +1487,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             focusAfterHistoryAction();
             return null;
         } catch {
+            if (purgeEpochRef.current !== epoch) return DROPPED;
             return 'Could not reset the conversation.';
         }
     };
 
-    const handleDelete = async (): Promise<string | null> => {
+    const handleDelete = async (): Promise<HistoryOutcome> => {
+        if (staleRender()) return DROPPED;
         if (!conversationId) return null;
+        const epoch = purgeEpochRef.current;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/delete/`, {method: 'POST'});
             if (!res.ok) throw new Error('delete-failed');
+            // The next account's conversation stays: this delete was the previous account's.
+            if (purgeEpochRef.current !== epoch) return DROPPED;
             clearInflightTurns(conversationId);
             writeComposerDraft(conversationId, '');
             surfacedDraftRef.current = null;
@@ -1451,6 +1517,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             focusAfterHistoryAction();
             return null;
         } catch {
+            if (purgeEpochRef.current !== epoch) return DROPPED;
             return 'Could not delete the conversation.';
         }
     };
@@ -1459,6 +1526,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // it as an ordinary owner-scoped patch under its revision precondition;
     // a 409 preference_stale means an intervening edit and undoes nothing.
     const handleUndoPreferenceChange = async () => {
+        if (staleRender()) return;
         if (!prefUndoToken || prefUndoState === 'pending') return;
         setPrefUndoState('pending');
         setPrefUndoError(null);
@@ -1516,6 +1584,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const handlePreferenceProposalDecision = async (
         decision: 'apply' | 'dismiss', scopeOverride?: 'search',
     ) => {
+        if (staleRender()) return;
         if (!prefProposal || prefProposalState === 'pending') return;
         if (decision === 'dismiss') {
             setPrefProposal(null);
@@ -1600,11 +1669,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             errorType={prefProposalErrorType}
             onDecision={handlePreferenceProposalDecision}
             onReview={() => {
+                if (staleRender()) return;
                 // Stale-conflict recovery: reopen the proposal in the
                 // inline editor, to re-review against the latest (issue #480).
                 setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
             }}
             onEdit={() => {
+                if (staleRender()) return;
                 setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
                 // Keep the proposal while part of it cannot be shown in the editor.
                 if (patchFitsEditor(prefProposal.token.patch)) setPrefProposal(null);
@@ -1651,6 +1722,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setPrefUndoErrorType(null);
             }}
             onReview={() => {
+                if (staleRender()) return;
                 // Stale-conflict recovery: review the current
                 // priorities in the inline editor (issue #480).
                 setPrioritiesEditorOpen(prioritiesSurface());
@@ -1789,7 +1861,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         pending={pending}
                         authenticated={effectiveAuthenticated}
                         textareaDisabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated) : pending}
-                        sendDisabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || composerGated || !input.trim()}
+                        sendDisabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || submitting || composerGated || !input.trim()}
                         onChange={handleComposerChange}
                         onSubmit={handleSubmit}
                         onEnter={handleSend}

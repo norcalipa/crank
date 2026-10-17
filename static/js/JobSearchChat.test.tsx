@@ -3895,6 +3895,653 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
     });
 });
 
+describe('an account switch leaves the previous account nothing to act with (issue #588)', () => {
+    type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
+    interface Route {
+        test: (url: string, init?: RequestInit) => boolean;
+        run: Handler;
+        once: boolean;
+    }
+    let routes: Route[];
+    let fetchMock: jest.Mock;
+
+    const methodOf = (init?: RequestInit) => init?.method ?? 'GET';
+    const when = (method: string, url: string) => (u: string, init?: RequestInit) => u === url && methodOf(init) === method;
+    const STATUS_URL = '/api/agent/assistant-status/';
+    const AVAILABILITY_URL = '/api/job-matches/status/';
+    const CONVERSATIONS_URL = '/api/agent/conversations/';
+    const isStatus = (u: string) => u.includes(STATUS_URL);
+    const isResume = when('GET', CONVERSATIONS_URL);
+    const isCreate = when('POST', CONVERSATIONS_URL);
+    const isAvailability = when('GET', AVAILABILITY_URL);
+
+    // The last route that matches answers; a held route is used once.
+    const route = (test: Route['test'], run: Handler, once = false) => { routes.push({test, run, once}); };
+    const answer = (test: Route['test'], payload: unknown, status = 200) => route(test, () => jsonResponse(payload, status));
+    function hold(test: Route['test']) {
+        let settle: (outcome: Response | Error) => void = () => undefined;
+        let arrive: () => void = () => undefined;
+        const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+        route(test, () => {
+            arrive();
+            return new Promise<Response>((resolve, reject) => {
+                settle = (outcome) => (outcome instanceof Error ? reject(outcome) : resolve(outcome));
+            });
+        }, true);
+        return {arrived, settle: (outcome: Response | Error) => settle(outcome)};
+    }
+
+    const callsTo = (url: string, method?: string) => fetchMock.mock.calls.filter(([u, init]) =>
+        String(u) === url && (method === undefined || methodOf(init as RequestInit | undefined) === method));
+    const messagePosts = (id: number) => callsTo(`${CONVERSATIONS_URL}${id}/`, 'POST');
+    const created = () => callsTo(CONVERSATIONS_URL, 'POST');
+    const sentBodies = () => fetchMock.mock.calls.map(([, init]) => String((init as RequestInit | undefined)?.body ?? ''));
+    const storedFor = (id: number) => Object.keys(window.localStorage).filter((k) => new RegExp(`:${id}(:|$)`).test(k));
+
+    const resumeWith = (id: number, messages: ChatMessage[]) => answer(isResume, emptyConversation(id, messages));
+    const newAccount = () => resumeWith(55, [assistantMessage(70, 'New account reply.')]);
+    const purgeEvent = () => document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+
+    async function mountOld(messages: ChatMessage[] = [assistantMessage(1, 'Old account reply.')], props: {createOnMount?: boolean} = {}) {
+        resumeWith(42, messages);
+        render(<JobSearchChat {...props}/>);
+        await screen.findByLabelText('Message');
+        await waitFor(() => expect(screen.queryByTestId('chat-loading')).not.toBeInTheDocument());
+        await screen.findByText(messages[0].content);
+    }
+    async function mountOldWithoutConversation() {
+        route(isResume, () => jsonResponse({}, 404));
+        render(<JobSearchChat createOnMount={false}/>);
+        await screen.findByTestId('empty-history');
+    }
+
+    // The account switch while a request is out: the purge, then the new account's own conversation.
+    async function switchAccount() {
+        newAccount();
+        act(() => { purgeEvent(); });
+        await screen.findByText('New account reply.');
+    }
+    // A press made before the view has been redrawn without the control: the
+    // purge is dispatched and the old control is pressed in the same instant.
+    async function pressAfterSwitch(press: () => void) {
+        newAccount();
+        const quiet = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        try {
+            purgeEvent();
+            press();
+            await act(async () => { await Promise.resolve(); });
+        } finally {
+            quiet.mockRestore();
+        }
+        await screen.findByText('New account reply.');
+    }
+    const type = (value: string) => fireEvent.change(screen.getByLabelText('Message'), {target: {value}});
+    const send = () => fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+    const pressEnter = () => fireEvent.keyDown(screen.getByLabelText('Message'), {key: 'Enter'});
+
+    const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    const restoreUrl = (name: 'createObjectURL' | 'revokeObjectURL', original?: PropertyDescriptor) => {
+        if (original) Object.defineProperty(URL, name, original);
+        else delete (URL as unknown as Record<string, unknown>)[name];
+    };
+
+    beforeEach(() => {
+        resetWorkspaceForTests();
+        window.localStorage.clear();
+        window.sessionStorage.clear();
+        routes = [];
+        fetchMock = jest.fn((input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            for (let i = routes.length - 1; i >= 0; i--) {
+                const candidate = routes[i];
+                if (candidate.test(url, init)) {
+                    if (candidate.once) routes.splice(i, 1);
+                    return Promise.resolve().then(() => candidate.run(url, init));
+                }
+            }
+            return Promise.reject(new Error(`unrouted ${methodOf(init)} ${url}`));
+        });
+        global.fetch = fetchMock;
+        answer(isStatus, assistantStatus('ready'));
+        answer(isAvailability, {state: 'ok', title: 'Matches ready', message: 'You have matches.'});
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        restoreUrl('createObjectURL', originalCreateObjectURL);
+        restoreUrl('revokeObjectURL', originalRevokeObjectURL);
+        window.localStorage.clear();
+        window.sessionStorage.clear();
+    });
+
+    describe('New conversation, Delete and Export answered after the switch', () => {
+        test('a New conversation answered after the switch is not adopted', async () => {
+            await mountOld();
+            const reset = hold(when('POST', `${CONVERSATIONS_URL}42/reset/`));
+            startNewConversation();
+            await reset.arrived;
+            await switchAccount();
+            await act(async () => { reset.settle(jsonResponse(emptyConversation(555))); });
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(getWorkspaceSnapshot().conversationId).toBe(55);
+            expect(screen.queryByTestId('confirm-action')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+            expect(storedFor(555)).toEqual([]);
+            // Typing stores under the next account's conversation only, and its next message goes there.
+            type('typed by the new account');
+            expect(storedFor(55)).not.toEqual([]);
+            expect(storedFor(555)).toEqual([]);
+            expect(storedFor(42)).toEqual([]);
+            answer(when('POST', `${CONVERSATIONS_URL}55/`), {message: assistantMessage(90, 'New account answer.'), preferences_changed: false}, 201);
+            send();
+            await screen.findByText('New account answer.');
+            expect(messagePosts(55)).toHaveLength(1);
+            expect(messagePosts(555)).toHaveLength(0);
+        });
+
+        test('a New conversation answered without a switch is adopted', async () => {
+            await mountOld();
+            const reset = hold(when('POST', `${CONVERSATIONS_URL}42/reset/`));
+            startNewConversation();
+            await reset.arrived;
+            await act(async () => { reset.settle(jsonResponse(emptyConversation(555))); });
+            await screen.findByTestId('empty-history');
+            expect(getWorkspaceSnapshot().conversationId).toBe(555);
+        });
+
+        test('a Delete answered after the switch leaves the next account its conversation', async () => {
+            await mountOld();
+            const del = hold(when('POST', `${CONVERSATIONS_URL}42/delete/`));
+            deleteConversation();
+            await del.arrived;
+            await switchAccount();
+            await act(async () => { del.settle(jsonResponse({deleted: true})); });
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(getWorkspaceSnapshot().conversationId).toBe(55);
+            expect(screen.queryByTestId('confirm-action')).not.toBeInTheDocument();
+            answer(when('POST', `${CONVERSATIONS_URL}55/`), {message: assistantMessage(90, 'New account answer.'), preferences_changed: false}, 201);
+            type('new account question');
+            send();
+            await screen.findByText('New account answer.');
+            expect(messagePosts(55)).toHaveLength(1);
+            expect(created()).toHaveLength(0);
+        });
+
+        test('a Delete answered without a switch empties the view', async () => {
+            await mountOld();
+            const del = hold(when('POST', `${CONVERSATIONS_URL}42/delete/`));
+            deleteConversation();
+            await del.arrived;
+            await act(async () => { del.settle(jsonResponse({deleted: true})); });
+            await screen.findByTestId('empty-history');
+            expect(getWorkspaceSnapshot().conversationId).toBeNull();
+        });
+
+        test('an Export answered after the switch downloads nothing and announces nothing', async () => {
+            const createUrl = jest.fn().mockReturnValue('blob:old-account');
+            Object.defineProperty(URL, 'createObjectURL', {value: createUrl, configurable: true});
+            Object.defineProperty(URL, 'revokeObjectURL', {value: jest.fn(), configurable: true});
+            const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+            await mountOld();
+            const exported = hold(when('GET', `${CONVERSATIONS_URL}42/export/`));
+            chooseMenuItem('conversation-export');
+            await exported.arrived;
+            await switchAccount();
+            await act(async () => { exported.settle(new Response(new Blob(['{"user":"old"}'], {type: 'application/json'}))); });
+            expect(createUrl).not.toHaveBeenCalled();
+            expect(click).not.toHaveBeenCalled();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+        });
+
+        test('an Export answered without a switch downloads the file and announces it', async () => {
+            const createUrl = jest.fn().mockReturnValue('blob:old-account');
+            Object.defineProperty(URL, 'createObjectURL', {value: createUrl, configurable: true});
+            Object.defineProperty(URL, 'revokeObjectURL', {value: jest.fn(), configurable: true});
+            const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+            await mountOld();
+            const exported = hold(when('GET', `${CONVERSATIONS_URL}42/export/`));
+            chooseMenuItem('conversation-export');
+            await exported.arrived;
+            await act(async () => { exported.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+            expect(createUrl).toHaveBeenCalledTimes(1);
+            expect(screen.getByTestId('conversation-status')).toHaveTextContent('Conversation exported');
+        });
+
+        const actions = [
+            ['New conversation', startNewConversation, 'reset', 'POST', 'Could not reset the conversation.'],
+            ['Delete', deleteConversation, 'delete', 'POST', 'Could not delete the conversation.'],
+            ['Export', () => chooseMenuItem('conversation-export'), 'export', 'GET', 'Could not export your conversation.'],
+        ] as const;
+        const failures = [
+            ['an HTTP error', () => jsonResponse({}, 500)],
+            ['a network error', () => new Error('offline')],
+        ] as const;
+        const cases = actions.flatMap((action) => failures.flatMap((failure) => [[...action, ...failure, true], [...action, ...failure, false]] as const));
+        test.each(cases)('%s failing with %s (account switched: %s)', async (_name, start, path, method, copy, _kind, fail, switched) => {
+            await mountOld();
+            const held = hold(when(method, `${CONVERSATIONS_URL}42/${path}/`));
+            start();
+            await held.arrived;
+            if (switched) await switchAccount();
+            await act(async () => { held.settle(fail()); });
+            if (switched) {
+                expect(screen.queryByText(copy)).not.toBeInTheDocument();
+                expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+                expect(screen.queryByTestId('confirm-action')).not.toBeInTheDocument();
+            } else {
+                expect(await screen.findByText(copy)).toBeInTheDocument();
+            }
+        });
+    });
+
+    describe('a conversation that could not be started after the switch', () => {
+        const kinds = [
+            ['an HTTP error', () => jsonResponse({}, 500)],
+            ['a network error', () => new Error('offline')],
+        ] as const;
+
+        test.each(kinds)('the first message failing with %s tells the next account nothing', async (_kind, fail) => {
+            await mountOldWithoutConversation();
+            type('old account question');
+            const create = hold(isCreate);
+            send();
+            await create.arrived;
+            // The next account's own conversation is still on its way when the old answer lands.
+            const resume = hold(isResume);
+            act(() => { purgeEvent(); });
+            await resume.arrived;
+            await act(async () => { create.settle(fail()); });
+            expect(screen.queryByText(/could not start a conversation/i)).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Message')).toBeInTheDocument();
+            expect(screen.getByTestId('chat-loading')).toBeInTheDocument();
+            await act(async () => { resume.settle(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')]))); });
+            await screen.findByText('New account reply.');
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+        });
+
+        test.each(kinds)('Start a conversation failing with %s tells the next account nothing and ends none of its loading', async (_kind, fail) => {
+            route(isResume, () => jsonResponse({}, 500));
+            render(<JobSearchChat/>);
+            const start = await screen.findByRole('button', {name: 'Start a conversation'});
+            const create = hold(isCreate);
+            fireEvent.click(start);
+            await create.arrived;
+            const resume = hold(isResume);
+            act(() => { purgeEvent(); });
+            await resume.arrived;
+            await act(async () => { create.settle(fail()); });
+            expect(screen.queryByText(/could not start a conversation/i)).not.toBeInTheDocument();
+            expect(screen.queryByRole('button', {name: 'Start a conversation'})).not.toBeInTheDocument();
+            // The next account is still loading: the old call does not end it.
+            expect(screen.getByTestId('chat-loading')).toBeInTheDocument();
+            await act(async () => { resume.settle(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')]))); });
+            await screen.findByText('New account reply.');
+        });
+
+        test('a Start a conversation that succeeds after the switch adopts nothing', async () => {
+            route(isResume, () => jsonResponse({}, 500));
+            render(<JobSearchChat/>);
+            const start = await screen.findByRole('button', {name: 'Start a conversation'});
+            const create = hold(isCreate);
+            fireEvent.click(start);
+            await create.arrived;
+            const resume = hold(isResume);
+            act(() => { purgeEvent(); });
+            await resume.arrived;
+            await act(async () => { create.settle(jsonResponse(emptyConversation(777, [assistantMessage(1, 'Old account reply.')]))); });
+            expect(screen.queryByText('Old account reply.')).not.toBeInTheDocument();
+            expect(screen.getByTestId('chat-loading')).toBeInTheDocument();
+            await act(async () => { resume.settle(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')]))); });
+            await screen.findByText('New account reply.');
+            expect(getWorkspaceSnapshot().conversationId).toBe(55);
+        });
+
+        test('without a switch the first message failing shows the alert and its button', async () => {
+            await mountOldWithoutConversation();
+            type('my question');
+            answer(isCreate, {}, 500);
+            send();
+            expect(await screen.findByText('Could not start a conversation. Please try again.')).toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Start a conversation'})).toBeInTheDocument();
+        });
+
+        test('without a switch Start a conversation failing shows the alert again', async () => {
+            route(isResume, () => jsonResponse({}, 500));
+            render(<JobSearchChat/>);
+            const start = await screen.findByRole('button', {name: 'Start a conversation'});
+            answer(isCreate, {}, 500);
+            fireEvent.click(start);
+            expect(await screen.findByText(/could not start a conversation/i)).toBeInTheDocument();
+        });
+
+        test('without a switch Start a conversation opens the new conversation', async () => {
+            route(isResume, () => jsonResponse({}, 500));
+            render(<JobSearchChat/>);
+            const start = await screen.findByRole('button', {name: 'Start a conversation'});
+            answer(isCreate, emptyConversation(60, [assistantMessage(1, 'A fresh start.')]));
+            fireEvent.click(start);
+            await screen.findByText('A fresh start.');
+            expect(getWorkspaceSnapshot().conversationId).toBe(60);
+        });
+    });
+
+    describe('the availability notice belongs to one account', () => {
+        const noMatches = {state: 'no_matches', title: 'Old account has no matches', message: 'None meet its requirements.', actions: ['chat']};
+        const nextNoMatches = {state: 'no_matches', title: 'New account has no matches', message: 'None meet its requirements.', actions: ['chat']};
+        const availabilityCalls = () => callsTo(AVAILABILITY_URL, 'GET');
+
+        test('the previous account\'s notice is gone at the purge and the next account asks once for its own', async () => {
+            answer(isAvailability, noMatches);
+            await mountOld();
+            expect(await screen.findByTestId('availability-notice')).toHaveTextContent('Old account has no matches');
+            expect(availabilityCalls()).toHaveLength(1);
+            answer(isAvailability, nextNoMatches);
+            const resume = hold(isResume);
+            act(() => { purgeEvent(); });
+            await resume.arrived;
+            expect(screen.queryByTestId('availability-notice')).not.toBeInTheDocument();
+            expect(availabilityCalls()).toHaveLength(1);
+            await act(async () => { resume.settle(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')]))); });
+            expect(await screen.findByTestId('availability-notice')).toHaveTextContent('New account has no matches');
+            expect(availabilityCalls()).toHaveLength(2);
+        });
+
+        test('a status read started before the purge and answered after it is not shown', async () => {
+            const read = hold(isAvailability);
+            await mountOld();
+            await read.arrived;
+            answer(isAvailability, {state: 'ok', title: 'Matches ready', message: 'You have matches.'});
+            await switchAccount();
+            await waitFor(() => expect(availabilityCalls()).toHaveLength(2));
+            await act(async () => { read.settle(jsonResponse(noMatches)); });
+            expect(screen.queryByTestId('availability-notice')).not.toBeInTheDocument();
+        });
+
+        test('in one account a second reply without results asks nothing more', async () => {
+            answer(isAvailability, noMatches);
+            await mountOld();
+            await screen.findByTestId('availability-notice');
+            answer(when('POST', `${CONVERSATIONS_URL}42/`), {message: assistantMessage(5, 'Nothing again.'), preferences_changed: false}, 201);
+            type('anything else?');
+            send();
+            await screen.findByText('Nothing again.');
+            expect(availabilityCalls()).toHaveLength(1);
+        });
+    });
+
+    describe('a press in the instant after the switch', () => {
+        const proposal = {
+            id: 'prop-588', scope: 'account', changes: [{path: 'notes', old: '', new: 'prefers remote-first teams'}], change_count: 1,
+            base_revision: 2, unsupported_criteria: [],
+            token: {patch: {set: {notes: 'prefers remote-first teams'}}, scope: 'account', base_revision: 2},
+        };
+        const applyAnswer = {
+            applied: true, scope: 'account', revision: 3,
+            changes: [{path: 'notes', old: '', new: 'prefers remote-first teams'}],
+            undo: {expected_revision: 3, document: {notes: ''}},
+        };
+        const APPLY_URL = '/api/agent/preferences/apply/';
+        const UNDO_URL = '/api/agent/preferences/undo/';
+        const editorOpen = () => getWorkspaceSnapshot().prioritiesEditorOpenIn;
+
+        async function withProposal() {
+            await mountOld();
+            answer(when('POST', `${CONVERSATIONS_URL}42/`), {
+                message: assistantMessage(9, 'I suggest these updates.'), preferences_changed: false, preference_proposal: proposal,
+            }, 201);
+            type('only remote');
+            send();
+            await screen.findByTestId('preference-proposal-notice');
+        }
+        async function withAppliedChange() {
+            await withProposal();
+            answer(when('POST', APPLY_URL), applyAnswer);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            await screen.findByTestId('preference-undo-button');
+        }
+
+        test.each([
+            ['Apply', 'preference-apply-button'],
+            ['This search only', 'preference-proposal-search-only-button'],
+        ])('%s pressed after the switch posts nothing', async (_name, id) => {
+            await withProposal();
+            await pressAfterSwitch(() => fireEvent.click(screen.getByTestId(id)));
+            expect(callsTo(APPLY_URL)).toHaveLength(0);
+            expect(sentBodies().some((b) => b.includes('prefers remote-first teams') && b.includes('decision'))).toBe(false);
+        });
+
+        test('Apply and This search only pressed in the same account still post', async () => {
+            await withProposal();
+            answer(when('POST', APPLY_URL), {applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []}});
+            fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+            await screen.findByTestId('preference-search-applied');
+            expect(callsTo(APPLY_URL, 'POST')).toHaveLength(1);
+            expect(JSON.parse(String((callsTo(APPLY_URL, 'POST')[0][1] as RequestInit).body)).proposal.scope).toBe('search');
+        });
+
+        test('Apply pressed in the same account posts the proposal', async () => {
+            await withProposal();
+            answer(when('POST', APPLY_URL), applyAnswer);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            await screen.findByTestId('preference-change-notice');
+            expect(callsTo(APPLY_URL, 'POST')).toHaveLength(1);
+        });
+
+        test('Edit pressed after the switch opens no editor with the previous account\'s values', async () => {
+            await withProposal();
+            await pressAfterSwitch(() => fireEvent.click(screen.getByTestId('preference-proposal-edit-button')));
+            expect(editorOpen()).toBeNull();
+            expect(getWorkspaceSnapshot().prioritiesEditorSeed).toBeNull();
+        });
+
+        test('Edit pressed in the same account opens the editor with the proposed values', async () => {
+            await withProposal();
+            fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+            expect(editorOpen()).toBe('sidebar');
+            expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(proposal.token.patch);
+        });
+
+        test('Review on a stale proposal pressed after the switch opens no editor', async () => {
+            await withProposal();
+            answer(when('POST', APPLY_URL), {error: {type: 'preference_stale', message: 'Changed since.'}}, 409);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            const review = await screen.findByTestId('preference-proposal-review-button');
+            await pressAfterSwitch(() => fireEvent.click(review));
+            expect(editorOpen()).toBeNull();
+            expect(getWorkspaceSnapshot().prioritiesEditorSeed).toBeNull();
+        });
+
+        test('Review on a stale proposal pressed in the same account opens the editor', async () => {
+            await withProposal();
+            answer(when('POST', APPLY_URL), {error: {type: 'preference_stale', message: 'Changed since.'}}, 409);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            fireEvent.click(await screen.findByTestId('preference-proposal-review-button'));
+            expect(editorOpen()).toBe('sidebar');
+        });
+
+        test('Undo pressed after the switch posts nothing', async () => {
+            await withAppliedChange();
+            await pressAfterSwitch(() => fireEvent.click(screen.getByTestId('preference-undo-button')));
+            expect(callsTo(UNDO_URL)).toHaveLength(0);
+        });
+
+        test('Undo pressed in the same account posts the token', async () => {
+            await withAppliedChange();
+            answer(when('POST', UNDO_URL), {undone: true, revision: 4, changes: []});
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            await screen.findByTestId('preference-change-undone');
+            expect(callsTo(UNDO_URL, 'POST')).toHaveLength(1);
+        });
+
+        test('Review on a failed Undo pressed after the switch opens no editor', async () => {
+            await withAppliedChange();
+            answer(when('POST', UNDO_URL), {error: {type: 'preference_stale', message: 'Changed since.'}}, 409);
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            const review = await screen.findByTestId('preference-review-button');
+            await pressAfterSwitch(() => fireEvent.click(review));
+            expect(editorOpen()).toBeNull();
+        });
+
+        test('Review on a failed Undo pressed in the same account opens the editor', async () => {
+            await withAppliedChange();
+            answer(when('POST', UNDO_URL), {error: {type: 'preference_stale', message: 'Changed since.'}}, 409);
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            fireEvent.click(await screen.findByTestId('preference-review-button'));
+            expect(editorOpen()).toBe('sidebar');
+        });
+    });
+
+    describe('sending in the instant after the switch', () => {
+        const OLD_QUESTION = 'old account private question';
+
+        test('Send on a first message creates nothing and posts nothing', async () => {
+            await mountOldWithoutConversation();
+            type(OLD_QUESTION);
+            await pressAfterSwitch(send);
+            expect(created()).toHaveLength(0);
+            expect(sentBodies().some((b) => b.includes(OLD_QUESTION))).toBe(false);
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+        });
+
+        test('Enter on a first message creates nothing and posts nothing', async () => {
+            await mountOldWithoutConversation();
+            type(OLD_QUESTION);
+            await pressAfterSwitch(pressEnter);
+            expect(created()).toHaveLength(0);
+            expect(sentBodies().some((b) => b.includes(OLD_QUESTION))).toBe(false);
+        });
+
+        test.each([['Send', send], ['Enter', pressEnter]])('%s in an existing conversation posts nothing', async (_name, press) => {
+            await mountOld();
+            type(OLD_QUESTION);
+            await pressAfterSwitch(press);
+            expect(sentBodies().some((b) => b.includes(OLD_QUESTION))).toBe(false);
+            expect(messagePosts(42)).toHaveLength(0);
+            expect(messagePosts(55)).toHaveLength(0);
+        });
+
+        test('a message sent in the same account is posted', async () => {
+            await mountOld();
+            answer(when('POST', `${CONVERSATIONS_URL}42/`), {message: assistantMessage(5, 'Answered.'), preferences_changed: false}, 201);
+            type(OLD_QUESTION);
+            pressEnter();
+            await screen.findByText('Answered.');
+            expect(messagePosts(42)).toHaveLength(1);
+        });
+
+        const failedTurn = userTurn(OLD_QUESTION, 'k-old', 'failed', 2);
+        test('Retry response posts nothing', async () => {
+            await mountOld([assistantMessage(1, 'Old account reply.'), failedTurn]);
+            await pressAfterSwitch(() => fireEvent.click(screen.getByTestId('retry-response-button')));
+            expect(sentBodies().some((b) => b.includes(OLD_QUESTION))).toBe(false);
+        });
+
+        test('Retry response in the same account posts the turn again', async () => {
+            await mountOld([assistantMessage(1, 'Old account reply.'), failedTurn]);
+            answer(when('POST', `${CONVERSATIONS_URL}42/`), {message: assistantMessage(5, 'Answered.'), preferences_changed: false}, 201);
+            fireEvent.click(screen.getByTestId('retry-response-button'));
+            await screen.findByText('Answered.');
+            expect(messagePosts(42)).toHaveLength(1);
+        });
+
+        test('Edit as new message leaves the composer empty and writes no draft', async () => {
+            await mountOld([assistantMessage(1, 'Old account reply.'), failedTurn]);
+            await pressAfterSwitch(() => fireEvent.click(screen.getByTestId('edit-as-new-button')));
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+            expect(Object.keys(window.localStorage).filter((k) => k.startsWith('crank:jobsearch:draft:'))).toEqual([]);
+        });
+
+        test('Edit as new message in the same account fills the composer and keeps the draft', async () => {
+            await mountOld([assistantMessage(1, 'Old account reply.'), failedTurn]);
+            fireEvent.click(screen.getByTestId('edit-as-new-button'));
+            expect(screen.getByLabelText('Message')).toHaveValue(OLD_QUESTION);
+            expect(storedFor(42)).not.toEqual([]);
+        });
+
+        test('Check for response pressed after the switch asks the server nothing', async () => {
+            const pendingTurn = userTurn(OLD_QUESTION, 'k-pending', 'pending', 2);
+            await mountOld([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            const callsBefore = fetchMock.mock.calls.length;
+            await pressAfterSwitch(() => fireEvent.click(screen.getByTestId('check-response-button')));
+            expect(sentBodies().slice(callsBefore).some((b) => b.includes('k-pending'))).toBe(false);
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+        });
+
+        test('a keystroke in that instant is stored under no previous conversation', async () => {
+            await mountOld();
+            await pressAfterSwitch(() => type('typed at the switch'));
+            expect(storedFor(42)).toEqual([]);
+        });
+
+        test('a keystroke in the same account is stored under its conversation', async () => {
+            await mountOld();
+            type('typed by the same account');
+            expect(storedFor(42)).not.toEqual([]);
+        });
+    });
+
+    describe('one submit at a time', () => {
+        const CREATED = emptyConversation(60, []);
+        const answered = {message: assistantMessage(90, 'Only answer.'), preferences_changed: false};
+        const form = () => screen.getByLabelText('Message').closest('form') as HTMLFormElement;
+
+        async function submitTwiceWhileTheStatusIsChecked() {
+            type('my first message');
+            const status = hold((u) => isStatus(u));
+            send();
+            await status.arrived;
+            // Send is off from the first press, before any request has answered.
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeDisabled();
+            send();
+            pressEnter();
+            // A second submit made in the same instant, before the page has redrawn.
+            act(() => { fireEvent.submit(form()); fireEvent.submit(form()); });
+            await act(async () => { status.settle(statusResponse('ready')); });
+        }
+
+        test('a first message submitted repeatedly creates one conversation and posts one message', async () => {
+            await mountOldWithoutConversation();
+            answer(isCreate, CREATED);
+            answer(when('POST', `${CONVERSATIONS_URL}60/`), answered, 201);
+            await submitTwiceWhileTheStatusIsChecked();
+            await screen.findByText('Only answer.');
+            expect(created()).toHaveLength(1);
+            expect(messagePosts(60)).toHaveLength(1);
+            // The turn is over: Send works again.
+            type('and a second one');
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeEnabled();
+        });
+
+        test('a message in an existing conversation submitted repeatedly posts once', async () => {
+            await mountOld();
+            answer(when('POST', `${CONVERSATIONS_URL}42/`), answered, 201);
+            await submitTwiceWhileTheStatusIsChecked();
+            await screen.findByText('Only answer.');
+            expect(created()).toHaveLength(0);
+            expect(messagePosts(42)).toHaveLength(1);
+            type('and a second one');
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeEnabled();
+        });
+
+        test('Send is off for the whole turn, from the first press to the answer', async () => {
+            await mountOld();
+            const reply = hold(when('POST', `${CONVERSATIONS_URL}42/`));
+            type('slow question');
+            send();
+            await reply.arrived;
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeDisabled();
+            await act(async () => { reply.settle(jsonResponse(answered, 201)); });
+            await screen.findByText('Only answer.');
+            type('next question');
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeEnabled();
+        });
+    });
+});
+
 describe('preference proposal → apply → undo (issue #466 review)', () => {
     beforeEach(() => {
         resetWorkspaceForTests();
