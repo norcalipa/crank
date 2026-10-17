@@ -4623,6 +4623,176 @@ describe('an account switch leaves the previous account nothing to act with (iss
             expect(screen.getByRole('button', {name: 'Send message'})).toBeEnabled();
         });
     });
+
+    describe('a reply that lands after the conversation it was asked in is gone (issue #547 item 6)', () => {
+        async function askAndSwitch(settleWith: (reply: ReturnType<typeof hold>) => void | Promise<void>, stop = false) {
+            await mountOld();
+            const reply = hold(when('POST', `${CONVERSATIONS_URL}42/`));
+            type('a question');
+            send();
+            await reply.arrived;
+            if (stop) fireEvent.click(await screen.findByTestId('stop-button'));
+            await switchAccount();
+            const callsBefore = fetchMock.mock.calls.length;
+            await act(async () => { await settleWith(reply); });
+            return callsBefore;
+        }
+        const heldJson = () => {
+            let release: (value: unknown) => void = () => undefined;
+            const body = new Promise<unknown>((resolve) => { release = resolve; });
+            return {body, release};
+        };
+        const nothingOfTheOldTurn = (callsBefore: number) => {
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByText('Late answer.')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+            expect(fetchMock.mock.calls.slice(callsBefore).filter(([u]) => String(u).startsWith(`${CONVERSATIONS_URL}42/`))).toEqual([]);
+        };
+
+        test('a success that lands is neither read nor shown (the check after the request)', async () => {
+            const json = jest.fn();
+            const callsBefore = await askAndSwitch((reply) => reply.settle({ok: true, status: 201, json} as unknown as Response));
+            expect(json).not.toHaveBeenCalled();
+            nothingOfTheOldTurn(callsBefore);
+        });
+
+        // The answer arrives while the conversation is still the same; the switch lands while its body is being read.
+        async function switchWhileTheBodyIsRead(status: number) {
+            await mountOld();
+            const reply = hold(when('POST', `${CONVERSATIONS_URL}42/`));
+            type('a question');
+            send();
+            await reply.arrived;
+            const held = heldJson();
+            await act(async () => { reply.settle({ok: status < 400, status, json: () => held.body} as unknown as Response); });
+            await switchAccount();
+            return {held, callsBefore: fetchMock.mock.calls.length};
+        }
+
+        test('a success whose body is read after the switch is not shown (the check after the body)', async () => {
+            const {held, callsBefore} = await switchWhileTheBodyIsRead(201);
+            await act(async () => { held.release({message: assistantMessage(99, 'Late answer.'), preferences_changed: false}); });
+            nothingOfTheOldTurn(callsBefore);
+        });
+
+        test('an error whose body is read after the switch shows nothing and resends nothing (the check after the error body)', async () => {
+            const {held, callsBefore} = await switchWhileTheBodyIsRead(500);
+            await act(async () => { held.release({error: {type: 'server_error', message: 'Late failure.'}}); });
+            nothingOfTheOldTurn(callsBefore);
+            expect(screen.queryByText('Late failure.')).not.toBeInTheDocument();
+        });
+
+        test('a network failure that lands shows nothing and asks the server nothing (the check in the catch)', async () => {
+            const callsBefore = await askAndSwitch((reply) => reply.settle(new Error('offline')));
+            nothingOfTheOldTurn(callsBefore);
+        });
+
+        test('a stopped wait that lands shows nothing and asks the server nothing (the check in the catch, abort path)', async () => {
+            const callsBefore = await askAndSwitch((reply) => reply.settle(Object.assign(new Error('aborted'), {name: 'AbortError'})), true);
+            nothingOfTheOldTurn(callsBefore);
+        });
+
+        test('in the same conversation a late success is shown', async () => {
+            await mountOld();
+            const reply = hold(when('POST', `${CONVERSATIONS_URL}42/`));
+            type('a question');
+            send();
+            await reply.arrived;
+            await act(async () => { reply.settle(jsonResponse({message: assistantMessage(99, 'Late answer.'), preferences_changed: false}, 201)); });
+            expect(await screen.findByText('Late answer.')).toBeInTheDocument();
+        });
+    });
+
+    describe('what the purge clears when the next account has no conversation yet (issue #547 item 6)', () => {
+        async function switchToAccountWithoutConversation() {
+            route(isResume, () => jsonResponse({}, 404));
+            act(() => { purgeEvent(); });
+            await screen.findByTestId('empty-history');
+        }
+
+        test('the transcript is emptied', async () => {
+            await mountOld([assistantMessage(1, 'Old account reply.')]);
+            await switchToAccountWithoutConversation();
+            expect(screen.queryByText('Old account reply.')).not.toBeInTheDocument();
+        });
+
+        test('a search-only confirmation is removed', async () => {
+            await mountOld();
+            answer(when('POST', `${CONVERSATIONS_URL}42/`), {
+                message: assistantMessage(9, 'I suggest these updates.'), preferences_changed: false,
+                preference_proposal: {
+                    id: 'prop-588', scope: 'account', changes: [{path: 'notes', old: '', new: 'x'}], change_count: 1, base_revision: 2,
+                    unsupported_criteria: [], token: {patch: {set: {notes: 'x'}}, scope: 'account', base_revision: 2},
+                },
+            }, 201);
+            type('only remote');
+            send();
+            await screen.findByTestId('preference-proposal-notice');
+            answer(when('POST', '/api/agent/preferences/apply/'), {applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []}});
+            fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+            await screen.findByTestId('preference-search-applied');
+            await switchToAccountWithoutConversation();
+            expect(screen.queryByTestId('preference-search-applied')).not.toBeInTheDocument();
+        });
+
+        test('an applied change and its Undo are removed', async () => {
+            await mountOld();
+            answer(when('POST', `${CONVERSATIONS_URL}42/`), {
+                message: assistantMessage(9, 'I suggest these updates.'), preferences_changed: false,
+                preference_proposal: {
+                    id: 'prop-588', scope: 'account', changes: [{path: 'notes', old: '', new: 'x'}], change_count: 1, base_revision: 2,
+                    unsupported_criteria: [], token: {patch: {set: {notes: 'x'}}, scope: 'account', base_revision: 2},
+                },
+            }, 201);
+            type('only remote');
+            send();
+            await screen.findByTestId('preference-proposal-notice');
+            answer(when('POST', '/api/agent/preferences/apply/'), {
+                applied: true, scope: 'account', revision: 3, changes: [{path: 'notes', old: '', new: 'x'}],
+                undo: {expected_revision: 3, document: {notes: ''}},
+            });
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            await screen.findByTestId('preference-undo-button');
+            await switchToAccountWithoutConversation();
+            expect(screen.queryByTestId('preference-undo-button')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        });
+
+        test('a stale-context note does not follow a reply with the same number', async () => {
+            await mountOld([assistantMessage(1, 'Old account reply.')]);
+            act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+            const reply = hold(when('POST', `${CONVERSATIONS_URL}42/`));
+            type('tell me about them');
+            send();
+            await reply.arrived;
+            act(() => clearWorkspaceContext());
+            await act(async () => { reply.settle(jsonResponse({message: assistantMessage(99, 'Acme is a great fit'), preferences_changed: false}, 201)); });
+            expect(await screen.findByTestId('stale-context-note')).toHaveTextContent('Asked while viewing Acme');
+            await switchToAccountWithoutConversation();
+            // The next account's first reply happens to carry the same message number.
+            answer(isCreate, emptyConversation(60, []));
+            answer(when('POST', `${CONVERSATIONS_URL}60/`), {message: assistantMessage(99, 'Next account answer.'), preferences_changed: false}, 201);
+            type('a new question');
+            send();
+            await screen.findByText('Next account answer.');
+            expect(screen.queryByTestId('stale-context-note')).not.toBeInTheDocument();
+        });
+
+        test('a resume answered after the switch is not adopted (the check after the body)', async () => {
+            let release: (value: unknown) => void = () => undefined;
+            const body = new Promise<unknown>((resolve) => { release = resolve; });
+            route(isResume, () => ({ok: true, status: 200, json: () => body}) as unknown as Response);
+            render(<JobSearchChat/>);
+            await waitFor(() => expect(fetchMock.mock.calls.some(([u, init]) => isResume(String(u), init as RequestInit))).toBe(true));
+            route(isResume, () => jsonResponse({}, 404));
+            act(() => { purgeEvent(); });
+            await screen.findByTestId('empty-history');
+            await act(async () => { release(emptyConversation(42, [assistantMessage(1, 'Old account reply.')])); });
+            expect(screen.queryByText('Old account reply.')).not.toBeInTheDocument();
+            expect(getWorkspaceSnapshot().conversationId).toBeNull();
+        });
+    });
 });
 
 describe('preference proposal → apply → undo (issue #466 review)', () => {
