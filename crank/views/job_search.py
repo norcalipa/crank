@@ -1085,6 +1085,9 @@ def agent_conversation_detail(request, conversation_id):
             proposal_payload["token"]["owner"] = _pref_services.token_owner(
                 request.user
             )
+            proposal_payload["token"] = _pref_services.sign_token(
+                "proposal", proposal_payload["token"], request.user
+            )
         response_payload["preference_proposal"] = proposal_payload
     # Issue #484: validated UI actions (ids/enums only) and the echoed
     # context. Both are additive and absent for context-less clients; the
@@ -1302,9 +1305,14 @@ def _agent_preference_apply(request, meta):
 
     The token is an ordinary owner-scoped preference patch: it is
     re-validated by the canonical validator and applied for the
-    authenticated owner only, so a tampered token grants no authority the
-    user does not already have, and the revision precondition still blocks
-    overwriting a later edit.
+    authenticated owner only, and the revision precondition still blocks
+    overwriting a later edit. Beyond that, an ``apply`` is accepted only when
+    the token carries this user's owner tag and a ``sig`` (issue #539) that
+    the server issued for exactly this ``patch``, ``base_revision``,
+    ``origin`` and user within ``PREFERENCE_TOKEN_MAX_AGE_SECONDS``; the
+    ``scope`` may be narrowed from ``account`` to ``search`` but never
+    widened. Anything else (unsigned, edited, expired) is 403 ``forbidden``
+    and writes nothing. ``dismiss`` writes nothing and is not checked.
     """
     request_id = _request_id(request)
     payload, error = _body(request, request_id)
@@ -1347,7 +1355,11 @@ def _agent_preference_apply(request, meta):
             request, 400, "invalid_request",
             "The preference proposal is no longer valid.", request_id,
         )
-    if not pref_services.token_owner_matches(request.user, token):
+    if not pref_services.token_owner_matches(
+        request.user, token
+    ) or not pref_services.verify_token(
+        "proposal", token, request.user, allow_scope_narrowing=True
+    ):
         return _error(
             request, 403, "forbidden",
             "This change expired. Reload to review it again.", request_id,
@@ -1442,7 +1454,9 @@ def _agent_preference_apply(request, meta):
     if isinstance(undo, dict):
         # The undo token carries its issuer so a later undo is attributed to
         # the surface (chat proposal vs priorities editor) that made the change.
-        undo = {**undo, "origin": meta["origin"]}
+        undo = pref_services.sign_token(
+            "undo", {**undo, "origin": meta["origin"]}, request.user
+        )
     return JsonResponse(
         {
             "applied": bool(result.get("changed")),
@@ -1475,9 +1489,11 @@ def _agent_preference_undo(request, meta):
     """Apply a client-held undo token under its revision precondition (issue #466).
 
     The token is an ordinary owner-scoped preference patch: it is re-validated
-    by the canonical validator and applied for the authenticated owner only,
-    so a tampered token grants no authority the user does not already have.
-    A revision conflict (an intervening edit) returns the stable
+    by the canonical validator and applied for the authenticated owner only.
+    It is accepted only with this user's owner tag and a ``sig`` the server
+    issued for exactly its ``document``, ``expected_revision``, ``origin`` and
+    user within ``PREFERENCE_TOKEN_MAX_AGE_SECONDS`` (issue #539); otherwise
+    403 ``forbidden`` and nothing is written. A revision conflict (an intervening edit) returns the stable
     ``409 preference_stale`` envelope and writes nothing.
     """
     request_id = _request_id(request)
@@ -1488,8 +1504,9 @@ def _agent_preference_undo(request, meta):
     meta["origin"] = _token_origin(token, ("proposal", "direct", "reset"))
     from crank.services import preferences as pref_services
 
-    if isinstance(token, dict) and not pref_services.token_owner_matches(
-        request.user, token
+    if isinstance(token, dict) and not (
+        pref_services.token_owner_matches(request.user, token)
+        and pref_services.verify_token("undo", token, request.user)
     ):
         return _error(
             request, 403, "forbidden",
