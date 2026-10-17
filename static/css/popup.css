@@ -3277,7 +3277,7 @@ body.assistant-open .app-content .table-responsive,
     max-height: var(--chat-stack-max, none);
     overflow-y: auto;
     overscroll-behavior: contain;
-    scroll-padding-bottom: 4rem;
+    scroll-padding-bottom: .5rem;
     position: absolute;
     top: calc(100% + .25rem);
     left: 0;
@@ -3302,20 +3302,14 @@ body.assistant-open .app-content .table-responsive,
     border-color: #f87171;
 }
 
-/* The stack is capped to the transcript band and scrolls. The pinned row
-   carries the panel's actions (the confirm button beside Cancel), so both stay
-   visible when the stack is short; the heading, copy and failure text scroll. */
+/* The stack is capped to the transcript band and scrolls. The action row (the
+   confirm button beside Cancel) follows the heading, the consequence sentence
+   and the failure text in normal flow: at a short height the reader scrolls
+   through the consequence to reach the destructive button, never the other
+   way round (issue #547). */
 .chat-confirm-dismiss {
     gap: .5rem;
-    position: sticky;
-    bottom: 0;
-    z-index: 1;
     display: flex;
-    margin: 0 -.75rem -.75rem;
-    padding: .375rem .75rem .5rem;
-    background: #0f172a;
-    border-radius: 0 0 .5rem .5rem;
-    box-shadow: 0 -.5rem .5rem -.5rem rgba(0, 0, 0, .75);
 }
 
 .chat-confirm-actions + .chat-confirm-dismiss {

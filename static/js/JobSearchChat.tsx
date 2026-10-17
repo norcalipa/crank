@@ -23,6 +23,7 @@ import {JumpToLatest} from './chat/JumpToLatest';
 import {isUnscaledViewport, useTranscriptScroll} from './chat/useTranscriptScroll';
 import {useAccountGate} from './chat/useAccountGate';
 import {ConversationMenu, DROPPED, type HistoryOutcome} from './chat/ConversationMenu';
+import {SESSION_ENDED_COPY, sessionEnded} from './session';
 import {
     csrfFetch,
     newId,
@@ -139,6 +140,10 @@ interface PrefNoticeAnchors {
     search: number | null;
     banner: number | null;
 }
+// React 18 does not know the boolean `inert` prop: it is set as the string
+// attribute (issue #547).
+const inertWhen = (on: boolean): {inert?: string} => (on ? {inert: ''} : {});
+
 const NO_PREF_ANCHORS: PrefNoticeAnchors = {proposal: null, changes: null, search: null, banner: null};
 
 const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
@@ -547,6 +552,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // One submit at a time (issue #588): on from the first press, before the
     // status check and the conversation creation that pendingRef does not yet cover.
     const [submitting, setSubmitting] = React.useState(false);
+    // New conversation or Delete is in flight (issue #547): nothing is sent meanwhile.
+    const [historyBusy, setHistoryBusy] = React.useState(false);
+    // The New / Delete confirmation is open (issue #547): nothing beneath it can be pressed.
+    const [confirmationOpen, setConfirmationOpen] = React.useState(false);
 
     // Resume the user's most recent conversation on load. Skipped entirely
     // for a signed-out visitor (issue #465 AC-2): an anonymous GET must
@@ -664,6 +673,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         purgeEpochRef.current += 1;
         setRenderEpoch(purgeEpochRef.current);
         setSubmitting(false);
+        setHistoryBusy(false);
         abortRef.current?.abort();
         resumeAbortRef.current?.abort();
         resumeAbortRef.current = null;
@@ -719,7 +729,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     // With create-on-mount suppressed, a null conversation is a valid
     // not-started state: the first send creates it.
-    const isReady = (conversationId !== null || !createOnMount) && !pending && !loading && !submitting;
+    const isReady = (conversationId !== null || !createOnMount) && !pending && !loading && !submitting && !historyBusy;
 
     // Composer gating from the advisory status (issue #457): only states where
     // sending is known-futile disable the input; a missing/failed status never
@@ -1417,11 +1427,17 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const handleExport = async (): Promise<HistoryOutcome> => {
         if (staleRender()) return DROPPED;
-        if (!conversationId) return null;
         const epoch = purgeEpochRef.current;
+        // An outcome for this action's own view; the next account's view shows nothing of it.
+        const failed = (copy: string): HistoryOutcome => (purgeEpochRef.current !== epoch ? DROPPED : copy);
+        if (!conversationId) return failed('There is no conversation to export.');
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/export/`);
-            if (!res.ok) throw new Error('export-failed');
+            if (sessionEnded(res, signInUrl)) return failed(SESSION_ENDED_COPY);
+            // An ended session answers the login page (200 text/html): never saved as the export.
+            if (!res.ok || /\bhtml\b/i.test(res.headers.get('Content-Type') ?? '')) {
+                throw new Error('export-failed');
+            }
             const blob = await res.blob();
             // The file holds the previous account's conversation: never saved in the next session.
             if (purgeEpochRef.current !== epoch) return DROPPED;
@@ -1456,8 +1472,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (staleRender()) return DROPPED;
         if (!conversationId) return null;  // # pragma: no cover - menu item is disabled without a conversation
         const epoch = purgeEpochRef.current;
+        setHistoryBusy(true);
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/reset/`, {method: 'POST'});
+            if (sessionEnded(res, signInUrl)) {
+                return purgeEpochRef.current !== epoch ? DROPPED : SESSION_ENDED_COPY;
+            }
             if (!res.ok) throw new Error('reset-failed');
             const data = (await res.json()) as Conversation;
             // The new conversation belongs to the previous account: adopted nowhere.
@@ -1485,6 +1505,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         } catch {
             if (purgeEpochRef.current !== epoch) return DROPPED;
             return 'Could not reset the conversation.';
+        } finally {
+            // After a purge the flag already belongs to the next account's action.
+            if (purgeEpochRef.current === epoch) setHistoryBusy(false);
         }
     };
 
@@ -1492,9 +1515,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (staleRender()) return DROPPED;
         if (!conversationId) return null;
         const epoch = purgeEpochRef.current;
+        setHistoryBusy(true);
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/delete/`, {method: 'POST'});
+            if (sessionEnded(res, signInUrl)) {
+                return purgeEpochRef.current !== epoch ? DROPPED : SESSION_ENDED_COPY;
+            }
             if (!res.ok) throw new Error('delete-failed');
+            // Only the server's own word clears anything: a 200 that is not {deleted: true} deleted nothing.
+            const answer = (await res.json()) as {deleted?: unknown} | null;
+            if (answer?.deleted !== true) throw new Error('delete-unconfirmed');
             // The next account's conversation stays: this delete was the previous account's.
             if (purgeEpochRef.current !== epoch) return DROPPED;
             clearInflightTurns(conversationId);
@@ -1515,6 +1545,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         } catch {
             if (purgeEpochRef.current !== epoch) return DROPPED;
             return 'Could not delete the conversation.';
+        } finally {
+            if (purgeEpochRef.current === epoch) setHistoryBusy(false);
         }
     };
 
@@ -1778,6 +1810,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     onExport={handleExport}
                     onNewConversation={handleReset}
                     onDeleteConversation={handleDelete}
+                    onConfirmationChange={setConfirmationOpen}
                 />
             </div>
 
@@ -1817,7 +1850,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 )}
 
                 {!initError && (
-                <div className="chat-transcript-wrap">
+                <div className="chat-transcript-wrap" {...inertWhen(confirmationOpen)}>
                 <Transcript
                     historyRef={historyRef}
                     messages={messages}
@@ -1841,7 +1874,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 )}
 
                 {!initError && (
-                <div className="chat-footer flex-shrink-0">
+                <div className="chat-footer flex-shrink-0" {...inertWhen(confirmationOpen)}>
                     {showJumpToLatest && (
                         <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
                     )}
@@ -1861,8 +1894,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         value={input}
                         pending={pending}
                         authenticated={effectiveAuthenticated}
-                        textareaDisabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated) : pending}
-                        sendDisabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || submitting || composerGated || !input.trim()}
+                        textareaDisabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated || historyBusy) : pending || historyBusy}
+                        sendDisabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || submitting || historyBusy || composerGated || !input.trim()}
                         onChange={handleComposerChange}
                         onSubmit={handleSubmit}
                         onEnter={handleSend}

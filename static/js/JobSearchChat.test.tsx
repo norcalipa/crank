@@ -1361,6 +1361,234 @@ describe('JobSearchChat', () => {
         });
     });
 });
+describe('history actions: ended session, server word, busy composer, inert (issue #547)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+        window.localStorage.clear();
+    });
+
+    afterEach(() => {
+        resetWorkspaceForTests();
+        jest.restoreAllMocks();
+    });
+
+    const SESSION_ENDED = 'Your session has ended. Sign in again, then try again.';
+    const KEY_A = '123e4567-e89b-42d3-a456-426614174000';
+    const loginRedirect = (body = '<html>Sign in</html>', type = 'text/html') => {
+        const res = new Response(body, {status: 200, headers: {'Content-Type': type}});
+        Object.defineProperty(res, 'redirected', {value: true});
+        Object.defineProperty(res, 'url', {value: 'http://localhost/accounts/login/?next=/'});
+        return res;
+    };
+    const htmlOk = () => new Response('<html>Sign in</html>', {status: 200, headers: {'Content-Type': 'text/html'}});
+    const unreachable = (res: Response) => res;
+    const download = () => {
+        const createUrl = jest.fn().mockReturnValue('blob:x');
+        Object.defineProperty(URL, 'createObjectURL', {value: createUrl, configurable: true});
+        Object.defineProperty(URL, 'revokeObjectURL', {value: jest.fn(), configurable: true});
+        const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+        return {createUrl, click};
+    };
+    const heldFetch = () => {
+        let settle: (res: Response) => void = () => undefined;
+        const promise = new Promise<Response>((resolve) => { settle = resolve; });
+        (global.fetch as jest.Mock).mockReturnValueOnce(promise);
+        return (res: Response) => act(async () => { settle(res); await promise; });
+    };
+    const unchanged = (opts: {id: number}) => {
+        expect(screen.getByText('keep this message')).toBeInTheDocument();
+        expect(window.localStorage.getItem(`crank:jobsearch:draft:${opts.id}`)).toBe('keep this draft');
+        expect(window.localStorage.getItem(inflightKeyFor(opts.id, KEY_A))).not.toBeNull();
+    };
+    const seed = async () => {
+        await renderChat([userMessage('keep this message')]);
+        window.localStorage.setItem('crank:jobsearch:draft:42', 'keep this draft');
+        window.localStorage.setItem(
+            inflightKeyFor(42, KEY_A),
+            JSON.stringify({conversationId: 42, content: 'x', key: KEY_A, ts: Date.now()}),
+        );
+    };
+
+    describe.each([
+        ['an answer of 401', () => jsonResponse({}, 401)],
+        ['a followed redirect that ends on the sign-in page', () => loginRedirect()],
+    ])('with %s', (_name, ended) => {
+        test.each([
+            ['New conversation', startNewConversation],
+            ['Delete', deleteConversation],
+        ])('%s reports the ended session and changes nothing', async (_label, act_) => {
+            await seed();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(ended());
+            act_();
+            expect(await screen.findByRole('alert')).toHaveTextContent(SESSION_ENDED);
+            expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+            unchanged({id: 42});
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        });
+
+        test('Export reports the ended session in the export-error panel and downloads nothing', async () => {
+            await seed();
+            const {createUrl, click} = download();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(ended());
+            chooseMenuItem('conversation-export');
+            expect(await screen.findByTestId('export-error')).toHaveTextContent(SESSION_ENDED);
+            expect(createUrl).not.toHaveBeenCalled();
+            expect(click).not.toHaveBeenCalled();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+            unchanged({id: 42});
+        });
+    });
+
+    test('a redirect to some other page is not an ended session', async () => {
+        await seed();
+        const res = jsonResponse({}, 500);
+        Object.defineProperty(res, 'redirected', {value: true});
+        Object.defineProperty(res, 'url', {value: 'http://localhost/elsewhere/'});
+        (global.fetch as jest.Mock).mockResolvedValueOnce(res);
+        deleteConversation();
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete the conversation.');
+    });
+
+    test('an HTML 200 is not an export: nothing downloads and the failure is shown', async () => {
+        await seed();
+        const {createUrl, click} = download();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(unreachable(htmlOk()));
+        chooseMenuItem('conversation-export');
+        expect(await screen.findByTestId('export-error')).toHaveTextContent('Could not export your conversation.');
+        expect(createUrl).not.toHaveBeenCalled();
+        expect(click).not.toHaveBeenCalled();
+    });
+
+    test('an HTML 200 is not a New conversation', async () => {
+        await seed();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(htmlOk());
+        startNewConversation();
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not reset the conversation.');
+        unchanged({id: 42});
+    });
+
+    test.each([
+        ['an HTML 200', () => htmlOk()],
+        ['a JSON 200 without deleted', () => jsonResponse({})],
+        ['a JSON 200 with deleted false', () => jsonResponse({deleted: false})],
+        ['a JSON 200 null body', () => jsonResponse(null)],
+    ])('Delete answered with %s deletes nothing', async (_name, answer) => {
+        await seed();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(answer());
+        deleteConversation();
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete the conversation.');
+        unchanged({id: 42});
+        expect(screen.getByTestId('confirm-action')).toHaveTextContent('Try deleting again');
+    });
+
+    test('Delete answered {deleted: true} clears the conversation, its draft and its markers', async () => {
+        await seed();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
+        deleteConversation();
+        await waitFor(() => expect(screen.queryByText('keep this message')).not.toBeInTheDocument());
+        expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
+        expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
+    });
+
+    test('Export answered with JSON downloads the file', async () => {
+        await seed();
+        const {createUrl, click} = download();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({messages: []}));
+        chooseMenuItem('conversation-export');
+        await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+        expect(createUrl).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('conversation-status')).toHaveTextContent('Conversation exported');
+    });
+
+    describe('the composer while New conversation or Delete is in flight', () => {
+        test.each([
+            ['New conversation', startNewConversation, () => jsonResponse(emptyConversation(43), 201)],
+            ['Delete', deleteConversation, () => jsonResponse({deleted: true})],
+        ])('%s disables the textarea and Send, sends nothing on Enter, and restores them', async (_label, act_, answer) => {
+            await renderChat([userMessage('hello')]);
+            const callsBefore = (global.fetch as jest.Mock).mock.calls.length;
+            const settle = heldFetch();
+            // The draft is typed before the press; the confirmation is open while it is held.
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'typed first'}});
+            act_();
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeDisabled());
+            expect(screen.getByRole('button', {name: /send/i})).toBeDisabled();
+            fireEvent.keyDown(screen.getByLabelText('Message'), {key: 'Enter'});
+            fireEvent.submit(screen.getByLabelText('Message').closest('form')!);
+            expect((global.fetch as jest.Mock).mock.calls.length).toBe(callsBefore + 1);
+            await settle(answer());
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        });
+
+        test('a failed action gives the composer back too', async () => {
+            await renderChat([userMessage('hello')]);
+            const settle = heldFetch();
+            deleteConversation();
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeDisabled());
+            await settle(jsonResponse({}, 500));
+            await screen.findByRole('alert');
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        });
+
+        test('a signed-out composer is disabled the same way while the action is held', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [userMessage('hello')])));
+            setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+            render(<JobSearchChat/>);
+            await screen.findByLabelText('Message');
+            const settle = heldFetch();
+            startNewConversation();
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeDisabled());
+            await settle(jsonResponse(emptyConversation(43), 201));
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        });
+    });
+
+    describe('nothing beneath an open confirmation can be reached', () => {
+        const wraps = () => ({
+            transcript: document.querySelector('.chat-transcript-wrap')!,
+            footer: document.querySelector('.chat-footer')!,
+        });
+
+        test('the transcript wrap and the footer are inert while New or Delete confirms and not otherwise', async () => {
+            await renderChat([userMessage('hello')]);
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            expect(wraps().footer).not.toHaveAttribute('inert');
+            chooseMenuItem('conversation-delete');
+            expect(wraps().transcript).toHaveAttribute('inert');
+            expect(wraps().footer).toHaveAttribute('inert');
+            fireEvent.click(screen.getByTestId('confirm-cancel'));
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            expect(wraps().footer).not.toHaveAttribute('inert');
+            chooseMenuItem('conversation-new');
+            expect(wraps().transcript).toHaveAttribute('inert');
+        });
+
+        test('About and the export-error panel stay non-modal', async () => {
+            await renderChat([userMessage('hello')]);
+            chooseMenuItem('conversation-about-history');
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
+            chooseMenuItem('conversation-export');
+            await screen.findByTestId('export-error');
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            expect(wraps().footer).not.toHaveAttribute('inert');
+        });
+
+        test('a failed Delete keeps the confirmation, so it stays inert; success lifts it', async () => {
+            await renderChat([userMessage('hello')]);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
+            deleteConversation();
+            await screen.findByRole('alert');
+            expect(wraps().transcript).toHaveAttribute('inert');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
+            confirmPanelAction();
+            await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            expect(wraps().footer).not.toHaveAttribute('inert');
+        });
+    });
+});
 describe('additional JobSearchChat coverage', () => {
     beforeEach(() => {
         global.fetch = jest.fn();
@@ -6157,7 +6385,7 @@ describe('validated page context and assistant actions (issue #484)', () => {
 
     test.each([
         ['start a new conversation', startNewConversation, () => jsonResponse(emptyConversation(7))],
-        ['delete the conversation', deleteConversation, () => jsonResponse({}, 200)],
+        ['delete the conversation', deleteConversation, () => jsonResponse({deleted: true})],
     ])('%s clears the sent-context snapshots', async (_label, act_, response) => {
         const snapshotMaps = new Set<Map<string, unknown>>();
         const realSet = Map.prototype.set;
