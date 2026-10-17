@@ -5412,10 +5412,18 @@ span.priority-chip-button { cursor: default; }
 /* A row whose fact does not cover the reader is one sentence where the value
    would be. */
 .company-fit-out-of-scope {
-    flex: 1 1 8rem;
+    flex: 1 1 13rem;
     min-width: 0;
     overflow-wrap: anywhere;
     color: #f5c26b;
+}
+
+/* The sentence under the figures, like the out-of-scope sentence, never ends
+   on a one-word line. */
+[data-testid="fit-priorities-none"],
+[data-testid="fit-priorities-per-job"],
+.company-fit-out-of-scope {
+    text-wrap: balance;
 }
 
 /* A limit on what a fact covers reads in this colour, not the muted one. */

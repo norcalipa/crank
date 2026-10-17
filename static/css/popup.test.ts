@@ -556,6 +556,27 @@ describe('company view visual review round 1 fixes (issue #486c)', () => {
     });
 });
 
+describe('company view fit sentences never end on one word (issue #584a visual review round 2)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
+
+    test('the out-of-scope sentence moves under the label when its column would be narrower than 13rem', () => {
+        const start = section.indexOf('.company-fit-out-of-scope {');
+        expect(start).toBeGreaterThanOrEqual(0);
+        expect(section.slice(start, section.indexOf('}', start))).toContain('flex: 1 1 13rem');
+    });
+
+    test('the three fit sentences are balanced, inside the #486 section, with no raw z-index', () => {
+        const start = section.indexOf('[data-testid="fit-priorities-none"],');
+        expect(start).toBeGreaterThanOrEqual(0);
+        const rule = section.slice(start, section.indexOf('}', start));
+        expect(rule).toContain('[data-testid="fit-priorities-per-job"],');
+        expect(rule).toContain('.company-fit-out-of-scope {');
+        expect(rule).toContain('text-wrap: balance');
+        expect(rule).not.toContain('z-index');
+    });
+});
+
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const containerBlock = popupCss.match(/@container organization-results \(max-width: 56rem\) \{[\s\S]*?\n\}\n/)![0];

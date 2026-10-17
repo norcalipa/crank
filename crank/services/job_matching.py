@@ -212,6 +212,39 @@ def evaluate_org_requirements(
     )
 
 
+#: The priorities a fact about the company can decide: the paths that have a
+#: company-level source (``_EVIDENCE_FIELD_KEY`` in the matching engine). The
+#: other paths are decided from a job listing and are always unknown for a
+#: company, so they are neither met nor counted.
+COMPANY_LEVEL_PATHS = frozenset(
+    {
+        "compensation.require_public_company",
+        "work_location.modes",
+        "work_location.countries",
+        "work_location.max_in_office_days",
+        "funding_stage",
+        "vesting.prefer_accelerated",
+    }
+)
+
+
+def priorities_met(outcomes: Iterable[RequirementOutcome]) -> dict[str, int] | None:
+    """How many of the reader's company-decidable priorities are confirmed met.
+
+    ``counted`` is the number of outcomes whose path a company fact can decide;
+    ``met`` is those that match with a scope that covers the reader. Unknown,
+    mismatched and out-of-scope rows stay in ``counted``. ``None`` when nothing
+    is counted.
+    """
+    counted = [o for o in outcomes if o.path in COMPANY_LEVEL_PATHS]
+    if not counted:
+        return None
+    return {
+        "met": sum(1 for o in counted if o.status == "match" and o.scope_ok),
+        "counted": len(counted),
+    }
+
+
 def _scope_of(evidence_row: Any) -> dict[str, list[str]] | None:
     """The declared scope of an evidence row as ``{key: [values]}``, or ``None``.
 
@@ -247,7 +280,7 @@ def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CO
         "organization_id": org_id,
         "has_preferences": False,
         "excluded": False,
-        "fit_score": None,
+        "priorities_met": None,
         "company_score": None,
         "coverage": None,
         "requirements": [],
@@ -282,6 +315,7 @@ def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CO
                 **annotated,
                 "hard": is_hard_requirement(outcome.path, criteria.importance),
                 "scope": _scope_of(row),
+                "counted": outcome.path in COMPANY_LEVEL_PATHS,
             }
         )
     generated_at = timezone.now()
@@ -296,7 +330,7 @@ def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CO
             or criteria.excluded_locations
         ),
         excluded=excluded,
-        fit_score=_score_organization_match(organization, criteria, config),
+        priorities_met=priorities_met(outcomes),
         company_score=_company_score(organization),
         # No requirement row, no share: 0% would claim rows that were all missed.
         coverage=coverage(outcomes) if outcomes else None,
@@ -894,6 +928,7 @@ def rank_listings_with_reasons(
 
 
 __all__ = [
+    "COMPANY_LEVEL_PATHS",
     "DEFAULT_RELAXATION_PROBES",
     "MAX_MATCH_RESULTS",
     "JobMatchResult",
@@ -901,6 +936,7 @@ __all__ = [
     "evaluate_org_requirements",
     "match_jobs",
     "match_organizations",
+    "priorities_met",
     "rank_listings_with_reasons",
     "relaxation_preview",
 ]

@@ -10,7 +10,11 @@ from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from crank.agents.jobs.matching import (
+    _EVIDENCE_FIELD_KEY,
+    REQUIREMENT_ORDER,
     ExclusionReason,
+    JobCriteria,
+    RequirementOutcome,
     project_criteria,
     rank_listing,
 )
@@ -20,6 +24,7 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, default_preferences
 from crank.services.job_matching import (
+    COMPANY_LEVEL_PATHS,
     JobMatchResult,
     OrgMatchResult,
     _funding_label,
@@ -27,8 +32,10 @@ from crank.services.job_matching import (
     _org_excluded,
     _rto_label,
     _score_organization_match,
+    evaluate_org_requirements,
     match_jobs,
     match_organizations,
+    priorities_met,
     rank_listings_with_reasons,
 )
 
@@ -1125,6 +1132,86 @@ class RankedAPIWithMatchesTests(TestCase):
         payload = response.json()
         # Should fall back to default limit
         assert "job_matches" in payload
+
+
+class PrioritiesMetTests(TestCase):
+    """The company view's one figure: confirmed company-decidable priorities (issue #584)."""
+
+    def outcome(self, path, status, scope_ok=True):
+        return RequirementOutcome(path, status, None, None, None, scope_ok=scope_ok)
+
+    def test_the_company_level_paths_are_the_ones_with_a_company_source(self):
+        self.assertEqual(COMPANY_LEVEL_PATHS, frozenset(_EVIDENCE_FIELD_KEY))
+        self.assertEqual(len(COMPANY_LEVEL_PATHS), 6)
+
+    def test_truth_table(self):
+        outcomes = [
+            self.outcome("funding_stage", "match"),
+            self.outcome("work_location.modes", "match", scope_ok=False),
+            self.outcome("work_location.countries", "mismatch"),
+            self.outcome("compensation.require_public_company", "unknown"),
+            # Decided for each job: neither met nor counted, whatever its status.
+            self.outcome("compensation.minimum_salary", "match"),
+            self.outcome("industry", "unknown"),
+        ]
+        self.assertEqual(priorities_met(outcomes), {"met": 1, "counted": 4})
+
+    def test_nothing_counted_is_none(self):
+        self.assertIsNone(priorities_met([]))
+        self.assertIsNone(priorities_met([self.outcome("industry", "match"), self.outcome("culture", "unknown")]))
+
+    def test_the_other_paths_can_never_be_decided_for_a_company(self):
+        organization = Organization.objects.create(
+            name="Everything", rto_policy="H", funding_round="B", public=True,
+            accelerated_vesting=True, url="https://everything.example.test",
+        )
+        for field_key, value in (
+            ("public_status", "Public"), ("rto_policy", "Hybrid"), ("locations", "United States"),
+            ("funding_round", "Series B"), ("accelerated_vesting", "Yes"),
+        ):
+            make_evidence(organization, field_key, value)
+        criteria = JobCriteria(
+            min_salary=Decimal(100000), equity_minimum=0.1, require_public_company=True,
+            work_modes=frozenset({"hybrid"}), countries=frozenset({"us"}), regions=frozenset({"north america"}),
+            remote_friendly=True, max_in_office_days=3, industries=frozenset({"software"}),
+            funding_stages=frozenset({"B"}), max_cliff_months=12, max_vesting_months=48,
+            prefer_accelerated=True, culture_tags=frozenset({"collaborative"}),
+        )
+        outcomes = {o.path: o for o in evaluate_org_requirements(organization, criteria, {})}
+        self.assertEqual(set(outcomes), set(REQUIREMENT_ORDER))
+        undecidable = set(REQUIREMENT_ORDER) - COMPANY_LEVEL_PATHS
+        self.assertEqual(len(undecidable), 8)
+        for path in undecidable:
+            with self.subTest(path=path):
+                self.assertEqual(outcomes[path].status, "unknown")
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class RankedOrganizationsUnchangedTests(TestCase):
+    """584a changes the company view only: the ranked list keeps its own score (issue #584)."""
+
+    def test_the_ranked_payload_keeps_its_scores_order_and_keys(self):
+        user = User.objects.create_user("rankedreader", password="secret")
+        UserPreference.objects.create(
+            user=user,
+            preferences=preferences(funding_stage=["P"], work_location={"modes": ["hybrid"]}),
+            schema_version=3,
+        )
+        Organization.objects.create(name="Alpha", funding_round="P", rto_policy="H", gives_ratings=True)
+        Organization.objects.create(name="Beta", funding_round="A", rto_policy="O")
+        self.client.force_login(user)
+        rows = self.client.get("/api/job-matches/ranked/").json()["organization_matches"]
+        self.assertEqual([r["name"] for r in rows], ["Alpha", "Beta"])
+        criteria = _get_criteria(user)
+        expected = {
+            o.name: round(_score_organization_match(o, criteria, DEFAULT_CONFIG), 1)
+            for o in Organization.objects.all()
+        }
+        self.assertEqual({r["name"]: r["fit_score"] for r in rows}, expected)
+        self.assertEqual({r["name"]: r["score"] for r in rows}, expected)
+        self.assertGreater(rows[0]["score"], rows[1]["score"])
+        for row in rows:
+            self.assertNotIn("priorities_met", row)
 
 
 # ---------------------------------------------------------------------------

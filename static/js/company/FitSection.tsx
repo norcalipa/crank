@@ -10,6 +10,8 @@ import {retryFrom, useHoldReaderBelow, useOwnCompanyRead} from './useOwnCompanyR
 
 export interface FitRequirement {
     path: string;
+    // Whether a fact about the company can decide this priority; false means it is checked for each job.
+    counted?: boolean;
     status: 'match' | 'mismatch' | 'unknown';
     hard: boolean;
     observed?: unknown;
@@ -22,7 +24,8 @@ export interface FitRequirement {
 export interface CompanyFit {
     organization_id: number;
     has_preferences: boolean;
-    fit_score: number | null;
+    // Confirmed met out of the priorities a company fact can decide; null when none can be.
+    priorities_met: {met: number; counted: number} | null;
     company_score: number | null;
     coverage: number | null;
     requirements: FitRequirement[];
@@ -78,9 +81,8 @@ const ACRONYMS = new Set([
     'ai', 'ml', 'saas', 'hr', 'it', 'vr', 'ar', 'iot', 'b2b', 'b2c', 'api', 'ux', 'ui', 'us', 'usa', 'uk', 'eu', 'uae',
 ]);
 
-// Decided from a job listing's own pay, place and remote flag: the company-level
-// check has no listing, so these never have a fact behind them for a company.
-const PER_JOB_PATHS = ['compensation.minimum_salary', 'geography.regions', 'geography.remote_friendly'];
+// A priority the server does not count (`counted: false`) is decided from a job
+// listing's own pay, place or tags: the company-level check has no listing.
 const PER_JOB_TEXT = 'Checked for each job, not for the company. See Open jobs.';
 // The words the evidence list uses for the same answer.
 const NO_EVIDENCE_TEXT = 'No accepted evidence';
@@ -135,17 +137,20 @@ function evidenceText(requirement: FitRequirement): string | null {
     return null;
 }
 
-// What the Fit number is. It is the ranking's own score for the company
-// (`_score_organization_match`), not a count of the rows below, and it has no
-// fixed top: only four of the ranking's eight factors can score for a company
-// (a company has no industry, so the industry factor never scores), so it is at
-// most 50.
-const FIT_MEANING = 'The ranking\u2019s score for this company under your priorities: points for the profile fields at '
-    + 'the top of this page that match your funding stage, work mode and accelerated-vesting priorities, plus its ratings. '
-    + 'Only four of the ranking\u2019s eight factors can score for a company, so it cannot reach 100.';
-
-// One sentence, visible without opening anything, beside the number it is about.
-export const FIT_NUMBER_NOTE = 'Fit is the ranking\u2019s score, not a count of the rows below, and the two can disagree.';
+// The first figure is a count of the rows below: how many of the reader's
+// priorities that a fact about the company can decide are confirmed met. The
+// server decides which priorities those are (`counted` on each row).
+export const PRIORITIES_MET_TERM = {
+    label: 'Priorities met',
+    meaning: 'How many of your priorities that a fact about the company can decide are confirmed for you. Unknown rows, '
+        + 'and rows whose fact covers only part of the company, count as not met; priorities checked for each job are not counted.',
+};
+export const PRIORITIES_NONE_TEXT = 'No priority in the rows below can be decided from a fact about a company; '
+    + 'each is checked for each job.';
+// Beside a count, the priorities it leaves out, so "of 3" can be checked against five rows without the legend.
+export const perJobCountText = (count: number): string => (count === 1
+    ? 'One priority below is checked for each job and is not counted.'
+    : `${count} priorities below are checked for each job and are not counted.`);
 
 // The number the endpoint sends as `company_score` is the plain mean of the
 // company's rating types (`_company_score`); no preset weights enter it. The
@@ -158,14 +163,17 @@ export const COMPANY_SCORE_TERM = {
 const figure = (value: number | null, scale: string, digits = 1): string =>
     value === null || value === undefined ? '—' : `${value.toFixed(digits)}${scale}`;
 
+const prioritiesMetText = (fit: CompanyFit): string =>
+    fit.priorities_met ? `${fit.priorities_met.met} of ${fit.priorities_met.counted}` : '—';
+
 function Figures({fit}: {fit: CompanyFit}) {
     const coverage = fit.coverage === null || fit.coverage === undefined
         ? '—' : `${Math.round(fit.coverage * 100)}%`;
     return (
         <div className="job-match-figures company-fit-figures mb-3" role="list" aria-label="Match figures">
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label" title={FIT_MEANING}>{MATCH_TERMS.fit.label}</span>
-                <strong className="job-match-figure-value" data-testid="fit-score">{figure(fit.fit_score, '')}</strong>
+                <span className="job-match-figure-label" title={PRIORITIES_MET_TERM.meaning}>{PRIORITIES_MET_TERM.label}</span>
+                <strong className="job-match-figure-value" data-testid="fit-priorities-met">{prioritiesMetText(fit)}</strong>
             </span>
             <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label" title={COMPANY_SCORE_TERM.meaning}>{COMPANY_SCORE_TERM.label}</span>
@@ -197,7 +205,7 @@ function FitRow({requirement}: {requirement: FitRequirement}) {
             <li {...rowProps}>
                 {label}
                 <span className="company-fit-out-of-scope small" data-testid={`fit-out-of-scope-${requirement.path}`}>
-                    Not counted: the fact on record covers {partialScopeWords(requirement.scope) ?? 'part of the company'} only.
+                    Counted as not met: the fact on record covers {partialScopeWords(requirement.scope) ?? 'part of the company'} only.
                 </span>
             </li>
         );
@@ -211,7 +219,7 @@ function FitRow({requirement}: {requirement: FitRequirement}) {
             <span className="company-fit-meta small text-muted">
                 {noFact ? (
                     <span data-testid={`fit-scope-${requirement.path}`}>
-                        {PER_JOB_PATHS.includes(requirement.path) ? PER_JOB_TEXT : NO_EVIDENCE_TEXT}
+                        {requirement.counted === false ? PER_JOB_TEXT : NO_EVIDENCE_TEXT}
                     </span>
                 ) : (
                     <>
@@ -241,17 +249,12 @@ function FitLegend() {
             <summary className="how-ranking-works-summary">What these labels mean</summary>
             <div className="how-ranking-works-content">
                 <dl className="ranking-definitions mb-0">
-                    <dt>{MATCH_TERMS.fit.label}</dt>
-                    <dd>{FIT_MEANING}</dd>
+                    <dt>{PRIORITIES_MET_TERM.label}</dt>
+                    <dd>{PRIORITIES_MET_TERM.meaning}</dd>
                     <dt>{COMPANY_SCORE_TERM.label}</dt>
                     <dd>{COMPANY_SCORE_TERM.meaning}</dd>
                     <dt>{MATCH_TERMS.requirementCoverage.label}</dt>
                     <dd>{MATCH_TERMS.requirementCoverage.meaning}</dd>
-                    <dt>Why the fit and the rows can disagree</dt>
-                    <dd>
-                        The rows come from sourced facts; the fit reads the profile values. A priority under Meets
-                        can add nothing to the fit, and one that is unmet or undecided can add to it.
-                    </dd>
                     <dt>Marks</dt>
                     <dd>
                         <ul className="evidence-legend list-unstyled mb-0" data-testid="fit-mark-legend">
@@ -307,8 +310,8 @@ function ExcludedNote({target, hasRows}: {target: string; hasRows: boolean}) {
 
 /**
  * How this company fits the signed-in reader's saved priorities (issue #486):
- * every requirement the reader set, in four groups, with the fit, company score
- * and coverage as three separately labelled numbers. It reads the reader's own
+ * every requirement the reader set, in four groups, with the priorities met, company
+ * score and coverage as three separately labelled numbers. It reads the reader's own
  * evaluation, so nothing here is kept outside the component.
  */
 const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
@@ -390,10 +393,18 @@ const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
             <div data-testid="fit-ready" aria-busy={refreshing || undefined}>
                 {fit.excluded && <ExcludedNote target={target} hasRows/>}
                 <Figures fit={fit}/>
-                <p className="small text-body-secondary mb-2" data-testid="fit-number-note">{FIT_NUMBER_NOTE}</p>
+                {!fit.priorities_met && (
+                    <p className="small text-body-secondary mb-2" data-testid="fit-priorities-none">{PRIORITIES_NONE_TEXT}</p>
+                )}
+                {fit.priorities_met && fit.requirements.some(item => item.counted === false) && (
+                    <p className="small text-body-secondary mb-2" data-testid="fit-priorities-per-job">
+                        {perJobCountText(fit.requirements.filter(item => item.counted === false).length)}
+                    </p>
+                )}
                 <FitLegend/>
                 {FIT_GROUPS.map(group => {
-                    const rows = fit.requirements.filter(item => fitGroupOf(item) === group.key);
+                    const rows = fit.requirements.filter(item => fitGroupOf(item) === group.key)
+                        .sort((a, b) => Number(a.counted === false) - Number(b.counted === false));
                     const headingId = `company-fit-${group.key}`;
                     return (
                         <div key={group.key} className="company-fit-group" data-testid={`fit-group-${group.key}`}>
