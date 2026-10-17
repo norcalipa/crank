@@ -139,7 +139,9 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
         // A prompt check at the return, but none while a failure is pending
         // and at most one early check per interval. AC 9 amended by the owner
         // on 2026-10-17: one scheduled check per interval plus at most one
-        // early check on return per interval (never more than 20 in 10 minutes).
+        // early check on return per interval. The ceiling of 20 checks in 10
+        // minutes holds at the default 60 s interval; at the 30 s minimum it
+        // is 30.
         const early = failures === 0 && waited >= RETURN_MIN_GAP_MS
             && now() - lastReturnCheckAt >= intervalMs;
         if (waited >= delayMs || early) {
