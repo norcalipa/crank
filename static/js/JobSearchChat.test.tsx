@@ -3279,6 +3279,8 @@ describe('durable turn state (issue #458)', () => {
             mock.mockResolvedValueOnce(
                 jsonResponse({message: assistantMessage(5, 'sent it'), preferences_changed: false}, 201),
             );
+            // Send is off for the whole send (issue #588): press it once the failed send has ended.
+            await waitFor(() => expect(screen.getByRole('button', {name: 'Send message'})).toBeEnabled());
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByText('sent it');
             expect(window.localStorage.getItem(inflightKeyFor(42, key2))).toBeNull();

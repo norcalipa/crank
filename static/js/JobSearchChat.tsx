@@ -1312,6 +1312,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // turn to recover. Other unsent markers stay untouched. A gated
         // (aborted) send keeps the draft recoverable.
         clearSurfacedDraft();
+        // From here pendingRef and pending (set in the same tick) hold the turn.
+        setSubmitting(false);
         await sendTurn(content, newId(), {conversationId: targetId});
     };
 
