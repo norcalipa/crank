@@ -29,6 +29,8 @@ export interface ConversationMenuProps {
     onExport: () => Promise<HistoryOutcome>;
     onNewConversation: () => Promise<HistoryOutcome>;
     onDeleteConversation: () => Promise<HistoryOutcome>;
+    // Reports whether a New / Delete confirmation is open, so the chat can make what lies beneath it inert.
+    onConfirmationChange?: (open: boolean) => void;
 }
 
 interface MenuItem {
@@ -49,35 +51,31 @@ const InlineError = React.forwardRef<HTMLParagraphElement, {message: string; id?
     );
 });
 
-// Scroll the panel stack so `target` sits above the pinned dismiss row, then
-// bring `context` (the failure text) into view only as far as that keeps the
-// target uncovered.
-function revealAbovePinnedRow(target: HTMLElement | null, context: HTMLElement | null) {
+// Scroll the panel stack so `target` is fully inside it, then bring `context`
+// (the failure text above it) into view only as far as that keeps the target
+// visible. Nothing is pinned: at short heights the reader scrolls through the
+// consequence to reach the button (issue #547).
+function revealWithin(target: HTMLElement | null, context: HTMLElement | null) {
     const stack = target?.closest<HTMLElement>('.chat-panel-stack');
     if (!target || !stack) return;
     const stackRect = stack.getBoundingClientRect();
-    const dismiss = target.closest('.chat-confirm-panel')?.querySelector<HTMLElement>('.chat-confirm-dismiss');
-    const limit = Math.min(stackRect.bottom, dismiss ? dismiss.getBoundingClientRect().top : stackRect.bottom);
-    // A target inside the pinned row is always visible; only the context above
-    // it needs bringing into view.
-    const pinned = !!dismiss && dismiss.contains(target);
-    const hidden = pinned ? 0 : target.getBoundingClientRect().bottom - limit;
+    const hidden = target.getBoundingClientRect().bottom - stackRect.bottom;
     if (hidden > 0) stack.scrollTop += hidden + 4;
     if (!context) return;
     const above = stackRect.top - context.getBoundingClientRect().top;
-    const room = pinned ? above : limit - target.getBoundingClientRect().bottom;
+    const room = stackRect.bottom - target.getBoundingClientRect().bottom;
     if (above > 0 && room > 0) stack.scrollTop -= Math.min(above, room);
-    const below = context.getBoundingClientRect().bottom - limit;
-    if (pinned && below > 0) stack.scrollTop += below + 4;
 }
 
 export function ConversationMenu({
     title, hasConversation, hasMessages, pending,
-    onExport, onNewConversation, onDeleteConversation,
+    onExport, onNewConversation, onDeleteConversation, onConfirmationChange,
 }: ConversationMenuProps) {
     const [open, setOpen] = React.useState(false);
     const [confirming, setConfirming] = React.useState<ConfirmKind | null>(null);
     const [working, setWorking] = React.useState(false);
+    const [exporting, setExporting] = React.useState(false);
+    const exportingRef = React.useRef(false);
     const [failure, setFailure] = React.useState<string | null>(null);
     const [aboutOpen, setAboutOpen] = React.useState(false);
     const [exportError, setExportError] = React.useState<string | null>(null);
@@ -101,7 +99,7 @@ export function ConversationMenu({
 
     const items: MenuItem[] = [
         {id: 'new', label: 'New conversation…', testId: 'conversation-new', disabled: !hasConversation || pending},
-        {id: 'export', label: 'Export conversation', testId: 'conversation-export', disabled: !hasConversation || !hasMessages},
+        {id: 'export', label: 'Export conversation', testId: 'conversation-export', disabled: !hasConversation || !hasMessages || exporting},
         {id: 'about', label: 'About saved history', testId: 'conversation-about-history', disabled: false},
         {
             id: 'delete', label: 'Delete conversation…', testId: 'conversation-delete',
@@ -135,22 +133,28 @@ export function ConversationMenu({
     }, [open]);
 
     React.useEffect(() => {
-        if (confirming) confirmHeadingRef.current?.focus();
+        if (!confirming) return;
+        // The heading and the whole consequence sentence are what the reader sees first.
+        confirmHeadingRef.current?.focus({preventScroll: true});
+        const stack = confirmHeadingRef.current?.closest<HTMLElement>('.chat-panel-stack');
+        if (stack) stack.scrollTop = 0;
     }, [confirming]);
+    React.useEffect(() => {
+        onConfirmationChange?.(confirming !== null);
+    }, [confirming, onConfirmationChange]);
     React.useEffect(() => {
         if (aboutOpen) aboutHeadingRef.current?.focus();
     }, [aboutOpen]);
     React.useEffect(() => {
         if (!failure) return;
-        // The focused retry must be visible above the pinned dismiss row, with
-        // the failure text above it when both fit.
+        // The focused retry must be visible, with the failure text above it when both fit.
         confirmButtonRef.current?.focus({preventScroll: true});
-        revealAbovePinnedRow(confirmButtonRef.current, failureRef.current);
+        revealWithin(confirmButtonRef.current, failureRef.current);
     }, [failure]);
     React.useEffect(() => {
         if (!exportError) return;
         exportRetryRef.current?.focus({preventScroll: true});
-        revealAbovePinnedRow(exportRetryRef.current, exportPanelRef.current);
+        revealWithin(exportRetryRef.current, exportPanelRef.current);
     }, [exportError]);
 
     // A turn that starts while the menu is open disables the destructive
@@ -158,11 +162,15 @@ export function ConversationMenu({
     React.useEffect(() => {
         if (pending && confirming && !working) setConfirming(null);
     }, [pending, confirming, working]);
-    // The conversation going away (purge, account switch) withdraws the panels.
+    // The conversation going away (Delete, purge, account switch) withdraws the
+    // panels, including an export failure and the export status: nothing is left
+    // to retry or to announce for a conversation that is gone.
     React.useEffect(() => {
         if (!hasConversation && !working) {
             setConfirming(null);
             setOpen(false);
+            setExportError(null);
+            setStatus('');
         }
     }, [hasConversation, working]);
 
@@ -213,15 +221,27 @@ export function ConversationMenu({
     };
 
     const runExport = async (keepFocus = false) => {
+        // One request at a time: a second press while one is in flight starts nothing.
+        if (exportingRef.current) return;
+        exportingRef.current = true;
+        setExporting(true);
         setExportError(null);
-        setStatus('');
-        const outcome = await onExport();
+        setStatus('Exporting conversation…');
+        let outcome: HistoryOutcome;
+        try {
+            outcome = await onExport();
+        } finally {
+            exportingRef.current = false;
+            setExporting(false);
+        }
         if (outcome === DROPPED) {
+            setStatus('');
             // The menu item that held focus is gone; focus that fell to the page returns to More, focus the next reader placed stays.
             if (!keepFocus && focusHasFallen()) moreRef.current?.focus();
             return;
         }
         if (outcome) {
+            setStatus('');
             setExportError(outcome);
             return;
         }
@@ -362,11 +382,11 @@ export function ConversationMenu({
                             <button
                                 type="button"
                                 className="btn btn-sm btn-link chat-focus"
-                                disabled={working || !hasMessages}
+                                disabled={working || exporting || !hasMessages}
                                 onClick={() => void runExport(true)}
                                 data-testid="confirm-export-first"
                             >
-                                Export first
+                                {exporting ? 'Exporting…' : 'Export first'}
                             </button>
                         </div>
                     )}
@@ -375,7 +395,7 @@ export function ConversationMenu({
                             type="button"
                             ref={confirmButtonRef}
                             className={`btn btn-sm ${deleting ? 'btn-danger' : 'btn-primary'} chat-focus`}
-                            disabled={working}
+                            disabled={working || exporting}
                             aria-describedby={failure ? 'chat-confirm-copy chat-confirm-failure' : 'chat-confirm-copy'}
                             onPointerDown={(e) => { confirmPressStartRef.current = e.timeStamp; }}
                             onClick={(e) => void runConfirm(e)}

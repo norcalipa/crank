@@ -621,8 +621,8 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         expect(popupCss).not.toMatch(/\.assistant-panel-body[^{]*\{[^}]*scroll-padding/);
     });
 
-    it('pins the action row of an inline panel and caps footer notices against the card, falling back to 40% of the view', () => {
-        expect(rule('.chat-confirm-dismiss')).toMatch(/position:\s*sticky/);
+    it('leaves the action row of an inline panel in flow after the consequence and caps footer notices against the card, falling back to 40% of the view', () => {
+        expect(rule('.chat-confirm-dismiss')).not.toMatch(/position:\s*sticky/);
         expect(popupCss).not.toMatch(/\.chat-panel-stack \.chat-confirm-actions\s*\{/);
         expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);
     });
@@ -673,12 +673,11 @@ describe('one transcript scroller in the assistant panel (issue #483)', () => {
             .toMatch(/min-height:\s*4\.5rem;/);
     });
 
-    it('pins nothing in the chat: no rule that names the chat, the panel body or the priorities block is sticky, bar four known ones', () => {
+    it('pins nothing in the chat: no rule that names the chat, the panel body or the priorities block is sticky, bar three known ones', () => {
         const sticky = rules.filter((r) => /#job-search-chat|\.chat-|\.assistant-panel-body|\.priorities-sidebar/.test(r.selector)
             && /position:\s*sticky/.test(r.declarations));
-        // Only the confirmation's dismiss control and the priorities editor's own bars pin; no bar of the chat does.
+        // Only the priorities editor's own bars pin; no bar of the chat does, and the confirmation's action row follows its consequence in flow (issue #547).
         expect(sticky.map((r) => r.selector)).toEqual([
-            '.chat-confirm-dismiss',
             '.priorities-sidebar .priorities-applied > .chat-actions, .priorities-sidebar .priorities-confirm > .chat-actions',
             '.priorities-review > .chat-actions',
             '.priorities-sidebar .priorities-review-compact > .pref-change-error',
