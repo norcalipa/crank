@@ -8,6 +8,12 @@ import {AvailabilityNotice} from './notices';
 import {hasResults, ResultCards} from './ResultCards';
 import type {AvailabilityPayload, ChatMessage} from './types';
 
+export interface TranscriptNotice {
+    kind: string;
+    afterId: number | null;
+    node: React.ReactNode;
+}
+
 export interface TranscriptProps {
     historyRef: React.RefObject<HTMLDivElement>;
     messages: ChatMessage[];
@@ -15,6 +21,11 @@ export interface TranscriptProps {
     turnActions: Record<number, TurnActions>;
     newestActionsId: number | null;
     lastAssistantId: number | null;
+    // Preference notices (proposal, applied, undone, banner) live in the log, each right
+    // after the reply that produced it: the article with its `afterId`, or the last
+    // one when the id is null or no longer in the history (issue #483). Notices that
+    // land under the same reply share one block, in the order given.
+    notices?: TranscriptNotice[];
     availability: AvailabilityPayload | null;
     retryKey: string | null;
     pending: boolean;
@@ -28,14 +39,29 @@ export interface TranscriptProps {
 }
 
 export function Transcript({
-    historyRef, messages, staleNotes, turnActions, newestActionsId, lastAssistantId, availability, retryKey, pending, loading,
-    authenticated, workspaceMode, onAskFirstQuestion,
+    historyRef, messages, staleNotes, turnActions, newestActionsId, lastAssistantId, notices = [],
+    availability, retryKey, pending, loading, authenticated, workspaceMode, onAskFirstQuestion,
     onCheckResponse, onRetryMessage, onEditAsNew,
 }: TranscriptProps) {
+    const lastId = messages.length > 0 ? messages[messages.length - 1].id : null;
+    const placed = notices.map((n) => ({
+        ...n,
+        id: n.afterId !== null && messages.some((m) => m.id === n.afterId) ? n.afterId : lastId,
+    }));
+    const blockAfter = (id: number | null) => {
+        const group = placed.filter((n) => n.id === id);
+        return group.length > 0 ? (
+            <div className="chat-transcript-notice" data-testid="transcript-notice">
+                {group.map((n) => <React.Fragment key={n.kind}>{n.node}</React.Fragment>)}
+            </div>
+        ) : null;
+    };
+    const anchors = Array.from(new Set(notices.map((n) => n.afterId).filter((id) => id !== null)));
     return (
         <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
             <div className="bg-dark chat-transcript rounded p-3"
-                 ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
+                 ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}
+                 data-notice-anchor={anchors.length > 0 ? anchors.join(' ') : undefined}>
                 {authenticated && loading && (
                     <div className="text-muted chat-loading-status" role="status" aria-live="polite"
                          data-testid="chat-loading">
@@ -62,7 +88,8 @@ export function Transcript({
                     </div>
                 )}
                 {messages.map((m) => (
-                    <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
+                    <React.Fragment key={m.id}>
+                    <article aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
                              tabIndex={-1}
                              className={`d-flex flex-column ${m.role === 'user' ? 'align-items-end' : 'align-items-start'} mb-2`}>
                         <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
@@ -155,7 +182,10 @@ export function Transcript({
                             </div>
                         )}
                     </article>
+                    {blockAfter(m.id)}
+                    </React.Fragment>
                 ))}
+                {lastId === null && blockAfter(null)}
                 {pending && (
                     <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
                         <i className="fa-solid fa-spinner fa-spin me-1"></i>Assistant is typing…

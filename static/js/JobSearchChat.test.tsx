@@ -445,6 +445,60 @@ describe('JobSearchChat', () => {
             expect(resizeHandlers(viewport.removeEventListener)).toEqual(expect.arrayContaining(resizeHandlers(viewport.addEventListener)));
         });
 
+        describe('lets go of what it set up (issue #546 review items)', () => {
+            // One mock per observer, so a cleanup that is missing for one of them cannot hide behind the other.
+            const watchObservers = () => {
+                const made: Array<{targets: Element[]; disconnect: jest.Mock}> = [];
+                class MockResizeObserver {
+                    targets: Element[] = [];
+                    disconnect = jest.fn();
+                    constructor() { made.push(this); }
+                    observe = (el: Element) => { this.targets.push(el); };
+                }
+                (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
+                return made;
+            };
+
+            test('disconnects the observer of the card and its header on unmount', async () => {
+                const made = watchObservers();
+                const {unmount} = await renderInPanel(700);
+                const chat = screen.getByTestId('job-search-chat');
+                const cardObserver = made.find((o) => o.targets.includes(chat))!;
+                expect(cardObserver.targets).toContain(chat.querySelector('.card-header'));
+                expect(cardObserver.disconnect).not.toHaveBeenCalled();
+                unmount();
+                expect(cardObserver.disconnect).toHaveBeenCalledTimes(1);
+            });
+
+            test('disconnects the footer observer on unmount', async () => {
+                const made = watchObservers();
+                const {unmount} = await renderInPanel(700);
+                const footerObserver = made.find((o) => o.targets.some((el) => el.classList.contains('chat-footer')))!;
+                expect(footerObserver.disconnect).not.toHaveBeenCalled();
+                unmount();
+                expect(footerObserver.disconnect).toHaveBeenCalledTimes(1);
+            });
+
+            test('cancels a pending animation frame on unmount', async () => {
+                const frame = jest.spyOn(window, 'requestAnimationFrame').mockReturnValue(4242);
+                const cancel = jest.spyOn(window, 'cancelAnimationFrame');
+                const {unmount} = await renderInPanel(700);
+                fireEvent(window, new Event('resize'));
+                expect(frame).toHaveBeenCalled();
+                cancel.mockClear();
+                unmount();
+                expect(cancel).toHaveBeenCalledWith(4242);
+            });
+
+            test('has no frame to cancel once the measure has run', async () => {
+                const {unmount} = await renderInPanel(700);
+                await act(async () => { await flushRaf(); });
+                const cancel = jest.spyOn(window, 'cancelAnimationFrame');
+                unmount();
+                expect(cancel).not.toHaveBeenCalled();
+            });
+        });
+
         test('coalesces a resize burst into a single queued measure', async () => {
             await renderChat();
             await act(async () => { await flushRaf(); }); // settle mount measure
@@ -1492,7 +1546,11 @@ describe('additional JobSearchChat coverage', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'prefs'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             const notice = await screen.findByText(/preferences updated/i);
-            fireEvent.click(screen.getByLabelText('Dismiss preference notice'));
+            // The banner has the notices' own close button (44px by CSS), not Bootstrap's btn-close.
+            const close = screen.getByLabelText('Dismiss preference notice');
+            expect(close).toHaveClass('pref-change-dismiss');
+            expect(close).not.toHaveClass('btn-close');
+            fireEvent.click(close);
             await waitFor(() => expect(notice).not.toBeInTheDocument());
         });
     });
@@ -4965,6 +5023,1040 @@ describe('validated page context and assistant actions (issue #484)', () => {
     });
 });
 
+describe('preference notices in the transcript (issue #483)', () => {
+    beforeEach(() => {
+        resetWorkspaceForTests();
+        window.localStorage.clear();
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    const undoToken = {expected_revision: 3, document: {notes: ''}};
+    const changes = [{path: 'notes', old: '', new: 'prefers remote-first teams'}];
+    const proposal = {
+        id: 'prop-483', scope: 'account', changes, change_count: 1, base_revision: 2, unsupported_criteria: [],
+        token: {patch: {set: {notes: 'prefers remote-first teams'}}, scope: 'account', base_revision: 2},
+    };
+    const log = () => screen.getByRole('log');
+    // The element of the log that comes right before the notice.
+    const beforeNotice = () => screen.getByTestId('transcript-notice').previousElementSibling as HTMLElement;
+
+    async function sendTurn(text: string, payload: object) {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(payload, 201));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: text}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+    }
+
+    async function withProposal(history: ChatMessage[] = []) {
+        await renderChat(history);
+        await sendTurn('only remote', {
+            message: assistantMessage(9, 'I suggest these updates.', false),
+            preferences_changed: false, preference_proposal: proposal,
+        });
+        await screen.findByTestId('preference-proposal-notice');
+    }
+
+    test('the proposal is in the log, right after the reply that made it', async () => {
+        await withProposal();
+        const notice = screen.getByTestId('preference-proposal-notice');
+        expect(log()).toContainElement(notice);
+        expect(screen.getByTestId('transcript-notice')).toContainElement(notice);
+        expect(beforeNotice()).toHaveAttribute('aria-label', 'Assistant message');
+        expect(beforeNotice()).toHaveTextContent('I suggest these updates.');
+        expect(log()).toHaveAttribute('data-notice-anchor', '9');
+        // Nothing above the transcript any more.
+        expect(screen.getByTestId('job-search-chat').querySelector('.card-body > [data-testid="preference-proposal-notice"]')).toBeNull();
+    });
+
+    test('a proposal stays under its reply while later turns follow it', async () => {
+        await withProposal();
+        await sendTurn('and what else?', {message: assistantMessage(11, 'Nothing else.'), preferences_changed: false});
+        await screen.findByText('Nothing else.');
+        expect(beforeNotice()).toHaveTextContent('I suggest these updates.');
+        expect(screen.getByTestId('transcript-notice').nextElementSibling).toHaveAttribute('aria-label', 'Your message');
+    });
+
+    test('the plain banner is in the log after the reply that changed preferences', async () => {
+        await renderChat();
+        await sendTurn('I need remote', {message: assistantMessage(5, 'Noted.'), preferences_changed: true});
+        const banner = await screen.findByRole('status', {name: 'Preference update'});
+        expect(log()).toContainElement(banner);
+        expect(beforeNotice()).toHaveTextContent('Noted.');
+    });
+
+    test('a history that reports a change puts the banner after the last reply', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            ...emptyConversation(42, [
+                assistantMessage(1, 'first'), userMessage('second'), assistantMessage(3, 'third'), userMessage('fourth'),
+            ]),
+            preferences_changed: true,
+        }));
+        render(<JobSearchChat/>);
+        const banner = await screen.findByRole('status', {name: 'Preference update'});
+        expect(log()).toContainElement(banner);
+        expect(beforeNotice()).toHaveTextContent('third');
+        expect(log()).toHaveAttribute('data-notice-anchor', '3');
+    });
+
+    test('the search-only confirmation is in the log under the reply', async () => {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: false, scope: 'search', matches: {job_matches: [{listing_id: 1}], organization_matches: []},
+        }));
+        fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+        const applied = await screen.findByTestId('preference-search-applied');
+        expect(log()).toContainElement(applied);
+        expect(beforeNotice()).toHaveTextContent('I suggest these updates.');
+    });
+
+    test('the applied notice and the undone notice are in the log under the reply', async () => {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({applied: true, scope: 'account', revision: 3, changes, undo: undoToken}));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        const applied = await screen.findByTestId('preference-change-notice');
+        expect(log()).toContainElement(applied);
+        expect(beforeNotice()).toHaveTextContent('I suggest these updates.');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+        fireEvent.click(screen.getByTestId('preference-undo-button'));
+        const undone = await screen.findByTestId('preference-change-undone');
+        expect(log()).toContainElement(undone);
+        expect(beforeNotice()).toHaveTextContent('I suggest these updates.');
+    });
+
+    test('an apply failure and an undo failure show inside the transcript', async () => {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({error: {type: 'server_error', message: 'Apply broke.'}}, 500));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        expect(log()).toContainElement(await screen.findByTestId('preference-proposal-error'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({applied: true, scope: 'account', revision: 3, changes, undo: undoToken}));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        await screen.findByTestId('preference-change-notice');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({error: {type: 'server_error', message: 'Undo broke.'}}, 500));
+        fireEvent.click(screen.getByTestId('preference-undo-button'));
+        expect(log()).toContainElement(await screen.findByTestId('preference-undo-error'));
+    });
+
+    test('a reconcile that reports a change anchors the banner under the last reply', async () => {
+        await renderChat([assistantMessage(1, 'ready')]);
+        const mock = global.fetch as jest.Mock;
+        mock.mockResolvedValueOnce(statusResponse('ready'));
+        mock.mockResolvedValueOnce(new Response('plain text error', {status: 500}));
+        // The check that follows finds the turn on the server, with the change its reply made.
+        mock.mockImplementationOnce(async () => jsonResponse({
+            ...emptyConversation(42, [
+                assistantMessage(1, 'ready'),
+                {...userMessage('boom'), id: 2, idempotency_key: lastPostedKey(mock), delivery_state: 'completed'},
+                assistantMessage(3, 'Saved that.', true),
+            ]),
+            preferences_changed: true,
+        }));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'boom'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        const banner = await screen.findByRole('status', {name: 'Preference update'});
+        expect(log()).toContainElement(banner);
+        expect(beforeNotice()).toHaveTextContent('Saved that.');
+        expect(log()).toHaveAttribute('data-notice-anchor', '3');
+    });
+
+    test('dismissing the search-only confirmation removes it and its anchor', async () => {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+        }));
+        fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+        await screen.findByTestId('preference-search-applied');
+        fireEvent.click(screen.getByRole('button', {name: 'Dismiss search filter notice'}));
+        await waitFor(() => expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument());
+        expect(log()).not.toHaveAttribute('data-notice-anchor');
+    });
+
+    test('the live announcement stays on the newest article, not on a notice after it', async () => {
+        await withProposal();
+        const articles = log().querySelectorAll(':scope > article');
+        expect(articles[articles.length - 1]).toHaveAttribute('aria-live', 'polite');
+        expect(screen.getByTestId('transcript-notice')).not.toHaveAttribute('aria-live');
+    });
+
+    test('dismissing the last notice drops the anchor with it', async () => {
+        await withProposal();
+        fireEvent.click(screen.getByTestId('preference-proposal-dismiss-button'));
+        await waitFor(() => expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument());
+        expect(log()).not.toHaveAttribute('data-notice-anchor');
+    });
+
+    test('the notice shows in the content key, so a following reader ends with it in view', async () => {
+        await renderChat([assistantMessage(1, 'hello')]);
+        const keyOf = () => {
+            const calls = (useTranscriptScroll as jest.Mock).mock.calls;
+            return calls[calls.length - 1][0].contentKey as string;
+        };
+        const before = keyOf();
+        await sendTurn('only remote', {
+            message: assistantMessage(9, 'I suggest these updates.', false),
+            preferences_changed: false, preference_proposal: proposal,
+        });
+        await screen.findByTestId('preference-proposal-notice');
+        expect(keyOf()).not.toBe(before);
+        expect(keyOf().split('|')[4]).toMatch(/^9\.true\.idle/);
+    });
+
+    test('a purge leaves no notice and no anchor', async () => {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await waitFor(() => expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument());
+        expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        expect(log()).not.toHaveAttribute('data-notice-anchor');
+    });
+
+    test('New conversation and Delete leave no notice and no anchor', async () => {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+        startNewConversation();
+        await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+        expect(log()).not.toHaveAttribute('data-notice-anchor');
+
+        await sendTurn('again', {
+            message: assistantMessage(12, 'Another suggestion.', false),
+            preferences_changed: false, preference_proposal: proposal,
+        });
+        await screen.findByTestId('preference-proposal-notice');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
+        deleteConversation();
+        await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+        expect(log()).not.toHaveAttribute('data-notice-anchor');
+    });
+
+    const proposal2 = {
+        id: 'prop-483-b', scope: 'account', changes: [{path: 'notes', old: '', new: 'second change'}], change_count: 1, base_revision: 3,
+        unsupported_criteria: [], token: {patch: {set: {notes: 'second change'}}, scope: 'account', base_revision: 3},
+    };
+    const applyAnswer = {applied: true, scope: 'account', revision: 3, changes, undo: undoToken};
+    const blocks = () => screen.getAllByTestId('transcript-notice');
+    const lastKey = (name: 'noticeKey' | 'contentKey') => {
+        const calls = (useTranscriptScroll as jest.Mock).mock.calls;
+        return calls[calls.length - 1][0][name] as string;
+    };
+
+    async function applied() {
+        await withProposal();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(applyAnswer));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        await screen.findByTestId('preference-change-notice');
+    }
+
+    describe('every notice keeps its own anchor', () => {
+        test('an applied notice stays under its reply when a later reply brings a proposal', async () => {
+            await applied();
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByTestId('preference-proposal-notice');
+            expect(blocks()).toHaveLength(2);
+            expect(within(blocks()[0]).getByTestId('preference-change-notice')).toBeInTheDocument();
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('I suggest these updates.');
+            expect(within(blocks()[1]).getByTestId('preference-proposal-notice')).toBeInTheDocument();
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('Another suggestion.');
+            expect(log()).toHaveAttribute('data-notice-anchor', '11 9');
+        });
+
+        test('an undone notice stays under its reply when a later reply brings a proposal', async () => {
+            await applied();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            await screen.findByTestId('preference-change-undone');
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByTestId('preference-proposal-notice');
+            expect(within(blocks()[0]).getByTestId('preference-change-undone')).toBeInTheDocument();
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('I suggest these updates.');
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('Another suggestion.');
+        });
+
+        test('a search-only confirmation stays under its reply when a later reply brings a proposal', async () => {
+            await withProposal();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+                applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+            }));
+            fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+            await screen.findByTestId('preference-search-applied');
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByTestId('preference-proposal-notice');
+            // A new proposal replaces the confirmation, as before; the anchor goes with it.
+            expect(blocks()).toHaveLength(1);
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('Another suggestion.');
+            expect(log()).toHaveAttribute('data-notice-anchor', '11');
+        });
+
+        test('an open proposal stays under its reply when a later reply reports a change', async () => {
+            await withProposal();
+            await sendTurn('save it directly', {message: assistantMessage(11, 'I saved that.', true), preferences_changed: true});
+            await screen.findByRole('status', {name: 'Preference update'});
+            expect(within(blocks()[0]).getByTestId('preference-proposal-notice')).toBeInTheDocument();
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('I suggest these updates.');
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('I saved that.');
+            // The banner's own anchor holds: a later plain reply does not drag it along.
+            await sendTurn('anything else?', {message: assistantMessage(13, 'No.'), preferences_changed: false});
+            await screen.findByText('No.');
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('I saved that.');
+            expect(log()).toHaveAttribute('data-notice-anchor', '9 11');
+        });
+
+        test('the notice identity moves when a proposal replaces an open one under a later reply, and not for a change inside it', async () => {
+            await withProposal();
+            const first = lastKey('noticeKey');
+            expect(first).toBe('proposal@9');
+            // A failed Apply is a change inside the same notice.
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({error: {type: 'server_error', message: 'Apply broke.'}}, 500));
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            await screen.findByTestId('preference-proposal-error');
+            expect(lastKey('noticeKey')).toBe(first);
+            expect(lastKey('contentKey')).not.toBe('');
+            // A second proposal under a later reply, while the first is still open.
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByText('Another suggestion.');
+            expect(lastKey('noticeKey')).toBe('proposal@11');
+        });
+
+        test('the identity tells the applied notice from the undone one', async () => {
+            await applied();
+            expect(lastKey('noticeKey')).toBe('changes@9');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            await screen.findByTestId('preference-change-undone');
+            expect(lastKey('noticeKey')).toBe('undone@9');
+        });
+    });
+
+    describe('New conversation and Delete clear every kind of notice', () => {
+        const toApplied = applied;
+        const toSearchOnly = async () => {
+            await withProposal();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+                applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+            }));
+            fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+            await screen.findByTestId('preference-search-applied');
+        };
+        const toUndone = async () => {
+            await applied();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            await screen.findByTestId('preference-change-undone');
+        };
+        const toBanner = async () => {
+            await renderChat();
+            await sendTurn('I need remote', {message: assistantMessage(5, 'Noted.'), preferences_changed: true});
+            await screen.findByRole('status', {name: 'Preference update'});
+        };
+
+        test.each([
+            ['an applied notice', toApplied],
+            ['a search-only confirmation', toSearchOnly],
+            ['an undone notice', toUndone],
+            ['the plain banner', toBanner],
+        ])('%s does not survive New conversation, nor the next reply', async (_label, reach) => {
+            await reach();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+            await sendTurn('hello again', {message: assistantMessage(30, 'Hello.'), preferences_changed: false});
+            await screen.findByText('Hello.');
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        test.each([
+            ['an applied notice', toApplied],
+            ['a search-only confirmation', toSearchOnly],
+            ['an undone notice', toUndone],
+            ['the plain banner', toBanner],
+        ])('%s does not survive Delete', async (_label, reach) => {
+            await reach();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
+            deleteConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+    });
+
+    describe('an answer that lands after the view it was asked for is gone', () => {
+        test.each([
+            ['Apply', 'New conversation', startNewConversation, () => jsonResponse(emptyConversation(43, []))],
+            ['Apply', 'Delete', deleteConversation, () => jsonResponse({deleted: true})],
+        ])('%s answered after %s shows no notice', async (_what, _how, leave, response) => {
+            await withProposal();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            mock.mockResolvedValueOnce(response());
+            leave();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse(applyAnswer)); });
+            expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+
+        test('a failed Apply answered after New conversation is dropped', async () => {
+            await withProposal();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse({error: {type: 'server_error', message: 'Apply broke.'}}, 500)); });
+            expect(screen.queryByTestId('preference-proposal-error')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        test('an Undo answered after New conversation shows no undone notice', async () => {
+            await applied();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse({undone: true, revision: 4, changes: []})); });
+            expect(screen.queryByTestId('preference-change-undone')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        test('an Apply or Undo answered in the same conversation still shows its notice', async () => {
+            await applied();
+            expect(screen.getByTestId('preference-change-notice')).toBeInTheDocument();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({undone: true, revision: 4, changes: []}));
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            expect(await screen.findByTestId('preference-change-undone')).toBeInTheDocument();
+        });
+    });
+
+    describe('a reconcile answer that lands after the view it was asked for is gone (the leak predates this PR)', () => {
+        const oldHistory = (preferencesChanged: boolean) => ({
+            ...emptyConversation(42, [
+                assistantMessage(1, 'Old account reply.'),
+                {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'completed'},
+                assistantMessage(3, 'Old account saved prefs.', preferencesChanged),
+            ]),
+            preferences_changed: preferencesChanged,
+        });
+
+        test('after an account switch the new account keeps its own conversation, with no banner and no anchor', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({error: {type: 'turn_in_progress', message: 'Another tab is running this turn.'}}, 409));
+            const settle = holdNextFetch(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'q1'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await waitFor(() => expect(mock.mock.calls.filter(([url]) => String(url) === '/api/agent/conversations/42/').length).toBe(2));
+            // The account switch: the purge, then the new account's own conversation.
+            mock.mockResolvedValue(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('New account reply.');
+            await act(async () => { settle(jsonResponse(oldHistory(true))); });
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+            expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+
+        test('after a purge that resumes the same conversation id the old answer is still dropped (the purge epoch)', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({error: {type: 'turn_in_progress', message: 'Another tab is running this turn.'}}, 409));
+            const settle = holdNextFetch(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'q1'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await waitFor(() => expect(mock.mock.calls.filter(([url]) => String(url) === '/api/agent/conversations/42/').length).toBe(2));
+            mock.mockResolvedValue(jsonResponse(emptyConversation(42, [assistantMessage(70, 'Fresh after the purge.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('Fresh after the purge.');
+            await act(async () => { settle(jsonResponse(oldHistory(true))); });
+            expect(screen.getByText('Fresh after the purge.')).toBeInTheDocument();
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+            expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+
+        test('after New conversation the new conversation stays empty', async () => {
+            const pendingTurn = {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'pending' as const};
+            await renderChat([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(await screen.findByTestId('check-response-button'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse(oldHistory(true))); });
+            expect(screen.getByTestId('empty-history')).toBeInTheDocument();
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+            expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+            expect(log()).not.toHaveAttribute('data-notice-anchor');
+        });
+
+        test('after Delete the view stays empty', async () => {
+            const pendingTurn = {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'pending' as const};
+            await renderChat([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(await screen.findByTestId('check-response-button'));
+            mock.mockResolvedValueOnce(jsonResponse({deleted: true}));
+            deleteConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse(oldHistory(true))); });
+            expect(screen.getByTestId('empty-history')).toBeInTheDocument();
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+        });
+
+        test('in the same conversation the answer is still adopted', async () => {
+            const pendingTurn = {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'pending' as const};
+            await renderChat([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(oldHistory(true)));
+            fireEvent.click(await screen.findByTestId('check-response-button'));
+            expect(await screen.findByText('Old account saved prefs.')).toBeInTheDocument();
+            expect(log()).toHaveAttribute('data-notice-anchor', '3');
+        });
+    });
+
+    describe('a failed send belongs to the account that made it', () => {
+        const oldHistory = emptyConversation(42, [assistantMessage(1, 'Old account reply.')]);
+        type Settle = (outcome: Response | Error) => void;
+        const failures: Array<[string, (settlePost: Settle) => void]> = [
+            ['an error the server did not type (502)', (settlePost) => settlePost(new Response('plain text error', {status: 502}))],
+            ['a network failure', (settlePost) => settlePost(new TypeError('Failed to fetch'))],
+            ['a Stop', (settlePost) => {
+                fireEvent.click(screen.getByTestId('stop-button'));
+                settlePost(new DOMException('The operation was aborted.', 'AbortError'));
+            }],
+        ];
+        const conversationGets = (mock: jest.Mock) => mock.mock.calls.filter(([url]) => String(url) === '/api/agent/conversations/42/').length;
+
+        async function purgeWhileReconciling(fail: (settlePost: Settle) => void) {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            const settlePost = holdNextFetch(mock);
+            const settleGet = holdNextFetch(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await postedKeyAfterSend(mock);
+            const getsBefore = conversationGets(mock);
+            fail(settlePost);
+            await waitFor(() => expect(conversationGets(mock)).toBe(getsBefore + 1));
+            // The account switch: the purge, then the new account's own conversation.
+            mock.mockResolvedValue(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('New account reply.');
+            return {mock, settleGet};
+        }
+
+        const expectNothingOfTheOldAccount = (mock: jest.Mock) => {
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+            expect(screen.queryByText('old account private question')).not.toBeInTheDocument();
+            expect(screen.queryByText(/kept as a draft/)).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+            // The question was posted once, to its own conversation, and never again.
+            expect(mock.mock.calls.filter(([, init]) => String((init as RequestInit | undefined)?.body ?? '').includes('old account private question'))).toHaveLength(1);
+        };
+
+        test.each(failures)('%s whose check lands after an account switch arms nothing in the new account', async (_label, fail) => {
+            const {mock, settleGet} = await purgeWhileReconciling(fail);
+            await act(async () => { settleGet(jsonResponse(oldHistory)); });
+            expectNothingOfTheOldAccount(mock);
+        });
+
+        test('a check that finds the old conversation gone writes no error into the new account', async () => {
+            const {mock, settleGet} = await purgeWhileReconciling(failures[0][1]);
+            await act(async () => { settleGet(jsonResponse({error: {type: 'not_found', message: 'gone'}}, 404)); });
+            expectNothingOfTheOldAccount(mock);
+            expect(screen.queryByText(/no longer available/)).not.toBeInTheDocument();
+        });
+
+        test('in the same account the check still arms Retry, and Retry posts the message to its own conversation', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(new Response('plain text error', {status: 502}));
+            mock.mockImplementationOnce(async () => jsonResponse(emptyConversation(42, [
+                assistantMessage(1, 'Old account reply.'),
+                userTurn('my question', lastPostedKey(mock), 'failed', 2),
+            ])));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const retry = await screen.findByTestId('retry-button');
+            const key = lastPostedKey(mock);
+            mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(80, 'Answered.'), preferences_changed: false}, 201));
+            fireEvent.click(retry);
+            await screen.findByText('Answered.');
+            const posts = postBodies(mock, messageUrl());
+            expect(posts[posts.length - 1]).toMatchObject({content: 'my question', idempotency_key: key});
+        });
+
+        test('a Retry pressed in the instant after an account switch posts nothing', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({error: {type: 'server_error', message: 'Broke.'}}, 500));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const retry = await screen.findByTestId('retry-button');
+            const callsBefore = mock.mock.calls.length;
+            // The click lands before the view has been redrawn without the button.
+            const quiet = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+            document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+            fireEvent.click(retry);
+            quiet.mockRestore();
+            await act(async () => { await Promise.resolve(); });
+            expect(postBodies(mock, messageUrl()).filter((b) => b.content === 'old account private question')).toHaveLength(1);
+            expect(mock.mock.calls.slice(callsBefore).some(([, init]) => String((init as RequestInit | undefined)?.body ?? '').includes('old account private question'))).toBe(false);
+        });
+
+        // A send waits on two requests that are not part of /chat/: the creation of
+        // the conversation on the first message and the lookup after "conversation closed".
+        const closed409 = () => jsonResponse({error: {type: 'conversation_closed', message: 'This conversation was reset or deleted while the assistant was responding.'}}, 409);
+        const conversationPostsFor = (mock: jest.Mock, id: number) => mock.mock.calls.filter(([url]) => String(url) === `/api/agent/conversations/${id}/`);
+        const storedFor = (id: number) => Object.keys(window.localStorage).filter((k) => new RegExp(`:${id}(:|$)`).test(k));
+        const lookupPosts = (mock: jest.Mock) => mock.mock.calls.filter(([url, init]) => String(url) === '/api/agent/conversations/' && (init as RequestInit | undefined)?.method === 'POST');
+
+        async function switchAccountWhile(request: () => Promise<void>) {
+            const mock = global.fetch as jest.Mock;
+            await request();
+            // The account switch: the purge, then the new account's own conversation.
+            mock.mockResolvedValue(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('New account reply.');
+            return mock;
+        }
+
+        function expectNewAccountUntouched(mock: jest.Mock, strayConversation: number) {
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByText('Old account other tab reply.')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+            expect(conversationPostsFor(mock, strayConversation)).toHaveLength(0);
+            expect(conversationPostsFor(mock, 55)).toHaveLength(0);
+            expect(storedFor(strayConversation)).toEqual([]);
+            expect(storedFor(55)).toEqual([]);
+        }
+
+        // The stale answer must not leave the view half switched: the new account's next send goes to its own conversation.
+        async function expectNewAccountCanSend(mock: jest.Mock) {
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(90, 'New account answer.'), preferences_changed: false}, 201));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'new account question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('New account answer.');
+            expect(postBodies(mock, '/api/agent/conversations/55/').map((b) => b.content)).toEqual(['new account question']);
+        }
+
+        test('a first-message conversation creation answered after an account switch writes nothing into the new account', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            let settleCreate: (outcome: Response | Error) => void = () => {};
+            await switchAccountWhile(async () => {
+                settleCreate = holdNextFetch(mock);
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account first question'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await waitFor(() => expect(lookupPosts(mock)).toHaveLength(1));
+            });
+            await act(async () => { settleCreate(jsonResponse(emptyConversation(44, []))); });
+            expectNewAccountUntouched(mock, 44);
+            await expectNewAccountCanSend(mock);
+            expect(screen.queryByText('old account first question')).not.toBeInTheDocument();
+        });
+
+        test('in the same account a first-message creation is still adopted and the question sent', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(44, [])));
+            mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(9, 'Answered.'), preferences_changed: false}, 201));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'first question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('Answered.');
+            expect(postBodies(mock, '/api/agent/conversations/44/')).toHaveLength(1);
+        });
+
+        // The status check a send waits for before anything else (issue #457) is a third request outside /chat/.
+        const sentAnywhere = (mock: jest.Mock, text: string) => mock.mock.calls.filter(([, init]) => String((init as RequestInit | undefined)?.body ?? '').includes(text));
+        const statusCalls = (mock: jest.Mock) => mock.mock.calls.filter(([url]) => String(url).includes('assistant-status'));
+
+        test('a pre-send status check answered after an account switch sends and creates nothing for a first message', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            let settleStatus: (outcome: Response | Error) => void = () => {};
+            await switchAccountWhile(async () => {
+                settleStatus = holdNextFetch(mock);
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account first question'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await waitFor(() => expect(statusCalls(mock)).toHaveLength(2));
+            });
+            await act(async () => { settleStatus(statusResponse('ready')); });
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(lookupPosts(mock)).toHaveLength(0);
+            expect(sentAnywhere(mock, 'old account first question')).toHaveLength(0);
+            expect(screen.queryByText('old account first question')).not.toBeInTheDocument();
+            expectNewAccountUntouched(mock, 57);
+            await expectNewAccountCanSend(mock);
+        });
+
+        test('a pre-send status check answered after an account switch posts nothing to the old conversation', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            let settleStatus: (outcome: Response | Error) => void = () => {};
+            await switchAccountWhile(async () => {
+                settleStatus = holdNextFetch(mock);
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await waitFor(() => expect(statusCalls(mock)).toHaveLength(2));
+            });
+            await act(async () => { settleStatus(statusResponse('ready')); });
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+            expect(conversationPostsFor(mock, 42)).toHaveLength(0);
+            expect(sentAnywhere(mock, 'old account private question')).toHaveLength(0);
+            expect(screen.queryByText('old account private question')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('pending-turn')).not.toBeInTheDocument();
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+            expect(storedFor(55)).toEqual([]);
+            await expectNewAccountCanSend(mock);
+        });
+
+        test('in the same account a slow pre-send status check still lets the question go', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            const settleStatus = holdNextFetch(mock);
+            mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(80, 'Answered.'), preferences_changed: false}, 201));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await act(async () => { settleStatus(statusResponse('ready')); });
+            await screen.findByText('Answered.');
+            expect(postBodies(mock, '/api/agent/conversations/42/').map((b) => b.content)).toEqual(['my question']);
+        });
+
+        async function sendClosedThenSwitchWhileLooking() {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(closed409());
+            let settleLookup: (outcome: Response | Error) => void = () => {};
+            await switchAccountWhile(async () => {
+                settleLookup = holdNextFetch(mock);
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await waitFor(() => expect(lookupPosts(mock)).toHaveLength(1));
+            });
+            return {mock, settleLookup};
+        }
+
+        test('a conversation lookup after "conversation closed" that answers after an account switch writes and replays nothing', async () => {
+            const {mock, settleLookup} = await sendClosedThenSwitchWhileLooking();
+            await act(async () => {
+                settleLookup(jsonResponse(emptyConversation(43, [userMessage('old account other tab question'), assistantMessage(31, 'Old account other tab reply.')])));
+            });
+            expectNewAccountUntouched(mock, 43);
+            await expectNewAccountCanSend(mock);
+            expect(screen.queryByText('old account other tab question')).not.toBeInTheDocument();
+            expect(screen.queryByText('old account private question')).not.toBeInTheDocument();
+            expect(mock.mock.calls.filter(([, init]) => String((init as RequestInit | undefined)?.body ?? '').includes('old account private question'))).toHaveLength(1);
+        });
+
+        test('a conversation lookup after "conversation closed" that fails after an account switch arms no error and no Retry', async () => {
+            const {mock, settleLookup} = await sendClosedThenSwitchWhileLooking();
+            await act(async () => { settleLookup(jsonResponse({error: {type: 'service_error', message: 'nope'}}, 500)); });
+            expectNewAccountUntouched(mock, 43);
+            await expectNewAccountCanSend(mock);
+            expect(screen.queryByText(/reset or deleted/)).not.toBeInTheDocument();
+        });
+
+        test('in the same account a failed lookup after "conversation closed" still shows the error with Retry', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(closed409());
+            mock.mockResolvedValueOnce(jsonResponse({}, 500));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            expect(await screen.findByText(/reset or deleted/)).toBeInTheDocument();
+            expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+        });
+
+        test('Retry posts nothing for a send made before a same-account re-login', async () => {
+            // The typed error lands after the account re-signed in and the same conversation
+            // came back: only the Retry comparison stops the old send from being replayed.
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            const settlePost = holdNextFetch(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old account private question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await postedKeyAfterSend(mock);
+            mock.mockResolvedValue(jsonResponse(emptyConversation(42, [assistantMessage(1, 'Old account reply.')])));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('Old account reply.');
+            await act(async () => { settlePost(jsonResponse({error: {type: 'service_error', message: 'Broke.'}}, 500)); });
+            fireEvent.click(screen.getByTestId('retry-button'));
+            await act(async () => { await Promise.resolve(); });
+            expect(postBodies(mock, messageUrl()).filter((b) => b.content === 'old account private question')).toHaveLength(1);
+        });
+
+        test('an uncertain failure whose check lands after a same-account re-login shows no error from the old send', async () => {
+            await renderChat([assistantMessage(1, 'Reply one.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(new Response('plain text error', {status: 502}));
+            const settleGet = holdNextFetch(mock);
+            const getsBefore = conversationGets(mock);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = await postedKeyAfterSend(mock);
+            // The send's own POST and the check on its way both address this URL.
+            await waitFor(() => expect(conversationGets(mock)).toBe(getsBefore + 2));
+            const served = emptyConversation(42, [assistantMessage(1, 'Reply one.'), userTurn('my question', key, 'failed', 2)]);
+            mock.mockResolvedValue(jsonResponse(served));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await screen.findByText('Reply one.');
+            await act(async () => { settleGet(jsonResponse(served)); });
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+        });
+
+        test('New conversation leaves no failed send to retry', async () => {
+            await renderChat([assistantMessage(1, 'Old account reply.')]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockResolvedValueOnce(jsonResponse({error: {type: 'server_error', message: 'Broke.'}}, 500));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'old conversation question'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            expect(await screen.findByTestId('retry-button')).toBeInTheDocument();
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
+            expect(postBodies(mock, '/api/agent/conversations/43/')).toHaveLength(0);
+        });
+    });
+
+    describe('an Apply or Undo that lands after New conversation or Delete still updates the saved priorities', () => {
+        test.each([
+            ['New conversation', startNewConversation, () => jsonResponse(emptyConversation(43, []))],
+            ['Delete', deleteConversation, () => jsonResponse({deleted: true})],
+        ])('an account Apply answered after %s publishes its revision and no notice', async (_how, leave, response) => {
+            await withProposal();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            mock.mockResolvedValueOnce(response());
+            leave();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+            await act(async () => { settle(jsonResponse(applyAnswer)); });
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBe(3);
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        test.each([
+            ['New conversation', startNewConversation, () => jsonResponse(emptyConversation(43, []))],
+            ['Delete', deleteConversation, () => jsonResponse({deleted: true})],
+        ])('an Undo answered after %s publishes its revision and no notice', async (_how, leave, response) => {
+            await applied();
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBe(3);
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-undo-button'));
+            mock.mockResolvedValueOnce(response());
+            leave();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse({undone: true, revision: 4, changes: []})); });
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBe(4);
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        test('a This-search-only answer after New conversation changes no saved priorities', async () => {
+            await withProposal();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await act(async () => { settle(jsonResponse({applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []}, revision: 9})); });
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+            expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument();
+        });
+
+        // The answer's body is still being read when the account changes.
+        async function purgeWhileBodyIsRead(answer: object, press: () => void) {
+            const mock = global.fetch as jest.Mock;
+            let release: () => void = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            const res = jsonResponse(answer);
+            const read = res.json.bind(res);
+            res.json = jest.fn(() => gate.then(() => read()));
+            mock.mockResolvedValueOnce(res);
+            press();
+            await waitFor(() => expect(res.json).toHaveBeenCalled());
+            mock.mockResolvedValue(jsonResponse(emptyConversation(55)));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await waitFor(() => expect(screen.queryByTestId('transcript-notice')).not.toBeInTheDocument());
+            await act(async () => { release(); });
+        }
+
+        test('an Apply whose body is read after an account switch publishes nothing', async () => {
+            await withProposal();
+            await purgeWhileBodyIsRead(applyAnswer, () => fireEvent.click(screen.getByTestId('preference-apply-button')));
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+            expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        });
+
+        test('an Undo whose body is read after an account switch publishes nothing', async () => {
+            await applied();
+            await purgeWhileBodyIsRead({undone: true, revision: 4, changes: []}, () => fireEvent.click(screen.getByTestId('preference-undo-button')));
+            expect(getWorkspaceSnapshot().prioritiesRevision).not.toBe(4);
+            expect(screen.queryByTestId('preference-change-undone')).not.toBeInTheDocument();
+        });
+
+        test('an Apply or Undo answered after an account switch still publishes nothing', async () => {
+            await withProposal();
+            const mock = global.fetch as jest.Mock;
+            const settle = holdNextFetch(mock);
+            fireEvent.click(screen.getByTestId('preference-apply-button'));
+            mock.mockResolvedValue(jsonResponse(emptyConversation(55)));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+            await waitFor(() => expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument());
+            await act(async () => { settle(jsonResponse(applyAnswer)); });
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+        });
+    });
+
+    describe('the plain banner does not follow an applied notice that was dismissed', () => {
+        test('a later reply with a proposal shows the proposal alone', async () => {
+            await applied();
+            fireEvent.click(screen.getByRole('button', {name: /Dismiss/}));
+            await waitFor(() => expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument());
+            await sendTurn('and then?', {
+                message: assistantMessage(11, 'Another suggestion.'), preferences_changed: false, preference_proposal: proposal2,
+            });
+            await screen.findByTestId('preference-proposal-notice');
+            expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+            expect(blocks()).toHaveLength(1);
+            expect(log()).toHaveAttribute('data-notice-anchor', '11');
+        });
+
+        test('a reply that reports a change of its own still brings the banner', async () => {
+            await applied();
+            fireEvent.click(screen.getByRole('button', {name: /Dismiss/}));
+            await waitFor(() => expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument());
+            await sendTurn('save it directly', {message: assistantMessage(11, 'I saved that.', true), preferences_changed: true});
+            expect(await screen.findByRole('status', {name: 'Preference update'})).toBeInTheDocument();
+            expect(log()).toHaveAttribute('data-notice-anchor', '11');
+        });
+    });
+
+    describe('the search-only confirmation keeps its own anchor', () => {
+        test('it stays under the reply that made it while a later reply brings the banner', async () => {
+            await withProposal();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+                applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+            }));
+            fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+            await screen.findByTestId('preference-search-applied');
+            expect(log()).toHaveAttribute('data-notice-anchor', '9');
+            await sendTurn('save it directly', {message: assistantMessage(11, 'I saved that.', true), preferences_changed: true});
+            await screen.findByRole('status', {name: 'Preference update'});
+            expect(within(blocks()[0]).getByTestId('preference-search-applied')).toBeInTheDocument();
+            expect(blocks()[0].previousElementSibling).toHaveTextContent('I suggest these updates.');
+            expect(blocks()[1].previousElementSibling).toHaveTextContent('I saved that.');
+            expect(log()).toHaveAttribute('data-notice-anchor', '9 11');
+        });
+    });
+
+    describe('an answer for the archived conversation that lands before the next render is already stale', () => {
+        const oldHistory = {
+            ...emptyConversation(42, [
+                assistantMessage(1, 'Old account reply.'),
+                {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'completed' as const},
+                assistantMessage(3, 'Old account saved prefs.', true),
+            ]),
+            preferences_changed: true,
+        };
+
+        // The old answer's body is read in the very turn in which the view is left, so the
+        // view's own state has not been rendered, and the id the code adopts is all that
+        // tells the answer it is late. `onLeft` runs at that point.
+        const leavingNew = (onLeft: () => void) => {
+            const res = jsonResponse(emptyConversation(43, []));
+            const read = res.json.bind(res);
+            res.json = () => {
+                const body = read();
+                void body.then(onLeft);
+                return body;
+            };
+            return res;
+        };
+        const leavingDelete = (onLeft: () => void) => {
+            const res = jsonResponse({deleted: true});
+            Object.defineProperty(res, 'ok', {get: () => { onLeft(); return true; }});
+            return res;
+        };
+
+        test.each([
+            ['New conversation', startNewConversation, leavingNew],
+            ['Delete', deleteConversation, leavingDelete],
+        ])('%s', async (_how, leave, leaving) => {
+            const pendingTurn = {...userMessage('q1'), id: 2, idempotency_key: 'k-old', delivery_state: 'pending' as const};
+            await renderChat([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            const mock = global.fetch as jest.Mock;
+            const settleCheck = holdNextFetch(mock);
+            fireEvent.click(await screen.findByTestId('check-response-button'));
+            let arrive: (body: unknown) => void = () => {};
+            const old = jsonResponse({});
+            old.json = jest.fn(() => new Promise<unknown>((resolve) => { arrive = resolve; }));
+            settleCheck(old);
+            await waitFor(() => expect(old.json).toHaveBeenCalled());
+            mock.mockResolvedValueOnce(leaving(() => arrive(oldHistory)));
+            leave();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            expect(screen.queryByText('Old account saved prefs.')).not.toBeInTheDocument();
+            expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+        });
+    });
+});
+
 describe('what the chat tells the transcript scroll (issue #483)', () => {
     const passed = () => {
         const calls = (useTranscriptScroll as jest.Mock).mock.calls;
@@ -4990,18 +6082,18 @@ describe('what the chat tells the transcript scroll (issue #483)', () => {
             : route(url, init)));
         await renderChat([assistantMessage(1, 'Nothing came back.')]);
         await screen.findByTestId('availability-notice');
-        expect(passed().contentKey).toBe('no_matches|||');
+        expect(passed().contentKey).toBe('no_matches||||');
     });
 
     test('a failed turn, its retry and a reply with actions each show in the key', async () => {
         const key = '123e4567-e89b-42d3-a456-426614174000';
         await renderChat([assistantMessage(1, 'older'), userTurn('saved question', key, 'failed', 2)]);
-        expect(passed().contentKey).toBe('||failed|');
+        expect(passed().contentKey).toBe('||failed||');
         // A retry in flight carries the turn's key.
         const settle = holdNextFetch(global.fetch as jest.Mock);
         fireEvent.click(await screen.findByTestId('retry-response-button'));
         await screen.findByTestId('retrying-turn');
-        expect(passed().contentKey).toBe(`||failed|${key}`);
+        expect(passed().contentKey).toBe(`||failed|${key}|`);
     });
 
     test('the id of the newest reply with actions leads the key', async () => {
@@ -5018,7 +6110,7 @@ describe('what the chat tells the transcript scroll (issue #483)', () => {
             actions: [{type: 'open_company', organization_id: 8}],
         }));
         await screen.findByRole('button', {name: 'Open Acme'});
-        expect(passed().contentKey).toBe('|94||');
+        expect(passed().contentKey).toBe('|94|||');
     });
 
     test('the footer key is the init error, so a footer that mounts again is found again', async () => {

@@ -704,6 +704,101 @@ describe('one transcript scroller in the assistant panel (issue #483)', () => {
     });
 });
 
+describe('notices in the transcript and collapsing footer notices (issue #483)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = Array.from(popupCss.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+        .map(([, selector, declarations]) => ({selector: selector.trim().replace(/\s+/g, ' '), declarations}));
+    const declared = (selector: string): string => {
+        const found = rules.filter((r) => r.selector === selector);
+        expect(found.length).toBeGreaterThan(0);
+        return found.map((r) => r.declarations).join('\n');
+    };
+
+    it('stacks the diff rows of a notice in the transcript, so a value never sits in a sliver beside its name', () => {
+        const item = declared('#job-search-chat .chat-transcript-notice .pref-change-item');
+        expect(item).toMatch(/display:\s*flex;/);
+        expect(item).toMatch(/flex-direction:\s*column;/);
+    });
+
+    it('wraps the notice\'s actions and keeps each label whole', () => {
+        expect(declared('#job-search-chat .chat-transcript-notice .chat-actions')).toMatch(/flex-wrap:\s*wrap;/);
+        const button = declared('#job-search-chat .chat-transcript-notice .chat-btn');
+        expect(button).toMatch(/flex:\s*0 0 auto;/);
+        expect(button).toMatch(/white-space:\s*nowrap;/);
+    });
+
+    it('clamps a collapsed error to two lines, on the one element that holds its whole text', () => {
+        const text = declared('#job-search-chat .chat-footer-notices.is-collapsed .chat-error-text');
+        expect(text).toMatch(/-webkit-line-clamp:\s*2;/);
+        expect(text).toMatch(/overflow:\s*hidden;/);
+        expect(text).toMatch(/line-height:\s*1\.25;/);
+        expect(text).not.toMatch(/nowrap/);
+        // Nothing hides the error itself; a folded status notice keeps only its title in the row.
+        expect(popupCss).not.toMatch(/\.chat-error-(?:text|alert|row)[^{]*\{[^}]*display:\s*none/);
+        const folded = '#job-search-chat .chat-footer-notices.is-collapsed';
+        expect(declared(`${folded} .assistant-status-icon, ${folded} .assistant-status-body, ${folded} .assistant-status-notice-actions`))
+            .toMatch(/display:\s*none !important;/);
+        expect(declared(`${folded} [data-testid='assistant-status-notice']`)).not.toMatch(/display:\s*none/);
+    });
+
+    it('sits a notice closer to the reply that produced it than to the next message', () => {
+        expect(declared('#job-search-chat .chat-transcript-notice')).toMatch(/margin:\s*0 0 1rem;/);
+    });
+
+    it('takes the docked log\'s 16px turn gap back above a notice', () => {
+        expect(declared('body.assistant-docked #job-search-chat [role=\'log\'] > .chat-transcript-notice')).toMatch(/margin:\s*-1rem 0 0;/);
+    });
+
+    it('keeps the toggle at the bottom right of the row whether collapsed or expanded', () => {
+        expect(declared('#job-search-chat .chat-footer-notices.is-collapsed > .chat-notices-toggle')).toMatch(/align-self:\s*flex-end;/);
+    });
+
+    it('scrolls a control reached with Tab clear of the jump pill', () => {
+        expect(declared('#job-search-chat .chat-transcript')).toMatch(/scroll-padding-bottom:\s*4\.5rem;/);
+    });
+
+    it('gives the plain banner a 44px close button like the other notices, and a wrapped value keeps its arrow', () => {
+        expect(declared('#job-search-chat .chat-transcript-notice .alert.chat-pref-alert')).toMatch(/min-height:\s*44px;/);
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-arrow')).toMatch(/display:\s*none;/);
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new::before')).toMatch(/content:/);
+        // A list of chips carries the arrow on its first chip, so the arrow wraps with it.
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new > .pref-change-token:first-child::before')).toMatch(/position:\s*absolute;/);
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new:has(> .pref-change-token)::before')).toMatch(/display:\s*none;/);
+    });
+
+    it('keeps the toggle a 44px target, the last row of the area, right-aligned while the error is expanded', () => {
+        expect(declared('#job-search-chat .chat-notices-toggle')).toMatch(/min-block-size:\s*44px;/);
+        expect(declared('#job-search-chat .chat-footer-notices:not(.is-collapsed) > .chat-notices-toggle'))
+            .toMatch(/align-self:\s*flex-end;/);
+        // The details scroll above it; the toggle itself is never inside that scroll.
+        expect(declared('.chat-footer-notices .chat-notices-body')).toMatch(/overflow-y:\s*auto;/);
+        expect(declared('.chat-footer-notices')).toMatch(/flex-direction:\s*column;/);
+    });
+
+    it('leaves the folded status notice unpositioned so it is never painted over Retry (no z-index: the layer tokens stay the contract)', () => {
+        const folded = declared('#job-search-chat .chat-footer-notices.is-collapsed [data-testid=\'assistant-status-notice\']');
+        expect(folded).toMatch(/(?:^|[\s;])position:\s*static;/);
+        expect(folded).not.toMatch(/z-index/);
+    });
+
+    it('keeps the expanded toggle inside the box Details had, so a second press cannot reach Retry', () => {
+        const toggle = declared('#job-search-chat .chat-footer-notices:not(.is-collapsed) > .chat-notices-toggle');
+        expect(toggle).toMatch(/inline-size:\s*min-content;/);
+        expect(toggle).toMatch(/white-space:\s*normal;/);
+    });
+
+    it('lets the error take a third line in the 300-340px drawer only, and sets the disclaimer in 11px type on the narrowest phones', () => {
+        expect(popupCss).toMatch(/@media \(min-width: 768px\) \{\s*@container assistant-panel \(max-width: 21\.5rem\) \{\s*#job-search-chat \.chat-footer-notices\.is-collapsed:not\(\.has-status\) \.chat-error-text \{\s*-webkit-line-clamp:\s*3;/);
+        expect(popupCss).toMatch(/@media \(max-width: 340px\) \{\s*#job-search-chat form \.chat-disclaimer \{\s*font-size:\s*\.6875rem;/);
+    });
+
+    it('keeps the expanded notices under the existing cap with an inner scroll', () => {
+        const notices = declared('.chat-footer-notices');
+        expect(notices).toMatch(/max-height:\s*var\(--chat-notices-max, 40dvh\);/);
+        expect(declared('.chat-footer-notices .chat-notices-body')).toMatch(/overflow-y:\s*auto;/);
+    });
+});
+
 describe('job-match figures, notices and contained transcript (issue #473 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const containerBlocks = (width: string) => Array.from(

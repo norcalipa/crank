@@ -14,13 +14,28 @@
          .assistant-panel-body, as workspace/AssistantPanel.tsx renders it. The panel's flex column gives the
          chat its height and the transcript is the only scroller.
          ?mode=docked|drawer|sheet picks the panel mode (default: by viewport width, like the workspace shell).
-         ?priorities=<px> sets the height of the block above the chat (default 57, the collapsed row).
-         ?open=1 makes it an open block: its content is that tall and scrolls inside, so the block can give way. -->
+         The block above the chat is the app's own collapsed row (markup copied from the real page, so its height
+         follows the stylesheet at every size, 49px at 480px of height and less). ?open=1 makes it an open block
+         instead: ?priorities=<px> is then the height of its content, which scrolls inside, so the block can give way.
+         The sheet shows the Back to results button the app has there; ?mode=docked|drawer hides it. -->
     <aside class="assistant-panel" id="fixture-panel" aria-label="Assistant">
         <div class="assistant-panel-inner">
-            <div class="assistant-panel-header"><h2 class="assistant-panel-title">Assistant</h2></div>
+            <!-- The sheet's header as workspace/AssistantPanel.tsx renders it: Back to results ahead of the title row. -->
+            <button type="button" class="btn btn-outline-light assistant-back-to-results" id="fixture-back" data-testid="assistant-back-to-results" hidden>
+                <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                <span class="assistant-back-label">Back to results</span>
+            </button>
+            <div class="assistant-panel-header">
+                <div class="assistant-panel-heading">
+                    <h2 class="assistant-panel-title" id="assistant-panel-title" tabindex="-1"><i class="fa-solid fa-comments" aria-hidden="true"></i> Job Search Assistant</h2>
+                </div>
+                <div class="assistant-panel-controls">
+                    <button type="button" class="btn btn-sm btn-outline-light assistant-panel-control" aria-label="Minimize assistant" data-testid="assistant-minimize"><i class="fa-solid fa-window-minimize" aria-hidden="true"></i><span class="assistant-panel-control-label" aria-hidden="true">Minimize</span></button>
+                    <button type="button" class="btn btn-sm btn-outline-light assistant-panel-control assistant-panel-control--close" aria-label="Close assistant" data-testid="assistant-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i><span class="assistant-panel-control-label" aria-hidden="true">Close</span></button>
+                </div>
+            </div>
             <div class="assistant-panel-body" data-testid="assistant-panel-body">
-                <section class="priorities-section priorities-sidebar" data-testid="priorities-sidebar" id="priorities-block">Your priorities</section>
+                <section class="priorities-section priorities-sidebar" aria-labelledby="priorities-title-sidebar" data-testid="priorities-sidebar" id="priorities-block"></section>
                 <div id="job-search-chat"></div>
             </div>
         </div>
@@ -30,16 +45,16 @@
             var params = new URLSearchParams(location.search);
             var panel = document.getElementById('fixture-panel');
             var block = document.getElementById('priorities-block');
-            var px = params.get('priorities') || '57';
+            var px = Number(params.get('priorities')) || 57;
             if (params.get('open') === '1') {
                 block.innerHTML = '<div class="priorities-scroll" data-testid="priorities-scroll"><div style="height:' + px + 'px">Your priorities, open</div></div>';
             } else {
-                block.style.height = px + 'px';
-                block.style.boxSizing = 'border-box';
+                block.innerHTML = '<span class="visually-hidden" role="status" data-testid="priorities-announcement"></span><div class="priorities-summary-row"><h2 class="priorities-summary-heading"><button type="button" class="priorities-summary-toggle" data-testid="priorities-summary-toggle" aria-expanded="false" aria-controls="priorities-details-sidebar"><span class="priorities-summary-text"><span id="priorities-title-sidebar" class="priorities-summary-title">Your priorities<i class="fa-solid fa-chevron-down priorities-summary-chevron" aria-hidden="true"></i></span><span class="priorities-summary" data-testid="priorities-summary"><span class="priorities-summary-first"><span class="priorities-summary-lead">Requires: $150,000,</span></span><span class="priorities-summary-sep"> </span><span class="priorities-summary-tail">+3 · 6 preferences</span></span></span></button></h2><button type="button" class="btn btn-sm btn-outline-primary priorities-edit">Edit<span class="visually-hidden"> priorities</span></button></div><div id="priorities-details-sidebar" class="priorities-details" hidden=""></div>';
             }
             function apply() {
                 var mode = params.get('mode') || (window.innerWidth < 768 ? 'sheet' : window.innerWidth < 1280 ? 'drawer' : 'docked');
                 panel.className = 'assistant-panel assistant-panel--' + mode;
+                document.getElementById('fixture-back').hidden = mode !== 'sheet';
                 document.body.classList.remove('assistant-docked', 'assistant-drawer', 'assistant-sheet');
                 document.body.classList.add('assistant-' + mode);
             }
