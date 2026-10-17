@@ -1541,6 +1541,35 @@ body.app-nav-drawer-open {
     white-space: nowrap;
 }
 
+/* "Updated results available" on the company rankings (issue #485, 485c):
+   the notice sits between the toolbar and the list, the sentence takes the
+   free width, and the button keeps its label on one line and a 44px target
+   from 320px up (the notice stacks under 576px). */
+.rankings-updated-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+    margin-bottom: 1rem;
+}
+
+.rankings-updated-notice .rankings-updated-text {
+    flex: 1 1 14rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.rankings-updated-notice .rankings-updated-refresh {
+    white-space: nowrap;
+    min-height: 44px;
+    min-width: 44px;
+}
+
+.rankings-updated-notice .rankings-updated-refresh[aria-disabled="true"] {
+    cursor: progress;
+}
+
 /* Job-search result cards (issue #396) */
 .job-card, .org-card {
     box-sizing: border-box;

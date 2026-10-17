@@ -798,6 +798,28 @@ describe('OrganizationList', () => {
         createRootSpy.mockRestore();
     });
 
+    test('DOMContentLoaded passes the embedded revision to the list, or null when there is none (issue #485c)', () => {
+        const originalGetElementById = document.getElementById;
+        const mountWith = (attributes: Record<string, string>) => {
+            document.getElementById = jest.fn().mockImplementation((id) => ({
+                'organization-data': {textContent: JSON.stringify(organizations)},
+                'organization-list': document.createElement('div'),
+                'organization-list-config': {getAttribute: (name: string) => attributes[name] ?? null},
+            } as Record<string, unknown>)[id] ?? null);
+            const mockRender = jest.fn();
+            const createRootSpy = jest.spyOn(require('react-dom/client'), 'createRoot').mockImplementation(() => ({render: mockRender}));
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            createRootSpy.mockRestore();
+            return mockRender.mock.calls[0][0].props;
+        };
+
+        expect(mountWith({'data-current-algorithm-id': '5', 'data-revision': '0123456789abcdef'}).revision).toBe('0123456789abcdef');
+        expect(mountWith({'data-current-algorithm-id': '5', 'data-revision': ''}).revision).toBeNull();
+        expect(mountWith({'data-current-algorithm-id': '5'}).revision).toBeNull();
+
+        document.getElementById = originalGetElementById;
+    });
+
     test('DOMContentLoaded tolerates malformed ranking presets (issue #478)', () => {
         const originalGetElementById = document.getElementById;
         document.getElementById = jest.fn().mockImplementation((id) => ({
@@ -1206,6 +1228,547 @@ describe('OrganizationList', () => {
             const {unmount} = render(<OrganizationList organizations={organizations} />);
             unmount();
             expect(() => act(() => clearWorkspaceContext())).not.toThrow();
+        });
+    });
+
+    describe('newer rankings (issue #485c)', () => {
+        const SHOWN = 'aaaaaaaaaaaaaaaa';
+        const NEWER = 'bbbbbbbbbbbbbbbb';
+        const org = (id: number, name: string, ranking: number, avg_score: number): Organization => ({
+            id, name, ranking, avg_score, funding_round: 'S', rto_policy: 'R', profile_completeness: 80,
+            accelerated_vesting: id % 2 === 1,
+        });
+        const shownRows = [org(1, 'Alpha Co', 1, 4.8), org(2, 'Beta Co', 2, 4.2), org(3, 'Gamma Co', 3, 3.5)];
+        // Beta overtakes Alpha; Delta joins.
+        const newerRows = [org(2, 'Beta Co', 1, 4.9), org(1, 'Alpha Co', 2, 4.8), org(3, 'Gamma Co', 3, 3.5), org(4, 'Delta Co', 4, 2.1)];
+
+        let visibility: 'visible' | 'hidden';
+        let serverRevision: string;
+        let serverRows: Organization[];
+        let pollSeconds: number | null;
+        let revisionFails: boolean;
+        let listFails: 'no' | 'reject' | 'status' | 'malformed';
+        let scrollBy: jest.Mock;
+        let rectSpy: jest.SpyInstance;
+        let heading: HTMLElement;
+
+        const calls = (fragment: string) => (global.fetch as jest.Mock).mock.calls
+            .filter(([url]) => String(url).includes(fragment)).length;
+        const listCalls = () => (global.fetch as jest.Mock).mock.calls.filter(([url]) => url === '/api/rankings/5/').length;
+        const tick = async (ms: number) => {
+            await act(async () => {
+                await jest.advanceTimersByTimeAsync(ms);
+            });
+        };
+        const setVisibility = async (next: 'visible' | 'hidden') => {
+            visibility = next;
+            await act(async () => {
+                document.dispatchEvent(new Event('visibilitychange'));
+                await jest.advanceTimersByTimeAsync(0);
+            });
+        };
+        const setScrollY = (value: number) => Object.defineProperty(window, 'scrollY', {configurable: true, value});
+        const names = () => Array.from(document.querySelectorAll('.organization-row .organization-name'))
+            .map((node) => node.textContent);
+        const mount = (props: Partial<React.ComponentProps<typeof OrganizationList>> = {}, rows = shownRows) =>
+            render(<OrganizationList organizations={rows} revision={SHOWN} currentAlgorithmId={5} {...props} />);
+        const press = async () => {
+            fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+            await tick(0);
+        };
+        // A newer revision is on the server and the next poll finds it.
+        const foundNotice = async () => {
+            serverRevision = NEWER;
+            await tick(60_000);
+            expect(screen.getByTestId('rankings-updated-notice')).toBeInTheDocument();
+        };
+
+        beforeEach(() => {
+            jest.useFakeTimers();
+            jest.setSystemTime(new Date('2026-10-17T12:00:00Z'));
+            visibility = 'visible';
+            serverRevision = SHOWN;
+            serverRows = newerRows;
+            pollSeconds = 60;
+            revisionFails = false;
+            listFails = 'no';
+            Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => visibility});
+            setScrollY(0);
+            const choices = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url: string, init?: unknown) => {
+                if (url === '/api/rankings/5/revision/') {
+                    if (revisionFails) return Promise.resolve({ok: false, status: 500, json: () => Promise.resolve({})});
+                    return Promise.resolve({
+                        ok: true, status: 200,
+                        json: () => Promise.resolve({revision: serverRevision, poll_after_seconds: pollSeconds}),
+                    });
+                }
+                if (url === '/api/rankings/5/') {
+                    if (listFails === 'reject') return Promise.reject(new Error('offline'));
+                    if (listFails === 'status') return Promise.resolve({ok: false, status: 503, json: () => Promise.resolve({})});
+                    if (listFails === 'malformed') return Promise.resolve({ok: true, status: 200, json: () => Promise.resolve({revision: 7})});
+                    return Promise.resolve({
+                        ok: true, status: 200,
+                        json: () => Promise.resolve({revision: serverRevision, organizations: serverRows}),
+                    });
+                }
+                return choices(url, init);
+            });
+            scrollBy = jest.fn();
+            window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
+            // Rows sit 100px apart from y = 200; the notice, when up, pushes them 80px down.
+            rectSpy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this.classList?.contains('organization-row') || this.classList?.contains('organization-card')) {
+                    if (this.classList.contains('organization-card')) {
+                        return {height: 0, top: 0, bottom: 0} as DOMRect;
+                    }
+                    const index = Array.from(document.querySelectorAll('.organization-row')).indexOf(this as Element);
+                    const shift = document.querySelector('[data-testid="rankings-updated-notice"]') ? 80 : 0;
+                    const top = 200 + index * 100 + shift;
+                    return {height: 60, top, bottom: top + 60} as DOMRect;
+                }
+                return {height: 0, top: 0, bottom: 0} as DOMRect;
+            });
+            heading = document.createElement('h1');
+            heading.id = 'rankings-heading';
+            heading.tabIndex = -1;
+            document.body.appendChild(heading);
+        });
+
+        afterEach(() => {
+            rectSpy.mockRestore();
+            heading.remove();
+            delete (document as unknown as Record<string, unknown>).visibilityState;
+            setScrollY(0);
+            jest.useRealTimers();
+        });
+
+        test('a list without an embedded revision (or algorithm) never polls', async () => {
+            const {unmount} = render(<OrganizationList organizations={shownRows} currentAlgorithmId={5} />);
+            await tick(600_000);
+            expect(calls('/api/rankings/')).toBe(0);
+            unmount();
+            render(<OrganizationList organizations={shownRows} revision={SHOWN} />);
+            await tick(600_000);
+            expect(calls('/api/rankings/')).toBe(0);
+        });
+
+        test('asks once a minute while visible, at most 10 times in 10 minutes, and never while hidden', async () => {
+            mount();
+            await tick(59_000);
+            expect(calls('/revision/')).toBe(0);
+            await tick(1_000);
+            expect(calls('/revision/')).toBe(1);
+            await tick(540_000);
+            expect(calls('/revision/')).toBe(10);
+            await setVisibility('hidden');
+            await tick(600_000);
+            expect(calls('/revision/')).toBe(10);
+            expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+        });
+
+        test('the same revision changes nothing; a different one raises the notice and one announcement', async () => {
+            mount();
+            await tick(60_000);
+            expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+            expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('');
+            await foundNotice();
+            expect(screen.getByTestId('rankings-updated-notice')).toHaveTextContent('Updated results available.');
+            expect(screen.getByRole('button', {name: 'Refresh results'})).toBeInTheDocument();
+            // The only announcement is inside the toolbar's existing polite region.
+            const region = screen.getByTestId('rankings-announcement').closest('[aria-live="polite"]');
+            expect(region).toBe(document.querySelector('.rankings-toolbar-count'));
+            expect(region).toHaveTextContent('Updated results available.');
+            expect(document.querySelectorAll('[aria-live]').length).toBe(1);
+            // Rows, order and the count are untouched, and the notice sits below the toolbar.
+            expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+            expect(screen.getByText('Showing 1-3 of 3 organizations')).toBeInTheDocument();
+            const toolbar = screen.getByTestId('rankings-toolbar');
+            expect(toolbar.compareDocumentPosition(screen.getByTestId('rankings-updated-notice')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+            // A second newer revision moves the notice on without a second announcement.
+            serverRevision = 'cccccccccccccccc';
+            await tick(60_000);
+            expect(screen.getAllByTestId('rankings-updated-notice')).toHaveLength(1);
+            expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Updated results available.');
+        });
+
+        test('the row being read stays put when the notice appears and when it goes', async () => {
+            mount();
+            await foundNotice();
+            // Rows moved 80px down under the notice: the first one is put back.
+            expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
+            scrollBy.mockClear();
+            // The data goes back to what is shown: the notice leaves and the row is put back again.
+            serverRevision = SHOWN;
+            await tick(60_000);
+            expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+            expect(scrollBy).toHaveBeenCalledWith({top: -80, left: 0, behavior: 'instant'});
+            expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('');
+        });
+
+        test('a row under the phone’s sticky top bar is not the one held', async () => {
+            const bar = document.createElement('div');
+            bar.className = 'app-mobile-topbar';
+            document.body.appendChild(bar);
+            const base = rectSpy.getMockImplementation()!;
+            rectSpy.mockImplementation(function (this: Element) {
+                if (this === bar) return {height: 56, top: 0, bottom: 56} as DOMRect;
+                // Alpha, the first row, is half under the bar whatever else moves.
+                if (this === document.querySelector('.organization-row')) return {height: 60, top: 30, bottom: 90} as DOMRect;
+                return base.call(this);
+            });
+            mount();
+            await foundNotice();
+            // Beta (second row) is the first to start below the bar; it moved 80px.
+            expect(scrollBy).toHaveBeenCalledTimes(1);
+            expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
+            bar.remove();
+        });
+
+        test('pressing Refresh results replaces the rows in place, once, and keeps search and filters', async () => {
+            mount();
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Co'}});
+            fireEvent.click(screen.getByTestId('accelerated-vesting-checkbox'));
+            // Alpha and Gamma (odd ids) have accelerated vesting.
+            expect(names()).toEqual(['Alpha Co', 'Gamma Co']);
+            await foundNotice();
+            scrollBy.mockClear();
+            await press();
+            expect(listCalls()).toBe(1);
+            // New order and scores; Delta (even id, no vesting) stays filtered out.
+            expect(names()).toEqual(['Alpha Co', 'Gamma Co']);
+            expect(screen.getAllByText('Alpha Co')[0].closest('tr')).toHaveTextContent('2');
+            expect(screen.getByPlaceholderText('Search organizations')).toHaveValue('Co');
+            expect(screen.getByTestId('accelerated-vesting-checkbox')).toBeChecked();
+            expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+            expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Showing updated rankings.');
+            expect(document.activeElement).toBe(heading);
+            // No "Updated" mark after a press.
+            expect(screen.queryByTestId('rankings-updated-badge')).not.toBeInTheDocument();
+            // The notice left (-80px) and the first row was put back.
+            expect(scrollBy).toHaveBeenCalled();
+        });
+
+        test('the swap shows the new order and keeps the first listed row that survives at its offset', async () => {
+            mount();
+            await foundNotice();
+            scrollBy.mockClear();
+            // Alpha was first in view; after the swap it is second (100px lower) and the notice (80px) is gone.
+            await press();
+            expect(names()).toEqual(['Beta Co', 'Alpha Co', 'Gamma Co', 'Delta Co']);
+            expect(screen.getByText('Showing 1-4 of 4 organizations')).toBeInTheDocument();
+            // Held row is Alpha: its top went from 280 (with notice) to 300.
+            expect(scrollBy).toHaveBeenCalledWith({top: 20, left: 0, behavior: 'instant'});
+        });
+
+        test('when no captured row survives the swap the scroll position is left alone', async () => {
+            mount();
+            await foundNotice();
+            scrollBy.mockClear();
+            serverRows = [org(9, 'Omega Co', 1, 5)];
+            await press();
+            expect(names()).toEqual(['Omega Co']);
+            expect(scrollBy).not.toHaveBeenCalled();
+        });
+
+        test('focus falls back to the results region when the page has no heading', async () => {
+            heading.remove();
+            mount();
+            await foundNotice();
+            await press();
+            expect(document.activeElement).toBe(screen.getByTestId('organization-results-region'));
+        });
+
+        test('a page that no longer exists is clamped and the URL’s page is rewritten in place', async () => {
+            const many = Array.from({length: 20}, (_, i) => org(i + 1, `Org ${i + 1}`, i + 1, 5 - i / 10));
+            window.history.replaceState({}, '', '/?page=2&search=Org');
+            const replace = jest.spyOn(window.history, 'replaceState');
+            mount({}, many);
+            expect(screen.getByText('Showing 16-20 of 20 organizations')).toBeInTheDocument();
+            replace.mockClear();
+            serverRows = many.slice(0, 5);
+            await foundNotice();
+            await press();
+            expect(screen.getByText('Showing 1-5 of 5 organizations')).toBeInTheDocument();
+            expect(replace).toHaveBeenCalledWith({}, '', '/?page=1&search=Org');
+            expect(window.location.search).toBe('?page=1&search=Org');
+        });
+
+        test('a page that still exists keeps its number and its URL', async () => {
+            const many = Array.from({length: 20}, (_, i) => org(i + 1, `Org ${i + 1}`, i + 1, 5 - i / 10));
+            window.history.replaceState({}, '', '/?page=2');
+            mount({}, many);
+            serverRows = many.slice(0, 18);
+            await foundNotice();
+            await press();
+            expect(screen.getByText('Showing 16-18 of 18 organizations')).toBeInTheDocument();
+            expect(window.location.search).toBe('?page=2');
+        });
+
+        test.each(['reject', 'status', 'malformed'] as const)('a failed list read (%s) leaves everything and says so inside the notice', async (failure) => {
+            mount();
+            await foundNotice();
+            listFails = failure;
+            await press();
+            expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+            expect(screen.getByTestId('rankings-updated-error')).toHaveTextContent("Couldn't refresh. Try again.");
+            expect(screen.getByTestId('rankings-announcement')).toHaveTextContent("Couldn't refresh. Try again.");
+            expect(screen.getByTestId('rankings-updated-refresh')).not.toHaveAttribute('aria-disabled');
+            // Trying again works and clears the line.
+            listFails = 'no';
+            await press();
+            expect(names()[0]).toBe('Beta Co');
+            expect(screen.queryByTestId('rankings-updated-error')).not.toBeInTheDocument();
+        });
+
+        test('a second press while the read is out sends nothing more, and the button says it is busy', async () => {
+            mount();
+            await foundNotice();
+            let release: (value: unknown) => void = () => undefined;
+            const real = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url: string, init?: unknown) => (url === '/api/rankings/5/'
+                ? new Promise((resolve) => { release = resolve; })
+                : real(url, init)));
+            fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+            fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+            expect((global.fetch as jest.Mock).mock.calls.filter(([url]) => url === '/api/rankings/5/')).toHaveLength(1);
+            expect(screen.getByTestId('rankings-updated-refresh')).toHaveAttribute('aria-disabled', 'true');
+            expect(screen.getByTestId('rankings-updated-notice')).toHaveAttribute('aria-busy', 'true');
+            await act(async () => {
+                release({ok: true, json: () => Promise.resolve({revision: NEWER, organizations: newerRows})});
+                await jest.advanceTimersByTimeAsync(0);
+            });
+            expect(names()[0]).toBe('Beta Co');
+        });
+
+        test('a list read that returns the revision already shown just clears the notice', async () => {
+            mount();
+            await foundNotice();
+            serverRevision = SHOWN;
+            serverRows = shownRows;
+            await press();
+            expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+            expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+            expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('');
+        });
+
+        test('a failed or unreadable revision check changes nothing on screen and backs off', async () => {
+            mount();
+            revisionFails = true;
+            await tick(60_000);
+            expect(calls('/revision/')).toBe(1);
+            expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+            await tick(60_000);
+            expect(calls('/revision/')).toBe(1);
+            await tick(60_000);
+            expect(calls('/revision/')).toBe(2);
+            // An answer with no revision is a failure too.
+            revisionFails = false;
+            serverRevision = undefined as unknown as string;
+            await tick(600_000);
+            expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+        });
+
+        test('the kill switch (no poll_after_seconds) stops the polling after its first answer', async () => {
+            pollSeconds = null;
+            mount();
+            await tick(60_000);
+            expect(calls('/revision/')).toBe(1);
+            await tick(600_000);
+            expect(calls('/revision/')).toBe(1);
+        });
+
+        test('unmounting stops the polling and drops a read still on its way', async () => {
+            const {unmount} = mount();
+            await foundNotice();
+            let release: (value: unknown) => void = () => undefined;
+            const real = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url: string, init?: unknown) => (url === '/api/rankings/5/'
+                ? new Promise((resolve) => { release = resolve; })
+                : real(url, init)));
+            fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+            unmount();
+            const before = calls('/revision/');
+            await act(async () => {
+                release({ok: true, json: () => Promise.resolve({revision: NEWER, organizations: newerRows})});
+                await jest.advanceTimersByTimeAsync(600_000);
+            });
+            expect(calls('/revision/')).toBe(before);
+            expect(heading).not.toBe(document.activeElement);
+        });
+
+        test('a read that fails after the list is gone changes nothing', async () => {
+            const {unmount} = mount();
+            await foundNotice();
+            let fail: (reason: unknown) => void = () => undefined;
+            const real = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url: string, init?: unknown) => (url === '/api/rankings/5/'
+                ? new Promise((_resolve, reject) => { fail = reject; })
+                : real(url, init)));
+            fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+            unmount();
+            await act(async () => {
+                fail(new Error('offline'));
+                await jest.advanceTimersByTimeAsync(0);
+            });
+            expect(heading).not.toBe(document.activeElement);
+        });
+
+        describe('idle apply', () => {
+            // Away for a while, back: the first check after the return finds the newer revision.
+            const returnToNewer = async () => {
+                await tick(30_000);
+                await setVisibility('hidden');
+                await tick(120_000);
+                serverRevision = NEWER;
+                await setVisibility('visible');
+            };
+
+            test('applies without a press at the top with nothing focused, marks it, and moves no focus', async () => {
+                mount();
+                await returnToNewer();
+                expect(names()).toEqual(['Beta Co', 'Alpha Co', 'Gamma Co', 'Delta Co']);
+                expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+                expect(screen.getByTestId('rankings-updated-badge')).toHaveTextContent('Updated');
+                expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Showing updated rankings.');
+                expect(document.activeElement).not.toBe(heading);
+            });
+
+            test('the mark goes at the reader’s own input, keeps its box, and ignores typing in the Assistant', async () => {
+                const panel = document.createElement('div');
+                panel.id = 'assistant-panel';
+                const input = document.createElement('textarea');
+                panel.appendChild(input);
+                document.body.appendChild(panel);
+                mount();
+                await returnToNewer();
+                fireEvent.keyDown(input, {key: 'a'});
+                expect(screen.getByTestId('rankings-updated-badge')).toBeInTheDocument();
+                fireEvent.wheel(window);
+                expect(screen.queryByTestId('rankings-updated-badge')).not.toBeInTheDocument();
+                const seen = screen.getByTestId('rankings-updated-badge-seen');
+                expect(seen).toHaveClass('invisible');
+                expect(seen).toHaveAttribute('aria-hidden', 'true');
+                panel.remove();
+            });
+
+            test('a scrolled page gets the notice instead', async () => {
+                mount();
+                setScrollY(400);
+                await returnToNewer();
+                expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                expect(screen.getByTestId('rankings-updated-notice')).toBeInTheDocument();
+            });
+
+            test('focus anywhere in the results (the search box) gets the notice instead', async () => {
+                mount();
+                screen.getByPlaceholderText('Search organizations').focus();
+                await returnToNewer();
+                expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                expect(screen.getByTestId('rankings-updated-notice')).toBeInTheDocument();
+            });
+
+            test('only the first check after the return counts: an ordinary timed check gets the notice', async () => {
+                mount();
+                serverRevision = NEWER;
+                await tick(60_000);
+                expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                expect(screen.getByTestId('rankings-updated-notice')).toBeInTheDocument();
+            });
+
+            test('a failed idle read falls back to the notice', async () => {
+                mount();
+                listFails = 'reject';
+                await returnToNewer();
+                expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                expect(screen.getByTestId('rankings-updated-notice')).toBeInTheDocument();
+                expect(screen.queryByTestId('rankings-updated-error')).not.toBeInTheDocument();
+            });
+
+            test('a check that arrives while a press is out is ignored', async () => {
+                mount();
+                await foundNotice();
+                let release: (value: unknown) => void = () => undefined;
+                const real = global.fetch as jest.Mock;
+                global.fetch = jest.fn().mockImplementation((url: string, init?: unknown) => (url === '/api/rankings/5/'
+                    ? new Promise((resolve) => { release = resolve; })
+                    : real(url, init)));
+                fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+                serverRevision = 'dddddddddddddddd';
+                await tick(60_000);
+                expect(screen.getByTestId('rankings-updated-notice')).toHaveAttribute('aria-busy', 'true');
+                await act(async () => {
+                    release({ok: true, json: () => Promise.resolve({revision: NEWER, organizations: newerRows})});
+                    await jest.advanceTimersByTimeAsync(0);
+                });
+                expect(names()[0]).toBe('Beta Co');
+            });
+        });
+
+        describe('with a company open', () => {
+            const openCompany = async () => {
+                fireEvent.click(screen.getAllByText('Alpha Co')[0]);
+                await tick(0);
+                expect(screen.getByTestId('company-view')).toBeInTheDocument();
+            };
+
+            test('polling continues, nothing is applied, and the notice is waiting after Back to results', async () => {
+                mount();
+                await openCompany();
+                serverRevision = NEWER;
+                await tick(60_000);
+                expect(calls('/revision/')).toBeGreaterThan(0);
+                expect(screen.getByTestId('organization-results-region')).toHaveAttribute('hidden');
+                expect(listCalls()).toBe(0);
+                // The idle rule does not apply either, even after a return to the tab.
+                await setVisibility('hidden');
+                await tick(120_000);
+                await setVisibility('visible');
+                expect(listCalls()).toBe(0);
+                fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+                await tick(0);
+                expect(screen.getByTestId('organization-results-region')).not.toHaveAttribute('hidden');
+                expect(screen.getByTestId('rankings-updated-notice')).toBeVisible();
+                expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+            });
+
+            test('rows read while a company was being opened are not applied under it', async () => {
+                mount();
+                await foundNotice();
+                let release: (value: unknown) => void = () => undefined;
+                const real = global.fetch as jest.Mock;
+                global.fetch = jest.fn().mockImplementation((url: string, init?: unknown) => (url === '/api/rankings/5/'
+                    ? new Promise((resolve) => { release = resolve; })
+                    : real(url, init)));
+                fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+                await openCompany();
+                await act(async () => {
+                    release({ok: true, json: () => Promise.resolve({revision: NEWER, organizations: newerRows})});
+                    await jest.advanceTimersByTimeAsync(0);
+                });
+                expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+                await tick(0);
+                expect(screen.getByTestId('rankings-updated-notice')).toBeVisible();
+                expect(screen.getByTestId('rankings-updated-refresh')).not.toHaveAttribute('aria-disabled');
+            });
+
+            test('rows read for the revision already shown, or a read that finds the company open, still settle', async () => {
+                mount();
+                await foundNotice();
+                let release: (value: unknown) => void = () => undefined;
+                const real = global.fetch as jest.Mock;
+                global.fetch = jest.fn().mockImplementation((url: string, init?: unknown) => (url === '/api/rankings/5/'
+                    ? new Promise((resolve) => { release = resolve; })
+                    : real(url, init)));
+                fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+                await openCompany();
+                await act(async () => {
+                    release({ok: true, json: () => Promise.resolve({revision: SHOWN, organizations: shownRows})});
+                    await jest.advanceTimersByTimeAsync(0);
+                });
+                expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+            });
         });
     });
 
