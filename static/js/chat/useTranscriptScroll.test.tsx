@@ -449,6 +449,137 @@ describe('useTranscriptScroll', () => {
         });
     });
 
+    describe('the scroll event that the browser makes for a change of the content (scroll anchoring)', () => {
+        const atEnd = (log: HTMLElement) => metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+
+        test('a scroll right after a commit that changed the content, with no input, does not end following', () => {
+            const {rerender} = render(<Harness assistantCount={1} contentKey="a"/>);
+            const log = screen.getByTestId('log');
+            atEnd(log);
+            fireEvent.scroll(log);
+            // A notice above the reader's place goes: the commit, then the browser moves the scroll position on its own.
+            rerender(<Harness assistantCount={1} contentKey="b"/>);
+            metrics(log, {scrollHeight: 900, scrollTop: 300, clientHeight: 200});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+        });
+
+        test('it is the reader\'s when they gave input, or once the commit is more than 100ms old', () => {
+            const {rerender} = render(<Harness assistantCount={1} contentKey="a"/>);
+            const log = screen.getByTestId('log');
+            atEnd(log);
+            fireEvent.scroll(log);
+            rerender(<Harness assistantCount={1} contentKey="b"/>);
+            fireEvent.wheel(log);
+            metrics(log, {scrollHeight: 900, scrollTop: 300, clientHeight: 200});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+            // Following again, a commit, and then a scroll 100ms later with no input behind it: find-in-page, not the browser's anchoring.
+            now += 1000;
+            atEnd(log);
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+            rerender(<Harness assistantCount={1} contentKey="c"/>);
+            now += 100;
+            metrics(log, {scrollHeight: 900, scrollTop: 300, clientHeight: 200});
+            fireEvent.scroll(log);
+            expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        });
+    });
+
+    describe('what the hook releases when it re-runs and when it unmounts', () => {
+        const watchObservers = () => {
+            const made: Array<{targets: Element[]; disconnect: jest.Mock}> = [];
+            const original = (window as unknown as {ResizeObserver?: unknown}).ResizeObserver;
+            (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
+                targets: Element[] = [];
+                disconnect = jest.fn();
+                constructor() { made.push(this); }
+                observe = (el: Element) => { this.targets.push(el); };
+            };
+            return {made, restore: () => { (window as unknown as {ResizeObserver?: unknown}).ResizeObserver = original; }};
+        };
+        const INPUT_EVENTS = ['wheel', 'touchmove', 'keydown', 'pointerdown', 'focusin'];
+
+        test('removes the scroll listener and the five input listeners when the effect re-runs and on unmount', () => {
+            const {rerender, unmount} = render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            const added = jest.spyOn(log, 'addEventListener');
+            const removed = jest.spyOn(log, 'removeEventListener');
+            rerender(<Harness assistantCount={2}/>);
+            // The old handlers go, the new ones come: the same six events, each way.
+            expect(removed.mock.calls.map(([type]) => type).sort()).toEqual(['scroll', ...INPUT_EVENTS].sort());
+            expect(added.mock.calls.map(([type]) => type).sort()).toEqual(['scroll', ...INPUT_EVENTS].sort());
+            removed.mockClear();
+            unmount();
+            expect(removed.mock.calls.map(([type]) => type).sort()).toEqual(['scroll', ...INPUT_EVENTS].sort());
+        });
+
+        test('a removed scroll listener no longer reacts: one handler is live after a re-run, not two', () => {
+            const {rerender} = render(<Harness assistantCount={1}/>);
+            const log = screen.getByTestId('log');
+            rerender(<Harness assistantCount={2}/>);
+            const added = jest.spyOn(log, 'addEventListener');
+            const removed = jest.spyOn(log, 'removeEventListener');
+            rerender(<Harness assistantCount={3}/>);
+            const scrollAdded = added.mock.calls.filter(([type]) => type === 'scroll').map(([, fn]) => fn);
+            const scrollRemoved = removed.mock.calls.filter(([type]) => type === 'scroll').map(([, fn]) => fn);
+            expect(scrollAdded).toHaveLength(1);
+            expect(scrollRemoved).toHaveLength(1);
+            expect(scrollRemoved[0]).not.toBe(scrollAdded[0]);
+        });
+
+        test('disconnects the transcript\'s ResizeObserver when the effect re-runs and on unmount', () => {
+            const {made, restore} = watchObservers();
+            try {
+                const {rerender, unmount} = render(<Harness assistantCount={1}/>);
+                const log = screen.getByTestId('log');
+                const first = made.find((o) => o.targets.includes(log))!;
+                expect(first.disconnect).not.toHaveBeenCalled();
+                rerender(<Harness assistantCount={2}/>);
+                expect(first.disconnect).toHaveBeenCalledTimes(1);
+                const second = made.filter((o) => o.targets.includes(log)).pop()!;
+                expect(second).not.toBe(first);
+                unmount();
+                expect(second.disconnect).toHaveBeenCalledTimes(1);
+            } finally {
+                restore();
+            }
+        });
+    });
+
+    test('the input window ends at 300ms: a scroll 250ms after a wheel is the reader\'s, one 350ms after it is the browser\'s', () => {
+        const callbacks: Array<() => void> = [];
+        const original = (window as unknown as {ResizeObserver?: unknown}).ResizeObserver;
+        (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
+            constructor(cb: () => void) { callbacks.push(cb); }
+            observe() { /* noop */ }
+            disconnect() { /* noop */ }
+        };
+        try {
+            const scrolledAfter = (ms: number): string => {
+                const {unmount} = render(<Harness assistantCount={1}/>);
+                const log = screen.getByTestId('log');
+                log.scrollTo = jest.fn();
+                metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+                callbacks.forEach((cb) => cb());
+                fireEvent.wheel(log);
+                now += ms;
+                // The box shrank and the browser moved the scroll position with it.
+                metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 100});
+                fireEvent.scroll(log);
+                const state = screen.getByTestId('state').textContent ?? '';
+                unmount();
+                callbacks.length = 0;
+                return state;
+            };
+            expect(scrolledAfter(250)).toBe('true:0');
+            expect(scrolledAfter(350)).toBe('false:0');
+        } finally {
+            (window as unknown as {ResizeObserver?: unknown}).ResizeObserver = original;
+        }
+    });
+
     test('falls back to writing scrollTop where scrollTo is missing', () => {
         render(<Harness assistantCount={1}/>);
         const log = screen.getByTestId('log');
@@ -721,8 +852,287 @@ describe('useTranscriptScroll', () => {
         expect(isUnscaledViewport(at(1))).toBe(true);
         expect(isUnscaledViewport(at(1.005))).toBe(true);
         expect(isUnscaledViewport(at(0.995))).toBe(true);
+        // The tolerance is 0.01: two hundredths off is already a zoom.
+        expect(isUnscaledViewport(at(1.02))).toBe(false);
+        expect(isUnscaledViewport(at(0.98))).toBe(false);
         expect(isUnscaledViewport(at(1.1))).toBe(false);
         expect(isUnscaledViewport(at(0.9))).toBe(false);
         expect(isUnscaledViewport(at())).toBe(true);
+    });
+});
+
+// A notice in the transcript: where it arrives, and where the jump pill may show (issue #483).
+function NoticeHarness({contentKey, noticeKey, last = true, assistantCount = 2, withNotice = true}: {contentKey: string; noticeKey: string; last?: boolean; assistantCount?: number; withNotice?: boolean}) {
+    const {historyRef, showJumpToLatest} = useTranscriptScroll({
+        messagesLength: assistantCount, assistantCount, pending: false, loading: false, contentKey, noticeKey,
+    });
+    return (
+        <section>
+            <div ref={historyRef} data-testid="log">
+                <article/>
+                {withNotice && (
+                    <div data-testid="transcript-notice">
+                        <button data-testid="apply">Apply</button>
+                        <a href="/x" data-testid="link">link</a>
+                    </div>
+                )}
+                {!last && <article data-testid="after"/>}
+            </div>
+            <span data-testid="state">{String(showJumpToLatest)}</span>
+        </section>
+    );
+}
+
+// Two notices under two replies, the second one the newest item.
+function TwoBlockHarness({contentKey, noticeKey}: {contentKey: string; noticeKey: string}) {
+    const {historyRef, showJumpToLatest, scrollToLatest} = useTranscriptScroll({
+        messagesLength: 2, assistantCount: 2, pending: false, loading: false, contentKey, noticeKey,
+    });
+    return (
+        <section>
+            <div ref={historyRef} data-testid="log">
+                <article/>
+                <div data-testid="transcript-notice"><button data-testid="apply1">Undo</button></div>
+                <article/>
+                <div data-testid="transcript-notice"><button data-testid="apply2">Apply</button></div>
+            </div>
+            <span data-testid="state">{String(showJumpToLatest)}</span>
+            <button onClick={() => scrollToLatest('auto')}>end</button>
+        </section>
+    );
+}
+
+const box = (top: number, bottom: number) => ({top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON: () => ''});
+
+describe('useTranscriptScroll with a notice in the transcript', () => {
+    beforeEach(() => {
+        jest.spyOn(Date, 'now').mockImplementation(() => 1_000_000);
+        Element.prototype.scrollTo = jest.fn();
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    // The transcript spans y 100..400 on screen; the notice's top is at `noticeTop`.
+    const layout = (noticeTop: number, noticeBottom: number, scrollTop = 600) => {
+        const log = screen.getByTestId('log');
+        metrics(log, {scrollHeight: 1000, scrollTop, clientHeight: 300});
+        log.getBoundingClientRect = () => box(100, 400) as DOMRect;
+        const notice = screen.queryByTestId('transcript-notice');
+        if (notice) {
+            notice.getBoundingClientRect = () => box(noticeTop, noticeBottom) as DOMRect;
+            screen.getByTestId('apply').getBoundingClientRect = () => box(noticeBottom - 60, noticeBottom - 10) as DOMRect;
+            screen.getByTestId('link').getBoundingClientRect = () => box(noticeBottom - 10, noticeBottom) as DOMRect;
+        }
+        return log;
+    };
+
+    test('a notice taller than the room at the end arrives with its top 8px below the transcript\'s top', () => {
+        const {rerender} = render(<NoticeHarness contentKey="a" noticeKey=""/>);
+        // End is 700; the notice's top is 150 above the transcript's top, so 142 above it.
+        const log = layout(-50, 450);
+        (log.scrollTo as jest.Mock).mockClear();
+        rerender(<NoticeHarness contentKey="b" noticeKey="7.true"/>);
+        expect(log.scrollTop).toBe(600 + (-50 - 100) - 8);
+        expect(log.scrollTo).not.toHaveBeenCalled();
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+    });
+
+    test('a notice that keeps its top on screen at the end is followed to the end', () => {
+        const {rerender} = render(<NoticeHarness contentKey="a" noticeKey=""/>);
+        const log = layout(300, 400);
+        log.scrollTo = jest.fn();
+        rerender(<NoticeHarness contentKey="b" noticeKey="7.true"/>);
+        expect(log.scrollTo).toHaveBeenLastCalledWith({top: 1000, behavior: 'auto'});
+    });
+
+    test('a change inside the same notice keeps the reader at the end; another kind of notice parks again', () => {
+        const {rerender} = render(<NoticeHarness contentKey="a" noticeKey="7.true"/>);
+        const log = layout(-50, 450);
+        log.scrollTo = jest.fn();
+        rerender(<NoticeHarness contentKey="b" noticeKey="7.true"/>);
+        expect(log.scrollTo).toHaveBeenLastCalledWith({top: 1000, behavior: 'auto'});
+        rerender(<NoticeHarness contentKey="c" noticeKey="7.false.true"/>);
+        expect(log.scrollTop).toBe(600 - 150 - 8);
+    });
+
+    test('a reader who has scrolled away is not moved', () => {
+        const {rerender} = render(<NoticeHarness contentKey="a" noticeKey=""/>);
+        const log = layout(-50, 450, 100);
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        log.scrollTo = jest.fn();
+        rerender(<NoticeHarness contentKey="b" noticeKey="7.true"/>);
+        expect(log.scrollTo).not.toHaveBeenCalled();
+        expect(log.scrollTop).toBe(100);
+    });
+
+    test('the pill is not shown while the notice is the newest item and partly on screen', () => {
+        render(<NoticeHarness contentKey="a" noticeKey="7.true"/>);
+        const log = layout(200, 800, 300);
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+    });
+
+    test('the pill is not shown while a control of a mid-history notice is in its band, and shows when none is', () => {
+        render(<NoticeHarness contentKey="a" noticeKey="7.true" last={false}/>);
+        // The apply button's bottom is 20px above the transcript's bottom: inside the 72px band.
+        const log = layout(200, 420, 300);
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+        // The notice moves up: its controls are clear of the band.
+        layout(120, 250, 300);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+        // The notice is off screen: the pill shows.
+        layout(-300, -50, 300);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+    });
+
+    test('without a notice the pill shows as before, and a reply arriving while the reader is away is held back only by a covered control', () => {
+        const {rerender} = render(<NoticeHarness contentKey="a" noticeKey="" withNotice={false}/>);
+        const log = layout(0, 0, 100);
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+        rerender(<NoticeHarness contentKey="a" noticeKey="" withNotice={false} assistantCount={3}/>);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+    });
+
+    // The transcript's resize observer, driven by hand.
+    const observed: Array<() => void> = [];
+    let originalObserver: unknown;
+    beforeEach(() => {
+        observed.length = 0;
+        originalObserver = (window as unknown as {ResizeObserver?: unknown}).ResizeObserver;
+        (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
+            constructor(cb: () => void) { observed.push(cb); }
+            observe() { /* noop */ }
+            disconnect() { /* noop */ }
+        };
+    });
+    afterEach(() => {
+        (window as unknown as {ResizeObserver?: unknown}).ResizeObserver = originalObserver;
+    });
+
+    test('the pill shows for a reader away from a notice that is the newest item but off screen', () => {
+        render(<NoticeHarness contentKey="a" noticeKey="proposal@7"/>);
+        const log = layout(-300, -50, 300);
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+        // And below the transcript just the same.
+        layout(450, 900, 300);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+    });
+
+    test('a reader parked at the top of an arrived notice stays there when the transcript is resized', () => {
+        const {rerender} = render(<NoticeHarness contentKey="a" noticeKey=""/>);
+        const log = layout(-50, 450);
+        rerender(<NoticeHarness contentKey="b" noticeKey="proposal@7"/>);
+        const parked = 600 - 150 - 8;
+        expect(log.scrollTop).toBe(parked);
+        (log.scrollTo as jest.Mock).mockClear();
+        metrics(log, {scrollHeight: 1000, scrollTop: parked, clientHeight: 250});
+        act(() => { observed.forEach((cb) => cb()); });
+        expect(log.scrollTo).not.toHaveBeenCalled();
+        expect(log.scrollTop).toBe(parked);
+    });
+
+    test('a new size of the transcript re-reads the pill for a reader who is away, with no scroll event', () => {
+        render(<NoticeHarness contentKey="a" noticeKey="proposal@7" last={false}/>);
+        // The apply button is 40px above the bottom of the transcript: in the band, so no pill.
+        const log = layout(200, 360, 300);
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+        // The transcript grows (the footer's details close): the same button is now clear of the band.
+        log.getBoundingClientRect = () => box(100, 560) as DOMRect;
+        metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 460});
+        act(() => { observed.forEach((cb) => cb()); });
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+        // And it shrinks again, under the button: the pill goes.
+        log.getBoundingClientRect = () => box(100, 400) as DOMRect;
+        metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 300});
+        act(() => { observed.forEach((cb) => cb()); });
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+    });
+
+    test('a notice that grows under a reader who is away re-reads the pill with no scroll event', () => {
+        const {rerender} = render(<NoticeHarness contentKey="a" noticeKey="proposal@7" last={false}/>);
+        // The notice's last button is clear of the band: the pill shows.
+        const log = layout(120, 250, 300);
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+        // An apply error is inserted above the buttons: they move down into the band, and nothing scrolls.
+        layout(120, 420, 300);
+        rerender(<NoticeHarness contentKey="b" noticeKey="proposal@7" last={false}/>);
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+        // The error goes: the pill comes back.
+        layout(120, 250, 300);
+        rerender(<NoticeHarness contentKey="c" noticeKey="proposal@7" last={false}/>);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+    });
+
+    test('the arrival of a second notice is read from the newest one, and dismissing one of two moves nobody', () => {
+        const {rerender} = render(<TwoBlockHarness contentKey="a" noticeKey="changes@7"/>);
+        const log = screen.getByTestId('log');
+        metrics(log, {scrollHeight: 1000, scrollTop: 600, clientHeight: 300});
+        log.getBoundingClientRect = () => box(100, 400) as DOMRect;
+        // The older block is on screen; the newer block's top is far above the transcript's top.
+        screen.getAllByTestId('transcript-notice')[0].getBoundingClientRect = () => box(150, 250) as DOMRect;
+        screen.getAllByTestId('transcript-notice')[1].getBoundingClientRect = () => box(-50, 450) as DOMRect;
+        log.scrollTo = jest.fn();
+        rerender(<TwoBlockHarness contentKey="b" noticeKey="changes@7,proposal@9"/>);
+        expect(log.scrollTop).toBe(600 - 150 - 8);
+        expect(log.scrollTo).not.toHaveBeenCalled();
+        // Back at the end, one of the two is dismissed: nothing arrived, the end is followed as before.
+        metrics(log, {scrollHeight: 1000, scrollTop: 700, clientHeight: 300});
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        act(() => { fireEvent.click(screen.getByText('end')); });
+        log.scrollTo = jest.fn();
+        rerender(<TwoBlockHarness contentKey="c" noticeKey="changes@7"/>);
+        expect(log.scrollTo).toHaveBeenLastCalledWith({top: 1000, behavior: 'auto'});
+    });
+
+    test('the pill stays away while a control of any of several notices is in its band', () => {
+        render(<TwoBlockHarness contentKey="a" noticeKey="changes@7,proposal@9"/>);
+        const log = screen.getByTestId('log');
+        metrics(log, {scrollHeight: 1000, scrollTop: 300, clientHeight: 300});
+        log.getBoundingClientRect = () => box(100, 400) as DOMRect;
+        const [first, second] = screen.getAllByTestId('transcript-notice');
+        // The older block's button is in the band, and another reply follows it; the newest block is off screen.
+        first.getBoundingClientRect = () => box(200, 420) as DOMRect;
+        screen.getByTestId('apply1').getBoundingClientRect = () => box(380, 420) as DOMRect;
+        second.getBoundingClientRect = () => box(500, 800) as DOMRect;
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+        first.getBoundingClientRect = () => box(120, 250) as DOMRect;
+        screen.getByTestId('apply1').getBoundingClientRect = () => box(200, 250) as DOMRect;
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
+        // The newest block is on screen: it is the newest item, so the pill stays away whatever its controls do.
+        second.getBoundingClientRect = () => box(260, 380) as DOMRect;
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+    });
+
+    test('a reply that lands under a covered control does not raise the pill, and a window resize re-reads it', () => {
+        const {rerender} = render(<NoticeHarness contentKey="a" noticeKey="7.true" last={false}/>);
+        const log = layout(200, 420, 300);
+        fireEvent.wheel(log);
+        fireEvent.scroll(log);
+        rerender(<NoticeHarness contentKey="a" noticeKey="7.true" last={false} assistantCount={3}/>);
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+        act(() => { window.dispatchEvent(new Event('resize')); });
+        expect(screen.getByTestId('state')).toHaveTextContent('false');
+        layout(-300, -50, 300);
+        act(() => { window.dispatchEvent(new Event('resize')); });
+        expect(screen.getByTestId('state')).toHaveTextContent('true');
     });
 });

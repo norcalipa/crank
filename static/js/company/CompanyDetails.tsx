@@ -4,6 +4,10 @@ import * as React from 'react';
 import {EvidenceStatusKey, FUNDING_ROUND_LABELS, RTO_POLICY_LABELS, fieldKeyLabel} from '../labels';
 import EvidenceBadge from '../evidence/EvidenceBadge';
 import EvidenceDetails, {EvidenceSkeleton} from '../evidence/EvidenceDetails';
+import {openAssistant, setPrioritiesEditorOpen} from '../workspace/store';
+import {prioritiesSurface} from '../priorities/surface';
+import FitSection from './FitSection';
+import JobsSection from './JobsSection';
 import {ScoreDetail, useCompanyData} from './useCompanyData';
 
 export interface CompanyDetailsOrganization {
@@ -124,6 +128,56 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
     } = useCompanyData(organization.id, isAuthenticated, {skipScores: Boolean(organization.avg_scores)});
     const freshnessHeadingRef = React.useRef<HTMLHeadingElement>(null);
     const retryRef = React.useRef<HTMLButtonElement>(null);
+    const jobsHeadingRef = React.useRef<HTMLHeadingElement>(null);
+    const signInUrl = companySignInUrl(signInUrlTemplate, organization.id);
+
+    const fitHeadingRef = React.useRef<HTMLHeadingElement>(null);
+    // The heading the last jump moved focus to, while the reader has not moved
+    // the page themselves since: a late answer that changes the height above it
+    // must not carry it off the screen (never when the reader scrolled).
+    const jump = React.useRef<{heading: HTMLElement; stop: () => void} | null>(null);
+    const stopJump = React.useCallback(() => {
+        jump.current?.stop();
+        jump.current = null;
+    }, []);
+    React.useEffect(() => stopJump, [stopJump]);
+
+    // "View jobs" / "See your fit": the heading takes focus and scrolls into view.
+    const jumpTo = (heading: HTMLHeadingElement | null) => {
+        if (!heading) return;
+        stopJump();
+        heading.focus({preventScroll: true});
+        heading.scrollIntoView({block: 'start'});
+        const moved = () => stopJump();
+        const SCROLL_KEYS = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
+        const onKey = (event: KeyboardEvent) => {
+            if (SCROLL_KEYS.includes(event.key)) moved();
+        };
+        const events = ['wheel', 'touchmove', 'pointerdown'] as const;
+        events.forEach(name => window.addEventListener(name, moved, {passive: true}));
+        window.addEventListener('keydown', onKey);
+        heading.addEventListener('blur', moved);
+        jump.current = {
+            heading,
+            stop: () => {
+                events.forEach(name => window.removeEventListener(name, moved));
+                window.removeEventListener('keydown', onKey);
+                heading.removeEventListener('blur', moved);
+            },
+        };
+    };
+    const viewJobs = () => jumpTo(jobsHeadingRef.current);
+    const viewFit = () => jumpTo(fitHeadingRef.current);
+    const keepJumpHeadingInView = React.useCallback(() => {
+        const current = jump.current;
+        if (current && document.activeElement === current.heading) current.heading.scrollIntoView({block: 'start'});
+    }, []);
+
+    // The editor lives in the assistant panel on this page; open both.
+    const editPriorities = () => {
+        setPrioritiesEditorOpen(prioritiesSurface());
+        openAssistant();
+    };
 
     // A retry the user started that fails again hands focus back to Retry (never on the first failure).
     React.useEffect(() => {
@@ -245,6 +299,16 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
                         </a>
                     )
                 )}
+                <div className="popup-company-jumps">
+                    <button type="button" className="btn btn-outline-light" data-testid="company-see-fit"
+                            onClick={viewFit}>
+                        See your fit
+                    </button>
+                    <button type="button" className="btn btn-outline-light" data-testid="company-view-jobs"
+                            onClick={viewJobs}>
+                        View jobs
+                    </button>
+                </div>
             </div>
             <div className="popup-details-grid" data-testid="popup-details-grid">
                 <div className="popup-details-profile">
@@ -340,11 +404,17 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
                 </div>
             </div>
 
+            <FitSection ref={fitHeadingRef} organizationId={organization.id} name={organization.name}
+                        isAuthenticated={isAuthenticated} signInUrl={signInUrl} onEditPriorities={editPriorities}
+                        onSettled={keepJumpHeadingInView}/>
+            <JobsSection ref={jobsHeadingRef} organizationId={organization.id} name={organization.name}
+                         isAuthenticated={isAuthenticated} signInUrl={signInUrl}/>
+
             {/* Data Provenance & Freshness Section */}
             <hr className="my-3" />
             <div className="row">
                 <div className="col-12">
-                    <h3 ref={freshnessHeadingRef} tabIndex={-1} className="h5 mt-3 mb-2">Data Freshness & Sources</h3>
+                    <h3 ref={freshnessHeadingRef} tabIndex={-1} className="h5 mt-3 mb-2 company-jump-heading">Data Freshness & Sources</h3>
                     {provenanceLoading ? (
                         <EvidenceSkeleton/>
                     ) : provenance ? (

@@ -213,6 +213,34 @@ export function isGatedState(state: AssistantState | undefined): boolean {
 // state (replies_disabled) is not expected to flip by re-fetching.
 export const RETRYABLE_STATES: AssistantState[] = ['temporarily_unavailable', 'refreshing'];
 
+// Short scannable state label plus one supporting sentence: the state and
+// the next action should be readable at a glance, especially on mobile.
+const STATUS_COPY: Record<string, {title: string; body: string}> = {
+    replies_disabled: {
+        title: 'Assistant unavailable',
+        body: 'Replies are paused right now. Saved preferences remain ' +
+            'available — update them here once replies resume.',
+    },
+    inventory_unavailable: {
+        title: 'Assistant unavailable',
+        body: 'No active job listings to search right now. Saved preferences ' +
+            'are still available — update them here once listings return.',
+    },
+    temporarily_unavailable: {
+        title: 'Assistant temporarily unavailable',
+        body: 'Check again in a moment.',
+    },
+    refreshing: {
+        title: 'Assistant refreshing',
+        body: 'Job listings are being refreshed; the assistant will be back shortly.',
+    },
+};
+
+/** Whether the availability notice renders anything for this status. */
+export function statusNoticeShows(status: AssistantStatus): boolean {
+    return STATUS_COPY[status.state] !== undefined;
+}
+
 export function AssistantStatusNotice({status, onRetry, checking}: {
     status: AssistantStatus;
     onRetry: () => void;
@@ -224,29 +252,7 @@ export function AssistantStatusNotice({status, onRetry, checking}: {
     // state and offers the sign-in CTA.
     if (status.state === 'ready' || status.state === 'signed_out') return null;
 
-    // Short scannable state label plus one supporting sentence: the state and
-    // the next action should be readable at a glance, especially on mobile.
-    const copy: Record<string, {title: string; body: string}> = {
-        replies_disabled: {
-            title: 'Assistant unavailable',
-            body: 'Replies are paused right now. Saved preferences remain ' +
-                'available — update them here once replies resume.',
-        },
-        inventory_unavailable: {
-            title: 'Assistant unavailable',
-            body: 'No active job listings to search right now. Saved preferences ' +
-                'are still available — update them here once listings return.',
-        },
-        temporarily_unavailable: {
-            title: 'Assistant temporarily unavailable',
-            body: 'Check again in a moment.',
-        },
-        refreshing: {
-            title: 'Assistant refreshing',
-            body: 'Job listings are being refreshed; the assistant will be back shortly.',
-        },
-    };
-    const text = copy[status.state];
+    const text = STATUS_COPY[status.state];
     if (!text) return null;
 
     const canRetry = RETRYABLE_STATES.includes(status.state);
@@ -261,10 +267,10 @@ export function AssistantStatusNotice({status, onRetry, checking}: {
             aria-label="Assistant availability"
         >
             <div className="d-flex align-items-start gap-2">
-                <i className="fa-solid fa-circle-exclamation mt-1" aria-hidden="true"></i>
+                <i className="fa-solid fa-circle-exclamation mt-1 assistant-status-icon" aria-hidden="true"></i>
                 <div>
-                    <strong className="d-block">{text.title}</strong>
-                    <span className="d-block small">{text.body}</span>
+                    <strong className="d-block assistant-status-title">{text.title}</strong>
+                    <span className="d-block small assistant-status-body">{text.body}</span>
                 </div>
             </div>
             {(browseRankings || canRetry) && (

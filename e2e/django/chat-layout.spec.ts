@@ -95,7 +95,7 @@ async function openChat(page: Page, wideFont = false, idle = true): Promise<void
     await expect(page.getByTestId('priorities-sidebar').getByRole('button', {name: /Edit priorities|Add priorities/})).toBeVisible();
     if (wideFont) await page.addStyleTag({content: WIDE_FONT_CSS});
     // "Preferences updated." after the priorities were written through the API: a notice, not part of the layout under test.
-    const banner = page.locator('#job-search-chat .chat-pref-alert .btn-close');
+    const banner = page.locator('#job-search-chat .chat-pref-alert button[aria-label="Dismiss preference notice"]');
     if (await banner.count()) await banner.first().click();
     await expect(banner).toHaveCount(0);
 }
@@ -756,5 +756,106 @@ test.describe('a press that starts right after Delete conversation opens its con
         await waitForConfirmArmed(page);
         await page.getByTestId('confirm-action').click();
         await expect.poll(() => deletes.length, {message: 'a deliberate press deletes'}).toBe(1);
+    });
+});
+
+// Issue #483, AC 12: a status notice plus a long error, or the error of a failed send, would take the composer's room,
+// so the footer notices collapse to one line behind a Details button.
+test.describe('footer notices collapse to one line (issue #483)', () => {
+    test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE === '1', 'needs assistant replies: not part of the provider-outage pass');
+    const LONG_ERROR = 'The assistant could not finish this reply because the provider stopped answering before any text came back. '
+        .repeat(6).slice(0, 600);
+
+    test.beforeEach(async ({page}) => {
+        requireDjangoTier();
+        await login(page, PREFS_USER, E2E_PASSWORD);
+    });
+
+    test.afterEach(async ({page}, testInfo) => {
+        if (testInfo.status === 'skipped') return;
+        await page.unrouteAll({behavior: 'ignoreErrors'});
+        await page.goto('/');
+        await setPriorities(page, null);
+    });
+
+    const failNextSend = (page: Page, message: string) => page.route(/\/api\/agent\/conversations\/\d+\/$/, (route) => (route.request().method() === 'POST'
+        ? route.fulfill({status: 503, contentType: 'application/json', body: JSON.stringify({error: {type: 'assistant_unavailable', message}})})
+        : route.fallback()));
+    const noticesHeight = (page: Page) => page.getByTestId('chat-footer-notices').evaluate((el) => el.getBoundingClientRect().height);
+
+    test('a status notice plus a 600-character error: one line of at most 56px collapsed, the composer inside the viewport expanded or not, at every size', async ({page}) => {
+        test.setTimeout(300_000);
+        await page.setViewportSize({width: 1280, height: 900});
+        await page.goto('/');
+        await setPriorities(page, TEN);
+        await openChat(page);
+        await ensureConversation(page, 3);
+        await page.route('**/api/agent/assistant-status/', (route) => route.fulfill({status: 200, contentType: 'application/json',
+            body: JSON.stringify({state: 'temporarily_unavailable', actions: ['retry'], checked_at: '2026-10-13T00:00:00Z'})}));
+        const problems: string[] = [];
+        for (const size of LAYOUT_SIZES) {
+            const label = `${size.width}x${size.height}${size.wideFont ? ' wide font' : ''}`;
+            await page.setViewportSize({width: size.width, height: size.height});
+            await openChat(page, size.wideFont);
+            await expect(page.getByTestId('assistant-status-notice')).toBeVisible();
+            await failNextSend(page, LONG_ERROR);
+            await page.getByTestId('assistant-composer').fill('And which of them are hiring now?');
+            await page.getByRole('button', {name: 'Send message'}).click();
+            await expect(page.getByTestId('chat-error')).toBeVisible();
+            const details = page.getByTestId('chat-notices-details');
+            await expect(details).toHaveText('Details');
+            const collapsed = await settledLayout(page);
+            const collapsedHeight = await noticesHeight(page);
+            if (collapsedHeight > 56) problems.push(`${label}: collapsed notices are ${collapsedHeight}px tall`);
+            if (!collapsed.composerInViewport) problems.push(`${label}: collapsed, the composer is not inside the viewport`);
+            if (collapsed.bodyScrollRange > 1) problems.push(`${label}: collapsed, the panel body scrolls ${collapsed.bodyScrollRange}px`);
+            await expect(page.locator('#job-search-chat [data-testid="chat-error"]')).toHaveCount(1);
+            await expect(page.getByTestId('chat-error')).toContainText(LONG_ERROR);
+
+            await details.click();
+            await expect(details).toHaveText('Hide details');
+            await expect(details).toHaveAttribute('aria-expanded', 'true');
+            const expanded = await settledLayout(page);
+            if (!expanded.composerInViewport) problems.push(`${label}: expanded, the composer is not inside the viewport`);
+            if (expanded.bodyScrollRange > 1) problems.push(`${label}: expanded, the panel body scrolls ${expanded.bodyScrollRange}px`);
+            await expect(page.locator('#job-search-chat [data-testid="chat-error"]')).toHaveCount(1);
+            await page.unroute(/\/api\/agent\/conversations\/\d+\/$/);
+        }
+        expect(problems).toEqual([]);
+    });
+
+    test('after a failed send at 320x640 the transcript is at least 230px tall, and the compact row keeps Retry', async ({page}) => {
+        test.setTimeout(180_000);
+        await page.setViewportSize({width: 320, height: 640});
+        await page.goto('/');
+        await setPriorities(page, TEN);
+        await openChat(page);
+        await ensureConversation(page, 3);
+        const quiet = await settledLayout(page);
+        await failNextSend(page, 'The assistant is not available right now. Please try again later.');
+        await page.getByTestId('assistant-composer').fill('And which of them are hiring now?');
+        await page.getByRole('button', {name: 'Send message'}).click();
+        await expect(page.getByTestId('retry-button')).toBeVisible();
+        const failed = await settledLayout(page);
+        const area = await noticesHeight(page);
+        expect(area, 'the notice area is one compact row').toBeLessThanOrEqual(56);
+        // 230px, whatever the font: at 340px and under the disclaimer is 11px type and stays on one line even in the CI
+        // image's wider fallback font. The heights are printed so the job log carries them.
+        const bars = await page.evaluate(() => {
+            const height = (selector: string) => document.querySelector(selector)?.getBoundingClientRect().height ?? null;
+            const disclaimer = document.querySelector('#job-search-chat .chat-disclaimer') as HTMLElement;
+            const line = parseFloat(getComputedStyle(disclaimer).lineHeight);
+            return {
+                disclaimerHeight: disclaimer.getBoundingClientRect().height, line,
+                chatHeader: height('#job-search-chat .card-header'), priorities: height('.priorities-sidebar'), composer: height('#job-search-chat form'),
+            };
+        });
+        const disclaimerLines = Math.round(bars.disclaimerHeight / bars.line);
+        // eslint-disable-next-line no-console
+        console.log(`483b-2 AC12 gate: transcript ${quiet.transcript} -> ${failed.transcript}px, notice area ${area}px, disclaimer ${disclaimerLines} line(s) `
+            + `${bars.disclaimerHeight}px ), chat header ${bars.chatHeader}px, priorities ${bars.priorities}px, composer ${bars.composer}px`);
+        expect(failed.transcript, `the transcript was ${quiet.transcript}px before the send`).toBeGreaterThanOrEqual(230);
+        expect(quiet.transcript - failed.transcript, 'the failed send costs the transcript at most the notice row').toBeLessThanOrEqual(56);
+        expect(scrollerProblems('failed send', failed)).toEqual([]);
     });
 });

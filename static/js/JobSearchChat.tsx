@@ -45,8 +45,8 @@ import {
 } from './chat/storage';
 import type {InFlightTurn} from './chat/storage';
 import {hasResults} from './chat/ResultCards';
+import {FooterNotices} from './chat/FooterNotices';
 import {
-    AssistantStatusNotice,
     isGatedState,
     PreferenceChangeNotice,
     PreferenceProposalNotice,
@@ -125,6 +125,22 @@ export interface JobSearchChatProps {
     autoFocusComposer?: boolean;
 }
 
+const lastAssistantIdOf = (messages: ChatMessage[]): number | null => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'assistant') return messages[i].id;
+    }
+    return null;
+};
+
+interface PrefNoticeAnchors {
+    proposal: number | null;
+    // The applied and the undone notice share one: the reply that made the proposal.
+    changes: number | null;
+    search: number | null;
+    banner: number | null;
+}
+const NO_PREF_ANCHORS: PrefNoticeAnchors = {proposal: null, changes: null, search: null, banner: null};
+
 const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const {
         isAuthenticated = true,
@@ -185,6 +201,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const [prefProposalErrorType, setPrefProposalErrorType] = React.useState<string | null>(null);
     // Confirmation for an applied this-search-only proposal (never saved).
     const [prefSearchApplied, setPrefSearchApplied] = React.useState<number | null>(null);
+    // The reply each preference notice sits under in the transcript (issue #483):
+    // the one that produced it, or the last reply when history reports a change.
+    // Every notice keeps its own, so a later reply's notice never moves an earlier one.
+    const [prefAnchors, setPrefAnchors] = React.useState<PrefNoticeAnchors>(NO_PREF_ANCHORS);
     // Advisory assistant availability (issue #457). null means the status is
     // unknown — e.g. the fetch failed — and the chat stays fully usable.
     const [assistantStatus, setAssistantStatus] = React.useState<AssistantStatus | null>(null);
@@ -223,7 +243,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     };
 
     // Ref to the last submitted turn so Retry replays the same content + idempotency key.
-    const lastSent = React.useRef<{content: string; key: string} | null>(null);
+    const lastSent = React.useRef<{content: string; key: string; epoch: number; conversationId: number} | null>(null);
     // Synchronous pending mirror so double clicks and concurrent retries cannot
     // start a second in-flight turn (apply-once, client side; the server's
     // 409 turn_in_progress is the backstop).
@@ -327,12 +347,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     // The notice explains the most recent reply only; historical messages
     // without results stay quiet.
-    const lastAssistantId = React.useMemo(() => {
-        for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i].role === 'assistant') return messages[i].id;
-        }
-        return null;
-    }, [messages]);
+    const lastAssistantId = React.useMemo(() => lastAssistantIdOf(messages), [messages]);
 
     const cardRef = React.useRef<HTMLElement>(null);
     // Room between the header and the composer band: inline panels scroll
@@ -425,6 +440,31 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         } as React.CSSProperties;
     }, [stackMax, noticesMax, keyboardInset]);
 
+    const revealingPrefs = preferencesChanged && !prefDismissed;
+    // Issue #466: the detailed diff notice supersedes the plain banner when
+    // the turn surfaced a field-level diff; the plain banner remains the
+    // fallback for legacy providers (and post-reload turns, where the diff
+    // is not persisted in the message history).
+    const revealingPrefChanges = !prefDismissed && (prefChanges !== null || prefUndoState === 'done');
+
+    const showsProposal = !!prefProposal && !prefDismissed;
+    const showsSearchApplied = prefSearchApplied !== null && !prefDismissed && !prefProposal;
+    const showsBanner = !revealingPrefChanges && revealingPrefs;
+    const hasPrefNotice = showsProposal || showsSearchApplied || revealingPrefChanges || revealingPrefs;
+    // Which notices show, each with its own anchor (issue #483).
+    const shownNotices: {kind: string; afterId: number | null}[] = [];
+    if (showsProposal) shownNotices.push({kind: 'proposal', afterId: prefAnchors.proposal});
+    if (showsSearchApplied) shownNotices.push({kind: 'search', afterId: prefAnchors.search});
+    if (revealingPrefChanges) shownNotices.push({kind: 'changes', afterId: prefAnchors.changes});
+    if (showsBanner) shownNotices.push({kind: 'banner', afterId: prefAnchors.banner});
+    // What a notice's arrival, or a change of its state, adds under the reply (issue #483).
+    const prefNoticeKey = hasPrefNotice
+        ? [Array.from(new Set(shownNotices.map((n) => n.afterId))).join('+'), !!prefProposal, prefProposalState, prefSearchApplied !== null, prefChanges !== null, prefUndoState, revealingPrefs].join('.')
+        : '';
+    // Which notices they are: each one's kind and anchor, without the states inside it.
+    const noticeIdentity = shownNotices
+        .map((n) => `${n.kind === 'changes' && prefUndoState === 'done' ? 'undone' : n.kind}@${n.afterId}`)
+        .join(',');
     const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: messages.length,
@@ -432,7 +472,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         pending,
         loading,
         // What can arrive under the last message after it has been followed.
-        contentKey: [availability?.state ?? '', newestActionsId ?? '', lastMessage?.delivery_state ?? '', retryKey ?? ''].join('|'),
+        contentKey: [availability?.state ?? '', newestActionsId ?? '', lastMessage?.delivery_state ?? '', retryKey ?? '', prefNoticeKey].join('|'),
+        noticeKey: noticeIdentity,
         footerKey: initError,
     });
 
@@ -574,6 +615,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setConversationId(data.id);
                 setMessages(data.messages);
                 setPreferencesChanged(data.preferences_changed);
+                if (data.preferences_changed) setPrefAnchors((a) => ({...a, banner: lastAssistantIdOf(data.messages)}));
                 reconcileDurableState(data);
                 adoptPendingDraft(data.id);
                 setLoading(false);
@@ -637,6 +679,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefProposalError(null);
         setPrefProposalErrorType(null);
         setPrefSearchApplied(null);
+        setPrefAnchors(NO_PREF_ANCHORS);
         setPrioritiesEditorOpen(null);
         if (effectiveAuthenticated) {
             // Force the resume effect to re-run so the (possibly different)
@@ -649,7 +692,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Announce new assistant content to assistive tech.
     React.useEffect(() => {
         if (historyRef.current) {
-            const last = historyRef.current.lastElementChild;
+            // The newest article, not the log's last child: a notice may follow it.
+            const articles = Array.from(historyRef.current.children).filter((el) => el.tagName === 'ARTICLE');
+            const last = articles[articles.length - 1];
             if (last instanceof HTMLElement) {
                 last.setAttribute('aria-live', 'polite');
             }
@@ -728,6 +773,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         targetId: number,
         turnKey: string,
     ): Promise<'present' | 'absent' | 'gone' | 'unknown'> => {
+        // The account or the conversation can change while the answer is on
+        // its way: it must never be written into the view that replaced it.
+        const epoch = purgeEpochRef.current;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${targetId}/`);
             if (res.status === 404) {
@@ -738,8 +786,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             }
             if (!res.ok) return 'unknown';
             const data = (await res.json()) as Conversation;
+            if (purgeEpochRef.current !== epoch || conversationIdRef.current !== targetId) return 'unknown';
             setMessages(data.messages);
             setPreferencesChanged(data.preferences_changed);
+            if (data.preferences_changed) setPrefAnchors((a) => ({...a, banner: lastAssistantIdOf(data.messages)}));
             const known = data.messages.some(
                 (m) => m.role === 'user' && m.idempotency_key === turnKey,
             );
@@ -773,7 +823,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
-    const ensureConversation = async (createNew: boolean): Promise<number> => {
+    // Resolves to null when the account changed while the request was out:
+    // the answer belongs to the previous account and is written nowhere.
+    const ensureConversation = async (createNew: boolean): Promise<number | null> => {
+        const epoch = purgeEpochRef.current;
         const body = createNew ? {create_new: true} : {};
         const res = await csrfFetch('/api/agent/conversations/', {
             method: 'POST',
@@ -783,6 +836,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             throw new Error('start-failed');
         }
         const data = (await res.json()) as Conversation;
+        if (purgeEpochRef.current !== epoch) return null;
         setConversationId(data.id);
         setMessages(data.messages);
         return data.id;
@@ -799,6 +853,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (turnConversationId == null || (pendingRef.current && !opts?.retriedAfterClose && !opts?.withoutContext)) return;
         pendingRef.current = true;
         keepDraftRef.current = false;
+        // The failed-send state belongs to the account and conversation that made it.
+        const sendEpoch = purgeEpochRef.current;
+        const sentTurn = {content, key, epoch: sendEpoch, conversationId: turnConversationId};
+        const viewChanged = () => purgeEpochRef.current !== sendEpoch || conversationIdRef.current !== turnConversationId;
         // Context this turn was sent under (issue #479): compared with the
         // live context when the reply lands.
         // A retry of the same turn is re-grounded on the page it was first asked
@@ -964,6 +1022,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     if (!opts?.retriedAfterClose) {
                         try {
                             const newId = await ensureConversation(false);
+                            // The account changed during the lookup: nothing of this send is written or replayed.
+                            if (newId === null) return;
                             clearInflightTurn(turnConversationId, key);
                             // Adopt the new conversation synchronously so the
                             // replay's stale-conversation guard accepts it.
@@ -977,9 +1037,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                             // Recovery failed; surface the original error below.
                         }
                     }
+                    if (viewChanged()) return;
                     setError(serverMsg);
                     setErrorType(serverType);
-                    lastSent.current = {content, key};
+                    lastSent.current = sentTurn;
                     setRetrying(true);
                     return;
                 }
@@ -1001,7 +1062,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     // honest exhausted state below).
                     setErrorType(serverType);
                     setError(serverMsg);
-                    lastSent.current = {content, key};
+                    lastSent.current = sentTurn;
                     setRetrying(true);
                     setMessages((prev) => prev.map(
                         (m) => (m === (existingUser || optimisticUser)
@@ -1014,6 +1075,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 // server received the request is uncertain. The server is
                 // the source of truth — reconcile now instead of guessing.
                 const outcome = await reconcileWithServer(turnConversationId, key);
+                if (viewChanged()) return;
                 if (outcome === 'absent') {
                     handleConfirmedUnsent(
                         'Your message may not have been sent. It has been kept as a draft below.',
@@ -1030,7 +1092,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 // state is rendered; let the turn's own panel speak.
                 setError(serverMsg);
                 setErrorType(serverType || null);
-                lastSent.current = {content, key};
+                lastSent.current = sentTurn;
                 setRetrying(true);
                 return;
             }
@@ -1092,6 +1154,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             if (data.preferences_changed) {
                 setPreferencesChanged(true);
                 setPrefDismissed(false);
+                setPrefAnchors((a) => ({...a, banner: data.message.id}));
             }
             // Issue #466 review: adopt the read-only proposal when the server
             // surfaced one; the user applies or dismisses it explicitly.
@@ -1102,6 +1165,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setPrefProposalErrorType(null);
                 setPrefSearchApplied(null);
                 setPrefDismissed(false);
+                setPrefAnchors((a) => ({...a, proposal: data.message.id}));
             }
             clearInflightTurn(turnConversationId, key);
             writeComposerDraft(turnConversationId, '');
@@ -1115,6 +1179,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 // Honest cancel semantics: stopping only stops the client's
                 // wait. Ask the server what actually happened to the turn.
                 const outcome = await reconcileWithServer(turnConversationId, key);
+                if (viewChanged()) return;
                 if (outcome === 'absent') {
                     handleConfirmedUnsent(
                         'Stopped before the message was sent. It has been kept as a draft below.',
@@ -1132,13 +1197,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setError(
                     'Stopped waiting. The response will appear when it is ready — use "Check for response" below.',
                 );
-                lastSent.current = {content, key};
+                lastSent.current = sentTurn;
                 setRetrying(true);
                 return;
             }
             // Network-level failure: whether the server received the request
             // is unknown; reconcile against the server instead of guessing.
             const outcome = await reconcileWithServer(turnConversationId, key);
+            if (viewChanged()) return;
             if (outcome === 'absent') {
                 handleConfirmedUnsent(
                     'Your message may not have been sent. It has been kept as a draft below.',
@@ -1152,7 +1218,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 return;
             }
             setError(e instanceof Error ? e.message : 'Something went wrong.');
-            lastSent.current = {content, key};
+            lastSent.current = sentTurn;
             setRetrying(true);
         } finally {
             abortRef.current = null;
@@ -1189,12 +1255,18 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // turn when it now reports a futile state. The notice is already updated
     // by refreshStatus; a failed check (null) proceeds with the send.
     const submitTurn = async (content: string) => {
+        const submitEpoch = purgeEpochRef.current;
         const status = await refreshStatus();
+        // The account changed while the status was being checked: this question is not theirs to send.
+        if (purgeEpochRef.current !== submitEpoch) return;
         if (status && isGatedState(status.state)) return;
         let targetId = conversationId;
         if (targetId === null) {
             try {
-                targetId = await ensureConversation(true);
+                const created = await ensureConversation(true);
+                // The account changed while the conversation was being created: this question is not theirs to send.
+                if (created === null) return;
+                targetId = created;
                 conversationIdRef.current = targetId;
             } catch {
                 setInitError('Could not start a conversation. Please try again.');
@@ -1273,7 +1345,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const handleRetry = async () => {
         const sent = lastSent.current;
-        if (!sent) return;
+        // A send from another account or conversation is never replayed into this one.
+        if (!sent || sent.epoch !== purgeEpochRef.current || sent.conversationId !== conversationIdRef.current) return;
         setRetrying(false);
         setError(null);
         setErrorType(null);
@@ -1311,6 +1384,21 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
+    // A new or deleted conversation leaves none of the old one's notices behind.
+    const clearPrefNotices = () => {
+        setPrefChanges(null);
+        setPrefUndoToken(null);
+        setPrefUndoState('idle');
+        setPrefUndoError(null);
+        setPrefUndoErrorType(null);
+        setPrefProposal(null);
+        setPrefProposalState('idle');
+        setPrefProposalError(null);
+        setPrefProposalErrorType(null);
+        setPrefSearchApplied(null);
+        setPrefAnchors(NO_PREF_ANCHORS);
+    };
+
     const handleReset = async (): Promise<string | null> => {
         if (!conversationId) return null;  // # pragma: no cover - menu item is disabled without a conversation
         try {
@@ -1325,10 +1413,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             surfacedDraftRef.current = null;
             sentSnapshots.current.clear();
             setConversationId(data.id);
+            // Adopt it now: an answer for the archived conversation that lands
+            // before the next render must already read as stale.
+            conversationIdRef.current = data.id;
             setMessages([]);
             setPreferencesChanged(false);
             setPrefDismissed(false);
+            clearPrefNotices();
             setError(null);
+            lastSent.current = null;
+            setRetrying(false);
             focusAfterHistoryAction();
             return null;
         } catch {
@@ -1346,10 +1440,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             surfacedDraftRef.current = null;
             sentSnapshots.current.clear();
             setConversationId(null);
+            conversationIdRef.current = null;
             setMessages([]);
             setPreferencesChanged(false);
             setPrefDismissed(false);
+            clearPrefNotices();
             setError(null);
+            lastSent.current = null;
+            setRetrying(false);
             focusAfterHistoryAction();
             return null;
         } catch {
@@ -1366,18 +1464,23 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefUndoError(null);
         setPrefUndoErrorType(null);
         const epoch = purgeEpochRef.current;
-        const purged = () => purgeEpochRef.current !== epoch;
+        const targetId = conversationIdRef.current;
+        // A purge, New conversation or Delete while the answer is on its way: it belongs to a view that is gone.
+        const accountChanged = () => purgeEpochRef.current !== epoch;
+        const purged = () => accountChanged() || conversationIdRef.current !== targetId;
         try {
             const res = await csrfFetch('/api/agent/preferences/undo/', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({undo: prefUndoToken}),
             });
-            if (purged()) return;
+            if (accountChanged()) return;
             if (res.ok) {
                 const undone = await res.json().catch(() => null);
-                if (purged()) return;
+                if (accountChanged()) return;
+                // The saved priorities changed whichever conversation is open now.
                 if (typeof undone?.revision === 'number') setPrioritiesRevision(undone.revision);
+                if (purged()) return;
                 setPrefUndoState('done');
                 setPrefChanges(null);
                 setPrefUndoToken(null);
@@ -1425,7 +1528,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefProposalError(null);
         setPrefProposalErrorType(null);
         const epoch = purgeEpochRef.current;
-        const purged = () => purgeEpochRef.current !== epoch;
+        const targetId = conversationIdRef.current;
+        const proposalAnchor = prefAnchors.proposal;
+        // A purge, New conversation or Delete while the answer is on its way: it belongs to a view that is gone.
+        const accountChanged = () => purgeEpochRef.current !== epoch;
+        const purged = () => accountChanged() || conversationIdRef.current !== targetId;
         try {
             const res = await csrfFetch('/api/agent/preferences/apply/', {
                 method: 'POST',
@@ -1435,23 +1542,27 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     decision,
                 }),
             });
-            if (purged()) return;
+            if (accountChanged()) return;
             if (res.ok) {
                 const data = await res.json();
+                if (accountChanged()) return;
+                // The saved priorities changed whichever conversation is open now.
+                if (data.scope !== 'search' && typeof data.revision === 'number') setPrioritiesRevision(data.revision);
                 if (purged()) return;
                 if (data.scope === 'search') {
                     // This-search-only: never saved; show the confirmation
                     // with the number of matches the temporary filter found.
                     const matchCount = data.matches?.job_matches?.length || 0;
                     setPrefSearchApplied(matchCount);
+                    setPrefAnchors((a) => ({...a, search: proposalAnchor}));
                 } else {
+                    setPrefAnchors((a) => ({...a, changes: proposalAnchor}));
                     setPrefChanges(data.changes || []);
                     setPrefUndoToken(data.undo || null);
                     setPrefUndoState('idle');
                     setPrefUndoError(null);
                     setPrefUndoErrorType(null);
                     setPreferencesChanged(true);
-                    if (typeof data.revision === 'number') setPrioritiesRevision(data.revision);
                 }
                 setPrefProposal(null);
                 setPrefProposalState('idle');
@@ -1481,12 +1592,104 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
-    const revealingPrefs = preferencesChanged && !prefDismissed;
-    // Issue #466: the detailed diff notice supersedes the plain banner when
-    // the turn surfaced a field-level diff; the plain banner remains the
-    // fallback for legacy providers (and post-reload turns, where the diff
-    // is not persisted in the message history).
-    const revealingPrefChanges = !prefDismissed && (prefChanges !== null || prefUndoState === 'done');
+    const proposalNode = prefProposal && showsProposal && (
+        <PreferenceProposalNotice
+            proposal={prefProposal}
+            state={prefProposalState}
+            error={prefProposalError}
+            errorType={prefProposalErrorType}
+            onDecision={handlePreferenceProposalDecision}
+            onReview={() => {
+                // Stale-conflict recovery: reopen the proposal in the
+                // inline editor, to re-review against the latest (issue #480).
+                setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
+            }}
+            onEdit={() => {
+                setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
+                // Keep the proposal while part of it cannot be shown in the editor.
+                if (patchFitsEditor(prefProposal.token.patch)) setPrefProposal(null);
+            }}
+            onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
+        />
+    );
+
+    const searchNode = prefSearchApplied !== null && showsSearchApplied && (
+        <div className="alert alert-info pref-change-notice" role="status"
+             aria-label="Temporary search filter applied" data-testid="preference-search-applied">
+            <div className="pref-change-header">
+                <span className="pref-change-summary">
+                    <i className="fa-solid fa-filter me-1" aria-hidden="true"></i>
+                    Applied to this search only — not saved to your preferences
+                    {prefSearchApplied > 0 ? ` (${prefSearchApplied}${prefSearchApplied >= MATCH_CAP ? '+' : ''} matches)` : ''}.
+                </span>
+                <button type="button" className="pref-change-dismiss" aria-label="Dismiss search filter notice"
+                        onClick={() => {
+                            setPrefSearchApplied(null);
+                            setPrefDismissed(true);
+                        }}>
+                    <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+                </button>
+            </div>
+        </div>
+    );
+
+    const changesNode = revealingPrefChanges && (
+        <PreferenceChangeNotice
+            changes={prefChanges || []}
+            undoState={prefUndoState}
+            undoError={prefUndoError}
+            undoErrorType={prefUndoErrorType}
+            onUndo={handleUndoPreferenceChange}
+            onDismiss={() => {
+                setPrefDismissed(true);
+                // The change is acknowledged: no plain banner returns under a later reply.
+                setPreferencesChanged(false);
+                setPrefChanges(null);
+                setPrefUndoToken(null);
+                setPrefUndoState('idle');
+                setPrefUndoError(null);
+                setPrefUndoErrorType(null);
+            }}
+            onReview={() => {
+                // Stale-conflict recovery: review the current
+                // priorities in the inline editor (issue #480).
+                setPrioritiesEditorOpen(prioritiesSurface());
+            }}
+        />
+    );
+
+    const bannerNode = showsBanner && (
+        <div className="alert alert-success chat-pref-alert d-flex justify-content-between align-items-center"
+             role="status" aria-label="Preference update" aria-describedby="preference-update-help">
+            <span>
+                <i className="fa-solid fa-circle-check me-1"></i>
+                Preferences updated.
+            </span>
+            <span id="preference-update-help" className="visually-hidden">
+                You can correct or remove a preference by telling the assistant what to change.
+            </span>
+            <button type="button" className="pref-change-dismiss" aria-label="Dismiss preference notice"
+                    onClick={() => setPrefDismissed(true)}>
+                <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+    );
+    const nodeOfKind: Record<string, React.ReactNode> = {
+        proposal: proposalNode, search: searchNode, changes: changesNode, banner: bannerNode,
+    };
+    const prefNotices = shownNotices.map((n) => ({...n, node: nodeOfKind[n.kind]}));
+    // An anchor goes with its notice.
+    React.useEffect(() => {
+        setPrefAnchors((a) => {
+            const next = {
+                proposal: prefProposal ? a.proposal : null,
+                changes: prefChanges !== null || prefUndoState === 'done' ? a.changes : null,
+                search: prefSearchApplied !== null ? a.search : null,
+                banner: preferencesChanged ? a.banner : null,
+            };
+            return (Object.keys(next) as (keyof PrefNoticeAnchors)[]).every((k) => next[k] === a[k]) ? a : next;
+        });
+    }, [prefProposal, prefChanges, prefUndoState, prefSearchApplied, preferencesChanged]);
 
     return (
         <section className="card bg-dark d-flex flex-column" data-testid="job-search-chat"
@@ -1506,85 +1709,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             </div>
 
             <div className="card-body d-flex flex-column" style={{minHeight: 0}}>
-                {prefProposal && !prefDismissed && (
-                    <PreferenceProposalNotice
-                        proposal={prefProposal}
-                        state={prefProposalState}
-                        error={prefProposalError}
-                        errorType={prefProposalErrorType}
-                        onDecision={handlePreferenceProposalDecision}
-                        onReview={() => {
-                            // Stale-conflict recovery: reopen the proposal in the
-                            // inline editor, to re-review against the latest (issue #480).
-                            setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
-                        }}
-                        onEdit={() => {
-                            setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
-                            // Keep the proposal while part of it cannot be shown in the editor.
-                            if (patchFitsEditor(prefProposal.token.patch)) setPrefProposal(null);
-                        }}
-                        onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
-                    />
-                )}
-
-                {prefSearchApplied !== null && !prefDismissed && !prefProposal && (
-                    <div className="alert alert-info pref-change-notice" role="status"
-                         aria-label="Temporary search filter applied" data-testid="preference-search-applied">
-                        <div className="pref-change-header">
-                            <span className="pref-change-summary">
-                                <i className="fa-solid fa-filter me-1" aria-hidden="true"></i>
-                                Applied to this search only — not saved to your preferences
-                                {prefSearchApplied > 0 ? ` (${prefSearchApplied}${prefSearchApplied >= MATCH_CAP ? '+' : ''} matches)` : ''}.
-                            </span>
-                            <button type="button" className="pref-change-dismiss" aria-label="Dismiss search filter notice"
-                                    onClick={() => {
-                                        setPrefSearchApplied(null);
-                                        setPrefDismissed(true);
-                                    }}>
-                                <i className="fa-solid fa-xmark" aria-hidden="true"></i>
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {revealingPrefChanges && (
-                    <PreferenceChangeNotice
-                        changes={prefChanges || []}
-                        undoState={prefUndoState}
-                        undoError={prefUndoError}
-                        undoErrorType={prefUndoErrorType}
-                        onUndo={handleUndoPreferenceChange}
-                        onDismiss={() => {
-                            setPrefDismissed(true);
-                            setPrefChanges(null);
-                            setPrefUndoToken(null);
-                            setPrefUndoState('idle');
-                            setPrefUndoError(null);
-                            setPrefUndoErrorType(null);
-                        }}
-                        onReview={() => {
-                            // Stale-conflict recovery: review the current
-                            // priorities in the inline editor (issue #480).
-                            setPrioritiesEditorOpen(prioritiesSurface());
-                        }}
-                    />
-                )}
-
-                {!revealingPrefChanges && revealingPrefs && (
-                    <div className="alert alert-success chat-pref-alert d-flex justify-content-between align-items-center"
-                         role="status" aria-label="Preference update" aria-describedby="preference-update-help">
-                        <span>
-                            <i className="fa-solid fa-circle-check me-1"></i>
-                            Preferences updated.
-                        </span>
-                        <span id="preference-update-help" className="visually-hidden">
-                            You can correct or remove a preference by telling the assistant what to change.
-                        </span>
-                        <button type="button" className="btn-close" aria-label="Dismiss preference notice"
-                                onClick={() => setPrefDismissed(true)}></button>
-                    </div>
-                )}
-
                 {!effectiveAuthenticated && (
                     // Signed-out introduction (issue #465 AC-2/AC-6): mirrors
                     // the server-rendered block above the card (present
@@ -1628,6 +1752,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     turnActions={turnActions}
                     newestActionsId={newestActionsId}
                     lastAssistantId={lastAssistantId}
+                    notices={prefNotices}
                     availability={availability}
                     retryKey={retryKey}
                     pending={pending}
@@ -1647,29 +1772,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     {showJumpToLatest && (
                         <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
                     )}
-                    <div className="chat-footer-notices">
-                        {assistantStatus && (
-                            <AssistantStatusNotice
-                                status={assistantStatus}
-                                checking={statusChecking}
-                                onRetry={() => { void refreshStatus(); }}
-                            />
-                        )}
-
-                        {error && (
-                            <div className="alert alert-danger d-flex justify-content-between align-items-center"
-                                 role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
-                                <span className="flex-grow-1 me-2">{error}</span>
-                                {retrying && (
-                                    <button type="button"
-                                            className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap chat-focus"
-                                            onClick={handleRetry} disabled={pending} data-testid="retry-button">
-                                        Retry
-                                    </button>
-                                )}
-                            </div>
-                        )}
-                    </div>
+                    <FooterNotices
+                        status={assistantStatus}
+                        statusChecking={statusChecking}
+                        onStatusRetry={() => { void refreshStatus(); }}
+                        error={error}
+                        errorType={errorType}
+                        retrying={retrying}
+                        pending={pending}
+                        onRetry={handleRetry}
+                    />
 
                     <Composer
                         textareaRef={composerRef}

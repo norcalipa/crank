@@ -456,6 +456,106 @@ describe('company view visual review round 3 (issue #486)', () => {
     });
 });
 
+describe('company view fit and open jobs (issue #486c)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
+    const rule = (selector: string): string => {
+        const start = section.indexOf(`${selector} {`);
+        expect(start).toBeGreaterThanOrEqual(0);
+        return section.slice(start, section.indexOf('}', start));
+    };
+
+    test('a fit that is being read again is dimmed without changing its height, and the loading placeholder is not', () => {
+        const dim = rule('.company-fit [aria-busy="true"]:not([role="status"])');
+        expect(dim).toMatch(/opacity:\s*\.75;/);
+        expect(dim).not.toMatch(/height|display|visibility/);
+    });
+
+    test('the new rules live inside the #486 section and use no raw z-index', () => {
+        expect(section).toContain('.company-fit-figures');
+        expect(section).toContain('.company-job-row');
+        expect(section.slice(section.indexOf('Fit and open jobs'))).not.toMatch(/z-index/);
+    });
+
+    test('the three figures stack as label / value rows when the view is narrow', () => {
+        expect(rule('.company-fit-figures')).toContain('repeat(3, minmax(0, 1fr))');
+        const narrow = section.slice(section.indexOf('@container company-view (max-width: 28rem) {\n    .company-fit-figures'));
+        expect(narrow).toContain('grid-template-columns: minmax(0, 1fr)');
+    });
+
+    test('rows wrap and long text breaks, so nothing overflows sideways', () => {
+        expect(rule('.company-fit-row,\n.company-job-row')).toContain('flex-wrap: wrap');
+        for (const selector of ['.company-fit-label', '.company-fit-value', '.company-job-meta']) {
+            expect(rule(selector)).toContain('min-width: 0');
+            expect(rule(selector)).toContain('overflow-wrap: anywhere');
+        }
+    });
+
+    test('a stand-alone link in the sections is at least 44px high', () => {
+        const link = section.slice(section.indexOf('.company-job-link,'));
+        expect(link).toContain('min-height: 44px');
+        expect(link).toContain("[data-testid='fit-sign-in']");
+    });
+
+    test('the action row wraps so View jobs sits beside Ask or under it', () => {
+        expect(rule('.company-view .popup-company-actions')).toContain('flex-wrap: wrap');
+    });
+});
+
+describe('company view visual review round 1 fixes (issue #486c)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'), popupCss.indexOf('/* end issue #486 company view */'));
+    const body = (selector: string, from = section): string => {
+        const start = from.indexOf(`${selector} {`);
+        expect(start).toBeGreaterThanOrEqual(0);
+        return from.slice(start, from.indexOf('}', start));
+    };
+
+    test('a jump heading clears the phone top bar, at the breakpoint where the top bar is shown', () => {
+        expect(body('.company-view .company-jump-heading')).toContain('scroll-margin-top: 1rem');
+        // The top bar's own rule is the max-width 767.98px query higher up.
+        const phones = section.slice(section.indexOf('@media (max-width: 767.98px) {\n    .company-view .company-jump-heading'));
+        expect(body('.company-view .company-jump-heading', phones)).toContain('scroll-margin-top: 4.5rem');
+        expect(popupCss.indexOf('.app-mobile-topbar {\n        position: sticky')).toBeGreaterThan(0);
+    });
+
+    test('a jump heading reached from the keyboard shows a ring that outranks the old outline:none', () => {
+        const ring = body('.company-view h3.company-jump-heading[tabindex]:focus-visible');
+        expect(ring).toMatch(/outline:\s*2px solid/);
+        expect(ring).not.toContain('outline: none');
+        expect(popupCss).toContain('.popup-details h3[tabindex="-1"]:focus {\n    outline: none;');
+        expect(popupCss.indexOf('.popup-details h3[tabindex="-1"]:focus {')).toBeLessThan(popupCss.indexOf('/* issue #486 company view */'));
+    });
+
+    test('the two jump buttons share one row on phones', () => {
+        expect(body('.company-view .popup-company-jumps')).toContain('display: flex');
+        const phones = section.slice(section.indexOf('@media (max-width: 767.98px) {\n    .company-view .popup-company-jumps'));
+        expect(body('.company-view .popup-company-jumps', phones)).toContain('flex: 1 1 100%');
+        expect(body('.company-view .popup-company-jumps .btn', phones)).toContain('white-space: nowrap');
+    });
+
+    test('a value sits near its label, and the three numbers share a baseline', () => {
+        expect(body('.company-fit-label')).toContain('flex: 0 1 14rem');
+        expect(body('.company-fit-figures .job-match-figure')).toContain('justify-content: space-between');
+    });
+
+    test('a limit on what a fact covers is in a colour that is not the muted one', () => {
+        expect(body('.company-view .evidence-scope-limited')).toContain('color: #f5c26b');
+        expect(body('.company-fit-out-of-scope')).toContain('color: #f5c26b');
+    });
+
+    test('the assistant card\'s in-app action is bordered and semibold; Website stays a link', () => {
+        const rule = body('.org-card .org-card-view-company');
+        expect(rule).toContain('border: 1px solid currentColor');
+        expect(rule).toContain('font-weight: 600');
+    });
+
+    test('the disclosure summary and the no-link note are 44px high', () => {
+        expect(body('.company-fit-legend .how-ranking-works-summary')).toContain('min-height: 44px');
+        expect(body('.company-job-no-link')).toContain('min-height: 44px');
+    });
+});
+
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const containerBlock = popupCss.match(/@container organization-results \(max-width: 56rem\) \{[\s\S]*?\n\}\n/)![0];
@@ -601,6 +701,101 @@ describe('one transcript scroller in the assistant panel (issue #483)', () => {
 
     it('keeps the docked transcript box clear of the composer band, except on short panels', () => {
         expect(popupCss).toMatch(/@media \(min-width: 768px\) and \(min-height: 481px\) \{\s*\.assistant-panel #job-search-chat \.chat-transcript\s*\{\s*margin-bottom:\s*\.5rem;/);
+    });
+});
+
+describe('notices in the transcript and collapsing footer notices (issue #483)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = Array.from(popupCss.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+        .map(([, selector, declarations]) => ({selector: selector.trim().replace(/\s+/g, ' '), declarations}));
+    const declared = (selector: string): string => {
+        const found = rules.filter((r) => r.selector === selector);
+        expect(found.length).toBeGreaterThan(0);
+        return found.map((r) => r.declarations).join('\n');
+    };
+
+    it('stacks the diff rows of a notice in the transcript, so a value never sits in a sliver beside its name', () => {
+        const item = declared('#job-search-chat .chat-transcript-notice .pref-change-item');
+        expect(item).toMatch(/display:\s*flex;/);
+        expect(item).toMatch(/flex-direction:\s*column;/);
+    });
+
+    it('wraps the notice\'s actions and keeps each label whole', () => {
+        expect(declared('#job-search-chat .chat-transcript-notice .chat-actions')).toMatch(/flex-wrap:\s*wrap;/);
+        const button = declared('#job-search-chat .chat-transcript-notice .chat-btn');
+        expect(button).toMatch(/flex:\s*0 0 auto;/);
+        expect(button).toMatch(/white-space:\s*nowrap;/);
+    });
+
+    it('clamps a collapsed error to two lines, on the one element that holds its whole text', () => {
+        const text = declared('#job-search-chat .chat-footer-notices.is-collapsed .chat-error-text');
+        expect(text).toMatch(/-webkit-line-clamp:\s*2;/);
+        expect(text).toMatch(/overflow:\s*hidden;/);
+        expect(text).toMatch(/line-height:\s*1\.25;/);
+        expect(text).not.toMatch(/nowrap/);
+        // Nothing hides the error itself; a folded status notice keeps only its title in the row.
+        expect(popupCss).not.toMatch(/\.chat-error-(?:text|alert|row)[^{]*\{[^}]*display:\s*none/);
+        const folded = '#job-search-chat .chat-footer-notices.is-collapsed';
+        expect(declared(`${folded} .assistant-status-icon, ${folded} .assistant-status-body, ${folded} .assistant-status-notice-actions`))
+            .toMatch(/display:\s*none !important;/);
+        expect(declared(`${folded} [data-testid='assistant-status-notice']`)).not.toMatch(/display:\s*none/);
+    });
+
+    it('sits a notice closer to the reply that produced it than to the next message', () => {
+        expect(declared('#job-search-chat .chat-transcript-notice')).toMatch(/margin:\s*0 0 1rem;/);
+    });
+
+    it('takes the docked log\'s 16px turn gap back above a notice', () => {
+        expect(declared('body.assistant-docked #job-search-chat [role=\'log\'] > .chat-transcript-notice')).toMatch(/margin:\s*-1rem 0 0;/);
+    });
+
+    it('keeps the toggle at the bottom right of the row whether collapsed or expanded', () => {
+        expect(declared('#job-search-chat .chat-footer-notices.is-collapsed > .chat-notices-toggle')).toMatch(/align-self:\s*flex-end;/);
+    });
+
+    it('scrolls a control reached with Tab clear of the jump pill', () => {
+        expect(declared('#job-search-chat .chat-transcript')).toMatch(/scroll-padding-bottom:\s*4\.5rem;/);
+    });
+
+    it('gives the plain banner a 44px close button like the other notices, and a wrapped value keeps its arrow', () => {
+        expect(declared('#job-search-chat .chat-transcript-notice .alert.chat-pref-alert')).toMatch(/min-height:\s*44px;/);
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-arrow')).toMatch(/display:\s*none;/);
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new::before')).toMatch(/content:/);
+        // A list of chips carries the arrow on its first chip, so the arrow wraps with it.
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new > .pref-change-token:first-child::before')).toMatch(/position:\s*absolute;/);
+        expect(declared('#job-search-chat .chat-transcript-notice .pref-change-new:has(> .pref-change-token)::before')).toMatch(/display:\s*none;/);
+    });
+
+    it('keeps the toggle a 44px target, the last row of the area, right-aligned while the error is expanded', () => {
+        expect(declared('#job-search-chat .chat-notices-toggle')).toMatch(/min-block-size:\s*44px;/);
+        expect(declared('#job-search-chat .chat-footer-notices:not(.is-collapsed) > .chat-notices-toggle'))
+            .toMatch(/align-self:\s*flex-end;/);
+        // The details scroll above it; the toggle itself is never inside that scroll.
+        expect(declared('.chat-footer-notices .chat-notices-body')).toMatch(/overflow-y:\s*auto;/);
+        expect(declared('.chat-footer-notices')).toMatch(/flex-direction:\s*column;/);
+    });
+
+    it('leaves the folded status notice unpositioned so it is never painted over Retry (no z-index: the layer tokens stay the contract)', () => {
+        const folded = declared('#job-search-chat .chat-footer-notices.is-collapsed [data-testid=\'assistant-status-notice\']');
+        expect(folded).toMatch(/(?:^|[\s;])position:\s*static;/);
+        expect(folded).not.toMatch(/z-index/);
+    });
+
+    it('keeps the expanded toggle inside the box Details had, so a second press cannot reach Retry', () => {
+        const toggle = declared('#job-search-chat .chat-footer-notices:not(.is-collapsed) > .chat-notices-toggle');
+        expect(toggle).toMatch(/inline-size:\s*min-content;/);
+        expect(toggle).toMatch(/white-space:\s*normal;/);
+    });
+
+    it('lets the error take a third line in the 300-340px drawer only, and sets the disclaimer in 11px type on the narrowest phones', () => {
+        expect(popupCss).toMatch(/@media \(min-width: 768px\) \{\s*@container assistant-panel \(max-width: 21\.5rem\) \{\s*#job-search-chat \.chat-footer-notices\.is-collapsed:not\(\.has-status\) \.chat-error-text \{\s*-webkit-line-clamp:\s*3;/);
+        expect(popupCss).toMatch(/@media \(max-width: 340px\) \{\s*#job-search-chat form \.chat-disclaimer \{\s*font-size:\s*\.6875rem;/);
+    });
+
+    it('keeps the expanded notices under the existing cap with an inner scroll', () => {
+        const notices = declared('.chat-footer-notices');
+        expect(notices).toMatch(/max-height:\s*var\(--chat-notices-max, 40dvh\);/);
+        expect(declared('.chat-footer-notices .chat-notices-body')).toMatch(/overflow-y:\s*auto;/);
     });
 });
 

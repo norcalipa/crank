@@ -3377,6 +3377,105 @@ body.assistant-open .app-content .table-responsive,
     margin-bottom: .5rem;
 }
 
+/* Preference notices sit in the log, under the reply that produced them. The
+   diff rows stack (name above values) whatever the width, so a value is never
+   squeezed into a sliver beside the name. */
+#job-search-chat .chat-transcript-notice {
+    /* The notice sits with the reply that produced it (8px, from the reply's own
+       margin) and clears the next message by more (1rem). */
+    margin: 0 0 1rem;
+}
+
+#job-search-chat .chat-transcript-notice .alert {
+    margin-bottom: 0;
+    padding: .75rem;
+}
+
+/* The plain banner has the notices' own 44px close button, like the other four. */
+#job-search-chat .chat-transcript-notice .alert.chat-pref-alert {
+    min-height: 44px;
+    padding: 0 0 0 .75rem;
+}
+
+/* Docked, the log has a 16px gap between turns: the notice takes it back above
+   (the reply's own 8px stays) and keeps it below. */
+@media (min-width: 1280px) {
+    body.assistant-docked #job-search-chat [role='log'] > .chat-transcript-notice {
+        margin: -1rem 0 0;
+    }
+}
+
+/* On the narrowest sheets the text column takes the room an even, smaller
+   padding gives it; the border stays. */
+@media (max-width: 340px) {
+    #job-search-chat .chat-transcript-notice .alert {
+        padding: .75rem .5rem;
+    }
+
+    #job-search-chat .chat-transcript-notice .pref-change-header {
+        column-gap: 4px;
+    }
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-item {
+    display: flex;
+    flex-direction: column;
+    gap: .125rem;
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-values {
+    min-width: 0;
+}
+
+/* A wrapped value keeps its arrow: the arrow is drawn in front of the new value
+   (inline, no break between them), not as a flex item that can end a line. */
+#job-search-chat .chat-transcript-notice .pref-change-arrow {
+    display: none;
+}
+
+/* A list of chips (never one text run) carries the arrow on its first chip, which
+   leaves room for it, so the arrow wraps with that chip. */
+#job-search-chat .chat-transcript-notice .pref-change-new:has(> .pref-change-token)::before {
+    display: none;
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-new > .pref-change-token:first-child {
+    position: relative;
+    margin-left: 1.25rem;
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-new > .pref-change-token:first-child::before {
+    content: "\f061";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    font-size: .75rem;
+    color: #7d948a;
+    position: absolute;
+    left: -1rem;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+#job-search-chat .chat-transcript-notice .pref-change-new::before {
+    content: "\f061";
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    font-size: .75rem;
+    color: #7d948a;
+    margin-right: .375rem;
+}
+
+/* The transcript is narrower than the notice used to be: the actions wrap
+   instead of squeezing a label into a sliver. */
+#job-search-chat .chat-transcript-notice .chat-actions {
+    flex-wrap: wrap;
+}
+
+#job-search-chat .chat-transcript-notice .chat-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
 #job-search-chat .chat-transcript-wrap {
     position: relative;
     display: flex;
@@ -3393,6 +3492,8 @@ body.assistant-open .app-content .table-responsive,
     min-height: 0;
     overflow-y: auto;
     margin-bottom: .25rem;
+    /* A control reached with Tab is scrolled clear of the jump pill's band. */
+    scroll-padding-bottom: 4.5rem;
 }
 
 @media (min-width: 768px) {
@@ -3427,14 +3528,175 @@ body.assistant-open .app-content .table-responsive,
     z-index: 2;
 }
 
-/* Footer notices (status plus a long error) never take more than 40% of the
-   card (--chat-notices-max, measured against the card or the panel); they
-   scroll inside instead of pushing the composer out (issue #483). */
+/* Footer notices (a status notice, the error of the last send) never take more
+   than 40% of the card (--chat-notices-max, measured against the card or the
+   panel); the details scroll inside instead of pushing the composer out
+   (issue #483). */
 .chat-footer-notices {
+    display: flex;
+    flex-direction: column;
     max-height: 40vh;
     max-height: var(--chat-notices-max, 40dvh);
+}
+
+.chat-footer-notices .chat-notices-body {
+    flex: 0 1 auto;
+    min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
+}
+
+/* The error. Until the reader asks for more it is a compact row: up to two
+   lines of text, its Retry, and a Details button when something is hidden. The
+   error stays one element holding its whole text; only the clamp is CSS. */
+#job-search-chat .chat-error-alert {
+    margin-bottom: 1rem;
+}
+
+#job-search-chat .chat-error-alert .chat-error-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+#job-search-chat .chat-notices-toggle {
+    flex: 0 0 auto;
+    min-block-size: 44px;
+    min-inline-size: 44px;
+}
+
+/* Compact: one row, the toggle beside the text, never taller than 56px. */
+#job-search-chat .chat-footer-notices.is-collapsed {
+    flex-direction: row;
+    align-items: center;
+    gap: .25rem;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed > .chat-notices-toggle {
+    padding-inline: .25rem;
+    /* Bottom-right in both states, so pressing it does not move it. */
+    align-self: flex-end;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .chat-notices-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: visible;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .chat-error-alert {
+    grid-row: 2;
+    margin-bottom: 0;
+    padding: 0 .25rem 0 .5rem;
+    min-height: 44px;
+}
+
+/* Retry stays 44px high and gives the row's width to the text. */
+#job-search-chat .chat-footer-notices.is-collapsed .chat-error-alert [data-testid='retry-button'] {
+    padding-inline: .25rem;
+    min-inline-size: 44px;
+    margin-left: .25rem !important;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .chat-error-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    font-size: .8125rem;
+    line-height: 1.25;
+}
+
+/* A status notice that is folded lends the row its title (its own element,
+   not a copy) above the error; the rest of it shows when expanded. */
+#job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] {
+    grid-row: 1;
+    margin: 0;
+    padding: .25rem .5rem 0 !important;
+    border-bottom: 0;
+    border-radius: .375rem .375rem 0 0;
+    font-size: .8125rem;
+    line-height: 1.25;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed.has-retry [data-testid='assistant-status-notice'] {
+    padding-right: 3.25rem !important;
+}
+
+/* The title is one line; it is cut with an ellipsis where the row is narrow. */
+#job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] > .d-flex,
+#job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] > .d-flex > div {
+    min-width: 0;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .assistant-status-title {
+    font-size: .75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed .assistant-status-icon,
+#job-search-chat .chat-footer-notices.is-collapsed .assistant-status-body,
+#job-search-chat .chat-footer-notices.is-collapsed .assistant-status-notice-actions {
+    /* Bootstrap's d-block and d-flex are !important. */
+    display: none !important;
+}
+
+/* With a title above it the text sits under it and Retry reaches up into the
+   title's row, so the whole block stays inside 56px. */
+#job-search-chat .chat-footer-notices.is-collapsed.has-status .chat-error-alert {
+    min-height: 0;
+    border-top: 0;
+    border-radius: 0 0 .375rem .375rem;
+}
+
+#job-search-chat .chat-footer-notices.is-collapsed.has-status .chat-error-alert [data-testid='retry-button'] {
+    align-self: flex-start;
+    margin-top: -1rem;
+}
+
+/* Expanded: the details scroll above the toggle, which is the last row of the
+   area, right-aligned, where Details was, and does not scroll. The error comes
+   first with its Retry at its top, then the status notice. */
+#job-search-chat .chat-footer-notices:not(.is-collapsed) .chat-notices-body {
+    flex: 0 1 auto;
+}
+
+#job-search-chat .chat-footer-notices:not(.is-collapsed) .chat-error-alert {
+    align-items: flex-start !important;
+}
+
+#job-search-chat .chat-footer-notices:not(.is-collapsed) > .chat-notices-toggle {
+    align-self: flex-end;
+    margin-top: .25rem;
+    /* As wide as its longest word ("Hide" over "details"): it stays inside the
+       box "Details" had, so a second press at the same point reaches the
+       toggle again and never the compact row's Retry. */
+    inline-size: min-content;
+    padding-inline: .25rem;
+    white-space: normal;
+    line-height: 1.15;
+}
+
+/* Retry reaches up into the folded status notice's row. Bootstrap makes every
+   alert position: relative and the status notice comes later in the DOM, so
+   it was painted over Retry's top 16px and took their presses. Unpositioned
+   it is painted under the error alert and its Retry. */
+#job-search-chat .chat-footer-notices.is-collapsed [data-testid='assistant-status-notice'] {
+    position: static;
+}
+
+/* The 300-340px drawer (windows 768-999px wide): the row's text column is
+   about 105px beside Retry and Details, so a third line lets a one-sentence
+   error read whole; three 13px lines are 49px, inside the 56px limit. */
+@media (min-width: 768px) {
+    @container assistant-panel (max-width: 21.5rem) {
+        #job-search-chat .chat-footer-notices.is-collapsed:not(.has-status) .chat-error-text {
+            -webkit-line-clamp: 3;
+        }
+    }
 }
 
 #job-search-chat .chat-jump-row .btn {
@@ -4509,6 +4771,14 @@ span.priority-chip-button { cursor: default; }
     padding-inline: .25rem;
 }
 
+/* The narrowest phones: 11px keeps the sentence on one line in the wider
+   font, which gives the transcript back the 16px of a second line. */
+@media (max-width: 340px) {
+    #job-search-chat form .chat-disclaimer {
+        font-size: .6875rem;
+    }
+}
+
 /* Short panels (a keyboard up, a phone on its side): the transcript gets the
    line the disclaimer takes. It stays for assistive technology and returns
    above 480px. */
@@ -5030,5 +5300,215 @@ span.priority-chip-button { cursor: default; }
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+/* Fit and open jobs (issue #486, part c). Both sections sit in the view's
+   flow; nothing in them is positioned or layered. Rows wrap instead of
+   clipping, so a long value or a wider fallback font never overflows. */
+.company-view .popup-company-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+}
+
+.company-fit,
+.company-jobs {
+    min-width: 0;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.company-fit-skeleton,
+.company-jobs-skeleton {
+    height: 4rem;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Fit, company score and coverage: three numbers, each with its own label. */
+.company-fit-figures {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .5rem .75rem;
+    max-width: 32rem;
+}
+
+.company-fit-figures .job-match-figure {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    min-width: 0;
+}
+
+.company-fit-figures .job-match-figure-label {
+    font-size: .75rem;
+    line-height: 1rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: rgba(248, 249, 250, 0.75);
+    overflow-wrap: anywhere;
+}
+
+.company-fit-figures .job-match-figure-value {
+    font-size: 1rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: #f8f9fa;
+}
+
+@container company-view (max-width: 28rem) {
+    .company-fit-figures {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .company-fit-figures .job-match-figure {
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: .75rem;
+    }
+}
+
+.company-fit-list,
+.company-jobs-list {
+    padding: 0;
+}
+
+.company-fit-row,
+.company-job-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .125rem .75rem;
+    padding: .5rem 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.company-fit-label {
+    flex: 0 1 14rem;
+    min-width: 0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.company-fit-value {
+    flex: 1 1 8rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.company-fit-meta {
+    flex: 1 1 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* A row whose fact does not cover the reader is one sentence where the value
+   would be. */
+.company-fit-out-of-scope {
+    flex: 1 1 8rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: #f5c26b;
+}
+
+/* A limit on what a fact covers reads in this colour, not the muted one. */
+.company-view .evidence-scope-limited {
+    color: #f5c26b;
+}
+
+.company-job-title {
+    flex: 1 1 100%;
+    min-width: 0;
+}
+
+.company-job-meta {
+    flex: 1 1 14rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* Links that stand alone in the new sections are controls: 44px high. */
+.company-job-link,
+:is([data-testid='fit-sign-in'], [data-testid='jobs-sign-in']) a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
+/* The headings a control moves focus to ("See your fit", "View jobs", the
+   evidence retry) clear the phone top bar when they scroll into view, and show
+   a ring when reached from the keyboard. This outranks
+   `.popup-details h3[tabindex="-1"]:focus` higher up in this file. */
+.company-view .company-jump-heading {
+    scroll-margin-top: 1rem;
+}
+
+@media (max-width: 767.98px) {
+    .company-view .company-jump-heading {
+        scroll-margin-top: 4.5rem;
+    }
+}
+
+.company-view h3.company-jump-heading[tabindex]:focus-visible {
+    outline: 2px solid #9ec5fe;
+    outline-offset: 4px;
+    border-radius: 2px;
+}
+
+/* The two jump buttons share one row. */
+.company-view .popup-company-jumps {
+    display: flex;
+    gap: .5rem;
+}
+
+@media (max-width: 767.98px) {
+    .company-view .popup-company-jumps {
+        flex: 1 1 100%;
+    }
+
+    .company-view .popup-company-jumps .btn {
+        flex: 1 1 0;
+        width: auto;
+        min-width: 0;
+        padding-inline: .5rem;
+        white-space: nowrap;
+    }
+}
+
+/* "What these labels mean" under the three numbers. */
+.company-fit-legend {
+    margin-bottom: 1rem;
+}
+
+.company-fit-legend .how-ranking-works-summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+}
+
+.company-job-link {
+    flex-wrap: wrap;
+    column-gap: .375rem;
+}
+
+/* A job without a link says so in the muted style. */
+.company-job-no-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
+
+/* The assistant's card: the in-app action is the stronger of its two links. */
+.org-card .org-card-view-company {
+    padding: 0 .75rem;
+    border: 1px solid currentColor;
+    border-radius: .375rem;
+    font-weight: 600;
+    text-decoration: none;
+}
+/* The fit is being read again after a saved change: what is on screen stays
+   (no change of height) but is dimmed, so it is not taken for current. The value
+   keeps every line of text at 4.5 to 1 or better (measured, issue #486). */
+.company-fit [aria-busy="true"]:not([role="status"]) {
+    opacity: .75;
 }
 /* end issue #486 company view */
