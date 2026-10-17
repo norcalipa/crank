@@ -12,6 +12,10 @@ Loads the acceptance fixtures described in
 - accepted / stale / conflicting ``CompanyProfileObservation`` evidence, with
   the accepted observation strictly the latest so the ordinary provenance
   surface returns it;
+- field-level ``CompanyFieldEvidence`` for the example company in every state
+  a usability session probes: accepted and fresh (``public_status``),
+  accepted but stale (``funding_round``), conflicted (``rto_policy``), and
+  one correctable field with no evidence at all (``accelerated_vesting``);
 - active / expired ``JobListing`` rows under an approved+enabled source;
 - ordinary and unknown-requirement ``JobMatch`` cases for a test account;
 - an ordinary test account (throwaway credential, documented in the baseline
@@ -20,7 +24,10 @@ Loads the acceptance fixtures described in
   explicit ``--staff-password`` provisioning flag, so no privileged
   credential is ever repo-known or reset implicitly.
 
-The command is idempotent (``get_or_create`` everywhere), refuses to run with
+The command is idempotent (``get_or_create`` everywhere; evidence timestamps
+are creation-scoped so a rerun changes nothing, and a ``staging-baseline-1``
+database is upgraded in place by adding the evidence rows and the ordinary
+match's stored requirements), refuses to run with
 ``ENV=prod``, and never touches approval policy of pre-existing sources other
 than creating its own approved+enabled fixture source.
 
@@ -37,20 +44,35 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.db.models import Max
 from django.utils import timezone
 
+from crank.agents.jobs.matching import evaluate_requirements, project_criteria
 from crank.management.commands.seed_job_sources import SEED_SOURCES
-from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.job import JobListing, JobSourceCatalog
-from crank.models.job_match import JobMatch
+from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
+from crank.models.preference import (
+    SCHEMA_VERSION,
+    UserPreference,
+    UserPreferenceAudit,
+    default_preferences,
+)
+from crank.services.company_evidence import field_evidence_payload, resolve_field_evidence
+from crank.services.match_recompute import RecomputeStatus, recompute_user
+from crank.services.preferences import _recreate_revision_floor, to_markdown
 from crank.settings.base import DEFAULT_ALGORITHM_ID
 
-#: Revision of this fixture set. Emitted by ``readiness_baseline`` as the
-#: fixture-set revision whenever the fixture markers are present; bump when
-#: the fixture rows below change shape or meaning.
-FIXTURE_REVISION = "staging-baseline-1"
+#: Revision of this fixture set. ``readiness_baseline`` reports it when the
+#: fixture markers are present and the example company holds field evidence;
+#: bump when the fixture rows below change shape or meaning.
+FIXTURE_REVISION = "staging-baseline-2"
+
+#: ``ranker_version`` of the matches this command writes; the real matcher
+#: never writes it, so ``readiness_baseline`` can tell them apart.
+FIXTURE_RANKER_VERSION = "staging-baseline"
 
 #: Throwaway staging credential for the *ordinary* (non-privileged) test
 #: account only. Never a real credential; documented in the baseline doc.
@@ -77,6 +99,71 @@ EXPIRED_LISTING_DAYS = 30
 #: accepted row, as the documented ordinary replay claims.
 CONFLICTED_OBSERVATION_HOURS_AGO = 1
 
+#: Field-level evidence rows (revision 2) are keyed on this validation version,
+#: so a rerun finds them and a ``staging-baseline-1`` database, which has none,
+#: gains them. ``public_status`` is the fresh accepted field (180-day window),
+#: ``funding_round`` is accepted but verified longer ago than its window,
+#: ``rto_policy`` is a conflicted claim awaiting review and
+#: ``accelerated_vesting`` deliberately has no evidence.
+EVIDENCE_VERSION = "staging-baseline-2"
+STALE_EVIDENCE_DAYS = 200
+
+#: What the ordinary match asks of the example company. The stored
+#: requirements come from the real evaluator over this document, so which
+#: requirement is verified, stale, profile-backed or unknown is decided by the
+#: product and the evidence rows above, not written by hand.
+MATCH_PREFERENCES = {
+    "compensation": {"require_public_company": True},
+    "funding_stage": ["public"],
+    "work_location": {"modes": ["hybrid"]},
+    "vesting": {"prefer_accelerated": True},
+}
+
+
+#: The fixture's evidence fields, in the order the end-of-run reading lists them.
+FIXTURE_FIELDS = (
+    CompanyFieldEvidence.FieldKey.PUBLIC_STATUS,
+    CompanyFieldEvidence.FieldKey.FUNDING_ROUND,
+    CompanyFieldEvidence.FieldKey.RTO_POLICY,
+    CompanyFieldEvidence.FieldKey.ACCELERATED_VESTING,
+)
+
+
+def fixture_preferences() -> dict:
+    """The preference document the ordinary match is evaluated against."""
+    preferences = default_preferences()
+    preferences["compensation"].update(MATCH_PREFERENCES["compensation"])
+    preferences["work_location"].update(MATCH_PREFERENCES["work_location"])
+    preferences["vesting"].update(MATCH_PREFERENCES["vesting"])
+    preferences["funding_stage"] = list(MATCH_PREFERENCES["funding_stage"])
+    return preferences
+
+
+def _recreated_revision(user, published_revision):
+    """Start a recreated preference row above every revision the account used.
+
+    Audit rows belong to the user and survive the row. Each revision step of
+    the product writes one ``patched`` or ``reset`` row, and a delete through
+    the product records its floor, so the floor plus the number of steps is
+    never below a revision an undo token can name. Without any step the
+    published revision decides.
+    """
+    steps = UserPreferenceAudit.objects.filter(
+        user=user,
+        action__in=[UserPreferenceAudit.Action.PATCHED, UserPreferenceAudit.Action.RESET],
+    ).count()
+    # The command's own starting revision is recorded in a ``created`` audit row
+    # (below), so a later recreation counts it too.
+    floor = max(
+        _recreate_revision_floor(user),
+        UserPreferenceAudit.objects.filter(
+            user=user, action=UserPreferenceAudit.Action.CREATED
+        ).aggregate(start=Max("change_count"))["start"]
+        or 0,
+    )
+    used = floor + steps + 1 if steps else floor
+    return max(0 if published_revision is None else published_revision + 1, used)
+
 
 class Command(BaseCommand):
     help = (
@@ -87,8 +174,13 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--password",
-            default=DEFAULT_ORDINARY_PASSWORD,
-            help="Throwaway password for the ordinary staging test account.",
+            default=None,
+            help=(
+                "Throwaway password for the ordinary staging test account. "
+                "Without this flag the account gets the documented default "
+                "when it is created, and an existing account keeps its "
+                "password."
+            ),
         )
         parser.add_argument(
             "--staff-password",
@@ -109,19 +201,36 @@ class Command(BaseCommand):
                 "seed_staging_baseline refuses to run with ENV=prod; "
                 "staging fixtures must never enter production."
             )
-        created = self._load(
+        for flag in ("password", "staff_password"):
+            value = options[flag]
+            if value is not None and not value.strip():
+                raise CommandError(
+                    f"--{flag.replace('_', '-')} must not be empty or blank."
+                )
+        notes: list[str] = []
+        created, readings = self._load(
             password=options["password"],
             staff_password=options["staff_password"],
+            notes=notes,
         )
+        self._refresh_citations_of_deleted_rows(notes)
+        for note in notes:
+            self.stdout.write(note)
         self.stdout.write(
             self.style.SUCCESS(
                 "Staging baseline fixtures ready: "
                 + ", ".join(f"{key}={value}" for key, value in created.items())
             )
         )
+        self.stdout.write(
+            "Fixture fields read now: "
+            + ", ".join(f"{key}={reading}" for key, reading in readings.items())
+        )
 
     @transaction.atomic
-    def _load(self, *, password: str, staff_password: str | None) -> dict:
+    def _load(
+        self, *, password: str | None, staff_password: str | None, notes: list[str]
+    ) -> tuple[dict, dict]:
         now = timezone.now()
         created: dict[str, int] = {}
 
@@ -205,7 +314,7 @@ class Command(BaseCommand):
             observed_name=TARGET_ORG_NAME,
             extraction_version="staging-baseline-1",
         )
-        _, created["observation_accepted"] = CompanyProfileObservation.objects.get_or_create(
+        observation_accepted, created["observation_accepted"] = CompanyProfileObservation.objects.get_or_create(
             fingerprint="staging-accepted",
             defaults={
                 **obs_defaults,
@@ -214,7 +323,7 @@ class Command(BaseCommand):
                 "description": "Fresh accepted profile evidence.",
             },
         )
-        _, created["observation_stale"] = CompanyProfileObservation.objects.get_or_create(
+        observation_stale, created["observation_stale"] = CompanyProfileObservation.objects.get_or_create(
             fingerprint="staging-stale",
             defaults={
                 **obs_defaults,
@@ -224,7 +333,7 @@ class Command(BaseCommand):
                 "description": "Stale evidence: observed_at is far in the past.",
             },
         )
-        _, created["observation_conflicted"] = CompanyProfileObservation.objects.get_or_create(
+        observation_conflicted, created["observation_conflicted"] = CompanyProfileObservation.objects.get_or_create(
             fingerprint="staging-conflicted",
             defaults={
                 **obs_defaults,
@@ -238,6 +347,70 @@ class Command(BaseCommand):
                 "rto_evidence": "One source says remote; another says in-office.",
             },
         )
+
+        # ── Field-level evidence: fresh, stale, conflicted, and none ──
+        # Timestamps live in ``defaults`` (creation-scoped), so a rerun, or an
+        # upgrade of a revision-1 database, never rewrites an existing row.
+        evidence_url = "https://jobs.example.test/profile"
+        field_key = CompanyFieldEvidence.FieldKey
+        evidence_state = CompanyFieldEvidence.State
+        evidence_rows = (
+            (
+                "evidence_fresh", field_key.PUBLIC_STATUS, evidence_state.ACCEPTED,
+                "Public company", observation_accepted, now, now,
+            ),
+            (
+                "evidence_stale", field_key.FUNDING_ROUND, evidence_state.ACCEPTED,
+                "Public", observation_stale,
+                now - timedelta(days=STALE_EVIDENCE_DAYS),
+                now - timedelta(days=STALE_EVIDENCE_DAYS),
+            ),
+            (
+                "evidence_conflicted", field_key.RTO_POLICY, evidence_state.CONFLICTED,
+                "In office", observation_conflicted,
+                now - timedelta(hours=CONFLICTED_OBSERVATION_HOURS_AGO), None,
+            ),
+        )
+        for label, key, state, value, observation, observed_at, verified_at in evidence_rows:
+            # The lookup has no ``state``: a fixture row that a review moved to
+            # another state is still the fixture row, and a field that already
+            # holds an accepted fact from another writer keeps that one fact.
+            # The review flow keeps one accepted row per field; nothing here
+            # may add a second or undo a decision.
+            field_rows = CompanyFieldEvidence.objects.filter(
+                organization=target_org, field_key=key
+            )
+            own = field_rows.filter(validation_version=EVIDENCE_VERSION).first()
+            if own is not None:
+                created[label] = False
+                if own.state != state:
+                    notes.append(
+                        f"Kept the existing {key} evidence row (now {own.state}); "
+                        "the fixture state was not restored."
+                    )
+                continue
+            if field_rows.filter(state=evidence_state.ACCEPTED).exists():
+                created[label] = False
+                notes.append(
+                    f"Kept the existing accepted {key} evidence row; "
+                    "no fixture row was added."
+                )
+                continue
+            CompanyFieldEvidence.objects.create(
+                organization=target_org,
+                field_key=key,
+                state=state,
+                validation_version=EVIDENCE_VERSION,
+                value_text=value,
+                source_url=evidence_url,
+                source_domain="jobs.example.test",
+                observation=observation,
+                observed_at=observed_at,
+                extractor_version=EVIDENCE_VERSION,
+                last_checked_at=observed_at,
+                last_verified_at=verified_at,
+            )
+            created[label] = True
 
         # ── Approved+enabled fixture source with active/expired listings ──
         usajobs = next(
@@ -267,6 +440,9 @@ class Command(BaseCommand):
             canonical_url="https://www.usajobs.gov/Job/staging-baseline-active",
             defaults={
                 "external_id": "staging-active-1",
+                # Linked, so the real matcher considers the listing for the
+                # example company (a listing with no organization is excluded).
+                "organization": target_org,
                 "employer_name": TARGET_ORG_NAME,
                 "employer_domain": "jobs.example.test",
                 "title": "Staging Baseline Active Role",
@@ -281,6 +457,11 @@ class Command(BaseCommand):
                 "status": JobListing.Status.ACTIVE,
             },
         )
+        # Link an earlier fixture listing that has no organization; a listing
+        # that points at another organization is never relinked.
+        if active_listing.organization_id is None:
+            active_listing.organization = target_org
+            active_listing.save(update_fields=["organization", "modified"])
         _, created["listing_expired"] = JobListing.all_objects.get_or_create(
             source=fixture_source,
             canonical_url="https://www.usajobs.gov/Job/staging-baseline-expired",
@@ -303,35 +484,98 @@ class Command(BaseCommand):
             username=ORDINARY_USERNAME,
             defaults={"email": "staging_user@example.test", "first_name": "Staging"},
         )
-        ordinary.set_password(password)
+        # The password is set when the account is created or when the operator
+        # passes --password on this run; a rerun never signs the participant
+        # out or replaces a password the operator chose.
+        if created["user_ordinary"] or password is not None:
+            ordinary.set_password(password or DEFAULT_ORDINARY_PASSWORD)
         ordinary.is_staff = False
         ordinary.save()
         # The staff account is privileged (StaffOnlyAdminMixin grants broad
-        # admin access from is_staff alone), so it never gets a repo-known
-        # default password: it is created with an unusable password and only
-        # ever receives one through the explicit --staff-password flag.
-        # Re-running without the flag never resets an already-provisioned
-        # password.
+        # admin access from is_staff alone), so it never keeps a repo-known
+        # password: it is created with an unusable password and only ever
+        # receives one through the explicit --staff-password flag. A rerun
+        # without the flag leaves an unusable or operator-set password alone
+        # and replaces one the repository knows (empty or the ordinary
+        # default) with an unusable value.
         staff, created["user_staff"] = user_model.objects.get_or_create(
             username=STAFF_USERNAME,
             defaults={"email": "staging_staff@example.test", "first_name": "Staging"},
         )
         if staff_password is not None:
             staff.set_password(staff_password)
-        elif not staff.password or not staff.has_usable_password():
+        elif (
+            not staff.password
+            or staff.has_usable_password()
+            and staff.check_password(DEFAULT_ORDINARY_PASSWORD)
+        ):
             # Newly created accounts carry an empty password string, which
-            # Django still calls "usable"; make it explicitly unusable. An
-            # already-provisioned usable password is never reset.
+            # Django still calls "usable"; make it explicitly unusable.
             staff.set_unusable_password()
         staff.is_staff = True
         staff.save()
 
+        # ── Saved priorities for the ordinary account ──
+        # Without a saved preference document the product serves no match to
+        # this account and a refresh publishes none. Created only when the
+        # account has none: a participant's or moderator's saved priorities
+        # are never overwritten.
+        preferences = fixture_preferences()
+        # A recreated row starts above the revision of the results already
+        # published for the account, or its next refresh is discarded as stale,
+        # and above every revision the account used, so an Undo token issued
+        # before the row was deleted can never match it.
+        published_revision = (
+            MatchResultState.objects.filter(user=ordinary)
+            .values_list("preference_revision", flat=True)
+            .first()
+        )
+        preference, created["preference_ordinary"] = UserPreference.objects.get_or_create(
+            user=ordinary,
+            defaults={
+                "preferences": preferences,
+                "preferences_markdown": to_markdown(preferences),
+                "schema_version": SCHEMA_VERSION,
+                "revision": _recreated_revision(ordinary, published_revision),
+            },
+        )
+        if created["preference_ordinary"]:
+            # The product writes this row on every creation; it records the
+            # revision this row started at, which no patch or reset accounts for.
+            UserPreferenceAudit.objects.create(
+                user=ordinary,
+                action=UserPreferenceAudit.Action.CREATED,
+                schema_version=SCHEMA_VERSION,
+                change_count=preference.revision,
+            )
+        if preference.preferences != preferences:
+            notes.append(
+                f"Kept the saved priorities of {ORDINARY_USERNAME}; they differ "
+                "from the fixture's, so the stored match no longer matches what a "
+                "refresh would publish."
+            )
+
         # ── Ordinary + unknown-requirement match cases ──
-        _, created["match_ordinary"] = JobMatch.objects.get_or_create(
+        # The ordinary match stores the requirements the real evaluator
+        # reports for this listing and company, so it carries a requirement
+        # confirmed by the fresh evidence row, one resting on stale evidence,
+        # and the unknown / profile-backed cases.
+        evidence = resolve_field_evidence(target_org)
+        outcomes = evaluate_requirements(
+            active_listing,
+            project_criteria(preferences, SCHEMA_VERSION),
+            organization=target_org,
+            evidence=evidence,
+        )
+        requirements = [outcome.as_dict() for outcome in outcomes]
+        evidence_ids = sorted(
+            {o.source_id for o in outcomes if o.source_kind == "evidence"}
+        )
+        match_ordinary, created["match_ordinary"] = JobMatch.objects.get_or_create(
             user=ordinary,
             listing=active_listing,
             preference_version=1,
-            ranker_version="staging-baseline",
+            ranker_version=FIXTURE_RANKER_VERSION,
             defaults={
                 "organization": target_org,
                 "score": 4.0,
@@ -347,15 +591,32 @@ class Command(BaseCommand):
                         "detail": "salary_min=120000 USD/year",
                     },
                 ],
+                "requirements": requirements,
+                "evidence_ids": evidence_ids,
                 "first_matched_at": now - timedelta(days=1),
                 "last_matched_at": now,
             },
         )
+        # Upgrade a revision-1 match in place; a no-op when already current.
+        if (match_ordinary.requirements, match_ordinary.evidence_ids) != (
+            requirements,
+            evidence_ids,
+        ):
+            match_ordinary.requirements = requirements
+            match_ordinary.evidence_ids = evidence_ids
+            match_ordinary.save(
+                update_fields=["requirements", "evidence_ids", "modified"]
+            )
+            notes.append(
+                "Rewrote the stored requirements of the ordinary match "
+                f"({ORDINARY_USERNAME}, preference_version 1) to what the evidence "
+                "reads now."
+            )
         _, created["match_unknown_requirement"] = JobMatch.objects.get_or_create(
             user=ordinary,
             listing=active_listing,
             preference_version=2,
-            ranker_version="staging-baseline",
+            ranker_version=FIXTURE_RANKER_VERSION,
             defaults={
                 "organization": target_org,
                 "score": 2.0,
@@ -373,4 +634,84 @@ class Command(BaseCommand):
                 "last_matched_at": now,
             },
         )
-        return created
+
+        readings = self._readings(target_org)
+        return created, readings
+
+    @staticmethod
+    def _refresh_citations_of_deleted_rows(notes: list[str]) -> None:
+        """Republish the account's matches when one cites a deleted evidence row.
+
+        The documented reset deletes the example company's evidence rows. A
+        match the real matcher already published for the account then cites
+        rows that are gone, and a scheduled refresh answers ``current`` because
+        this command records no change. One forced refresh, the product's own
+        path, makes the published match cite the rows just written.
+        """
+        user = get_user_model().objects.get(username=ORDINARY_USERNAME)
+        own = JobMatch.objects.filter(user=user).exclude(
+            ranker_version=FIXTURE_RANKER_VERSION
+        )
+        generation = (
+            MatchResultState.objects.filter(user=user)
+            .values_list("current_generation", flat=True)
+            .first()
+        )
+
+        def citing_deleted_rows(matches):
+            cited = {}
+            for pk, ids in matches.values_list("pk", "evidence_ids"):
+                for evidence_id in ids or []:
+                    cited.setdefault(evidence_id, set()).add(pk)
+            existing = set(
+                CompanyFieldEvidence.objects.filter(pk__in=cited).values_list(
+                    "pk", flat=True
+                )
+            )
+            return {
+                pk
+                for evidence_id, pks in cited.items()
+                if evidence_id not in existing
+                for pk in pks
+            }
+
+        # Only the rows of the published generation are what a refresh rewrites.
+        if citing_deleted_rows(own.filter(result_generation=generation)):
+            outcome = recompute_user(user, reason="seed_staging_baseline", force=True)
+            if outcome.status == RecomputeStatus.PUBLISHED:
+                notes.append(
+                    f"Republished the matches of {ORDINARY_USERNAME}: one cited an "
+                    "evidence row that no longer exists."
+                )
+            else:
+                notes.append(
+                    f"A published match of {ORDINARY_USERNAME} cites an evidence row "
+                    f"that no longer exists and the refresh answered {outcome.status.value}; "
+                    "it is not repaired."
+                )
+        # A row of an earlier generation (a listing the account no longer
+        # matches, or an older ranker version) is never rewritten by a refresh.
+        left = citing_deleted_rows(own.exclude(result_generation=generation))
+        if left:
+            notes.append(
+                f"{len(left)} earlier match row(s) of {ORDINARY_USERNAME} still cite an "
+                "evidence row that no longer exists; a refresh does not rewrite them, "
+                "and they are listed only while committed reads are off."
+            )
+
+    @staticmethod
+    def _readings(organization) -> dict[str, str]:
+        """What each fixture field reads at this moment, by the product's rules."""
+        payload = field_evidence_payload(organization)
+        fields = {row["field_key"]: row for row in payload["fields"]}
+        readings = {}
+        for key in FIXTURE_FIELDS:
+            row = fields.get(key)
+            if row is not None:
+                reading = row["status"]
+            elif payload["review_by_field"].get(key) == "conflicted":
+                reading = "conflicted"
+            else:
+                reading = "unknown"
+            readings[key] = reading
+        return readings
