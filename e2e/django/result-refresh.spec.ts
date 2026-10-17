@@ -356,7 +356,7 @@ test.describe('Updated results available (stored results)', () => {
         await expect(page.getByTestId('results-updated-badge')).toHaveCount(0);
     });
 
-    test('a reader who keeps switching tabs does not take the request rate past the interval (AC 9)', async ({page}) => {
+    test('a reader who keeps switching tabs sends at most one early check per interval (AC 9 as amended 2026-10-17)', async ({page}) => {
         const seen = countRequests(page);
         await open(page);
         const start = seen.revision;

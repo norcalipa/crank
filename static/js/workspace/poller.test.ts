@@ -388,8 +388,9 @@ describe('createPoller', () => {
         expect(jest.getTimerCount()).toBe(0);
     });
 
-    // Issue #485 review (round 2): the prompt check at the return stays inside
-    // AC 9. None while a failure is pending; at most one early check per interval.
+    // Issue #485 review (rounds 2 and 3): AC 9 amended by the owner on
+    // 2026-10-17: at most one scheduled check per interval plus at most one
+    // early check on return per interval (no early check during back-off).
     describe('the bound on the check at the return', () => {
         async function flip(times: number, hiddenMs = 1_000, visibleMs = 10_000) {
             for (let i = 0; i < times; i += 1) {
@@ -453,6 +454,29 @@ describe('createPoller', () => {
             // 16 s after the first early check: no second one.
             expect(request).toHaveBeenCalledTimes(1);
             expect(results.map((r) => r.afterReturn)).toEqual([true]);
+            poller.stop();
+        });
+
+        it('a second early check waits a whole interval, not half of one', async () => {
+            const request = jest.fn().mockResolvedValue(answer(60));
+            const {poller} = make(request);
+            poller.start();
+            await tick(15_000);
+            setVisibility('hidden');
+            await tick(1_000);
+            setVisibility('visible');
+            await tick(0);
+            expect(request).toHaveBeenCalledTimes(1);
+            // 35 s after the first early check, 35 s after the last check: still inside the interval.
+            await tick(34_000);
+            setVisibility('hidden');
+            await tick(1_000);
+            setVisibility('visible');
+            await tick(0);
+            expect(request).toHaveBeenCalledTimes(1);
+            // The timer's check, a whole interval after the early one.
+            await tick(25_000);
+            expect(request).toHaveBeenCalledTimes(2);
             poller.stop();
         });
     });

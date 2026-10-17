@@ -862,6 +862,27 @@ describe('holding the reader\u2019s row and one message (visual review, round 1)
         assistant.remove();
     });
 
+    test('the listeners of the mark are removed once it goes', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        setVisibility('hidden');
+        await advance(5 * 60_000);
+        server.generation = 2;
+        setVisibility('visible');
+        await advance(0);
+        await screen.findByTestId('results-updated-badge');
+        const removed = jest.spyOn(window, 'removeEventListener');
+        act(() => {
+            fireEvent.keyDown(document.body, {key: 'ArrowDown'});
+        });
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+        const names = removed.mock.calls.map(([name]) => name);
+        for (const name of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
+            expect(names).toContain(name);
+        }
+        removed.mockRestore();
+    });
+
     test('the mark also goes at the next press', async () => {
         const server = makeServer(1);
         await mount(server);
