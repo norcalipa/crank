@@ -1435,9 +1435,14 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     // too), and it keeps its box so nothing moves under the press.
     React.useEffect(() => {
         if (updatedBadge !== 'on') return undefined;
-        const clear = () => setUpdatedBadge('seen');
+        // Input in the Assistant (typing in the composer, a tap in the phone
+        // sheet) is not about the list: it leaves the mark up.
+        const clear = (event: Event) => {
+            if ((event.target as Element | null)?.closest?.('#assistant-panel')) return;
+            setUpdatedBadge('seen');
+        };
         const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
-        events.forEach((name) => window.addEventListener(name, clear, {once: true, passive: true}));
+        events.forEach((name) => window.addEventListener(name, clear, {passive: true}));
         return () => events.forEach((name) => window.removeEventListener(name, clear));
     }, [updatedBadge]);
     // A poll answered with a generation above the one on screen: say so, and

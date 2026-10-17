@@ -833,6 +833,35 @@ describe('holding the reader\u2019s row and one message (visual review, round 1)
         expect(seen).toHaveAttribute('aria-hidden', 'true');
     });
 
+    test('input in the Assistant leaves the mark up: typing in the composer, a tap in the phone sheet', async () => {
+        const server = makeServer(1);
+        await mount(server);
+        const assistant = document.createElement('div');
+        assistant.id = 'assistant-panel';
+        const composer = document.createElement('textarea');
+        assistant.appendChild(composer);
+        document.body.appendChild(assistant);
+        composer.focus();
+        setVisibility('hidden');
+        await advance(5 * 60_000);
+        server.generation = 2;
+        setVisibility('visible');
+        await advance(0);
+        await screen.findByTestId('results-updated-badge');
+        act(() => {
+            fireEvent.keyDown(composer, {key: 'a'});
+            fireEvent.pointerDown(assistant);
+            fireEvent.touchStart(assistant);
+        });
+        expect(screen.getByTestId('results-updated-badge')).toBeInTheDocument();
+        // The reader's own input in the results, or a scroll, still clears it.
+        act(() => {
+            fireEvent.keyDown(document.body, {key: 'ArrowDown'});
+        });
+        expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
+        assistant.remove();
+    });
+
     test('the mark also goes at the next press', async () => {
         const server = makeServer(1);
         await mount(server);
@@ -1074,6 +1103,8 @@ describe('review round 1 (adversarial): empty generations, the idle rule at its 
         await release();
         expect(screen.queryByTestId('ranked-job-3')).not.toBeInTheDocument();
         expect(notice()).toBeInTheDocument();
+        // The backed-out check leaves nothing in the announcer.
+        expect(screen.getByTestId('read-announcement')).not.toHaveTextContent('Checking');
         expect(screen.queryByTestId('results-updated-badge')).not.toBeInTheDocument();
         // Nothing is stuck: the notice still applies the newer results.
         (window as unknown as {scrollY: number}).scrollY = 0;
