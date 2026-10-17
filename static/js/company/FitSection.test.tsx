@@ -122,9 +122,9 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(row.getAttribute('data-group')).toBe('unknown');
         expect(screen.getByTestId('fit-group-meets')).not.toContainElement(row);
         expect(screen.getByTestId('fit-out-of-scope-funding_stage'))
-            .toHaveTextContent('Not counted: the fact on record covers Location: US only.');
+            .toHaveTextContent('Counted as not met: the fact on record covers Location: US only.');
         // One sentence: no value, no status word, and the scope is not said twice.
-        expect(row).toHaveTextContent(/^\S* ?Funding stageNot counted: the fact on record covers Location: US only\.$/);
+        expect(row).toHaveTextContent(/^\S* ?Funding stageCounted as not met: the fact on record covers Location: US only\.$/);
         expect(screen.queryByTestId('fit-scope-funding_stage')).toBeNull();
         expect(screen.queryByTestId('fit-evidence-funding_stage')).toBeNull();
         expect(row).not.toHaveTextContent('Unknown');
@@ -137,7 +137,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         renderFit();
         await screen.findByTestId('fit-ready');
         expect(screen.getByTestId('fit-out-of-scope-funding_stage'))
-            .toHaveTextContent('Not counted: the fact on record covers part of the company only.');
+            .toHaveTextContent('Counted as not met: the fact on record covers part of the company only.');
     });
 
     test('a requirement with no fact behind it says what is true of it, in the evidence list\'s words', async () => {
@@ -178,7 +178,7 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         // The first figure says what it counts, and the old disagreement text is gone.
         expect(text).toContain(PRIORITIES_MET_TERM.label);
         expect(text).toContain(PRIORITIES_MET_TERM.meaning);
-        expect(text).toContain('Unknown and not-counted rows count as not met; priorities checked for each job are not counted.');
+        expect(text).toContain('Unknown rows, and rows whose fact covers only part of the company, count as not met; priorities checked for each job are not counted.');
         expect(text).not.toContain('cannot reach 100');
         expect(text).not.toContain('Why the fit and the rows can disagree');
         expect(text).not.toContain('the fit reads the profile values');
@@ -220,6 +220,48 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(label.getAttribute('title')).toBe(PRIORITIES_MET_TERM.meaning);
     });
 
+    test('a line under the figures says how many rows are checked per job and left out of the count', async () => {
+        const perJob = (path: string) => req({path, status: 'unknown', observed: null, evidence_status: null, counted: false});
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            priorities_met: {met: 1, counted: 1},
+            requirements: [req(), perJob('compensation.minimum_salary'), perJob('job.titles')],
+        })));
+        const {unmount} = renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.getByTestId('fit-priorities-per-job'))
+            .toHaveTextContent('2 priorities below are checked for each job and are not counted.');
+        unmount();
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            priorities_met: {met: 1, counted: 1},
+            requirements: [req(), perJob('compensation.minimum_salary')],
+        })));
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.getByTestId('fit-priorities-per-job'))
+            .toHaveTextContent('One priority below is checked for each job and is not counted.');
+    });
+
+    test('the per-job line is hidden when every row is counted', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({priorities_met: {met: 1, counted: 1}, requirements: [req()]})));
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        expect(screen.queryByTestId('fit-priorities-per-job')).toBeNull();
+    });
+
+    test('within a group the counted rows come before the per-job rows', async () => {
+        global.fetch = jest.fn().mockResolvedValue(answer(fit({
+            priorities_met: {met: 0, counted: 1},
+            requirements: [
+                req({path: 'compensation.minimum_salary', status: 'unknown', observed: null, evidence_status: null, counted: false}),
+                req({path: 'funding_stage', status: 'unknown', observed: null, evidence_status: null, scope_ok: false}),
+            ],
+        })));
+        renderFit();
+        await screen.findByTestId('fit-ready');
+        const ids = within(screen.getByTestId('fit-group-unknown')).getAllByTestId(/^fit-row-/).map(row => row.getAttribute('data-testid'));
+        expect(ids).toEqual(['fit-row-funding_stage', 'fit-row-compensation.minimum_salary']);
+    });
+
     test('with nothing a company can decide the figure is a dash and one sentence says why', async () => {
         global.fetch = jest.fn().mockResolvedValue(answer(fit({
             priorities_met: null,
@@ -230,6 +272,9 @@ describe('FitSection (issue #486, AC 15-16)', () => {
         expect(screen.getByTestId('fit-priorities-met')).toHaveTextContent(/^—$/);
         const sentence = screen.getByTestId('fit-priorities-none');
         expect(sentence).toHaveTextContent(PRIORITIES_NONE_TEXT);
+        // It speaks only for the rows under it: not for an exclusion, and not for priorities Job Search does not check.
+        expect(sentence).toHaveTextContent('No priority in the rows below can be decided from a fact about a company; each is checked for each job.');
+        expect(sentence).not.toHaveTextContent('None of your priorities');
         expect(sentence.closest('details')).toBeNull();
     });
 

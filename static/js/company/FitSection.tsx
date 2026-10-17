@@ -142,11 +142,15 @@ function evidenceText(requirement: FitRequirement): string | null {
 // server decides which priorities those are (`counted` on each row).
 export const PRIORITIES_MET_TERM = {
     label: 'Priorities met',
-    meaning: 'Your priorities that a fact about the company can decide, and how many of them are confirmed for you. '
-        + 'Unknown and not-counted rows count as not met; priorities checked for each job are not counted.',
+    meaning: 'How many of your priorities that a fact about the company can decide are confirmed for you. Unknown rows, '
+        + 'and rows whose fact covers only part of the company, count as not met; priorities checked for each job are not counted.',
 };
-export const PRIORITIES_NONE_TEXT = 'None of your priorities can be decided from a fact about a company. '
-    + 'They are checked for each job.';
+export const PRIORITIES_NONE_TEXT = 'No priority in the rows below can be decided from a fact about a company; '
+    + 'each is checked for each job.';
+// Beside a count, the priorities it leaves out, so "of 3" can be checked against five rows without the legend.
+export const perJobCountText = (count: number): string => (count === 1
+    ? 'One priority below is checked for each job and is not counted.'
+    : `${count} priorities below are checked for each job and are not counted.`);
 
 // The number the endpoint sends as `company_score` is the plain mean of the
 // company's rating types (`_company_score`); no preset weights enter it. The
@@ -201,7 +205,7 @@ function FitRow({requirement}: {requirement: FitRequirement}) {
             <li {...rowProps}>
                 {label}
                 <span className="company-fit-out-of-scope small" data-testid={`fit-out-of-scope-${requirement.path}`}>
-                    Not counted: the fact on record covers {partialScopeWords(requirement.scope) ?? 'part of the company'} only.
+                    Counted as not met: the fact on record covers {partialScopeWords(requirement.scope) ?? 'part of the company'} only.
                 </span>
             </li>
         );
@@ -392,9 +396,15 @@ const FitSection = React.forwardRef<HTMLHeadingElement, FitSectionProps>(({
                 {!fit.priorities_met && (
                     <p className="small text-body-secondary mb-2" data-testid="fit-priorities-none">{PRIORITIES_NONE_TEXT}</p>
                 )}
+                {fit.priorities_met && fit.requirements.some(item => item.counted === false) && (
+                    <p className="small text-body-secondary mb-2" data-testid="fit-priorities-per-job">
+                        {perJobCountText(fit.requirements.filter(item => item.counted === false).length)}
+                    </p>
+                )}
                 <FitLegend/>
                 {FIT_GROUPS.map(group => {
-                    const rows = fit.requirements.filter(item => fitGroupOf(item) === group.key);
+                    const rows = fit.requirements.filter(item => fitGroupOf(item) === group.key)
+                        .sort((a, b) => Number(a.counted === false) - Number(b.counted === false));
                     const headingId = `company-fit-${group.key}`;
                     return (
                         <div key={group.key} className="company-fit-group" data-testid={`fit-group-${group.key}`}>

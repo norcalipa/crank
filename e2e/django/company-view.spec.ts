@@ -1259,7 +1259,7 @@ test.describe('company view fit, jobs and scope (issue #486c)', () => {
         await expect(unknown).toContainText('Industry');
         // One sentence for a fact that does not cover the reader: no value, no status word, the scope said once.
         await expect(page.getByTestId('fit-out-of-scope-industry')).toHaveText(
-            'Not counted: the fact on record covers Location: US; Roles: Engineering only.');
+            'Counted as not met: the fact on record covers Location: US; Roles: Engineering only.');
         await expect(page.getByTestId('fit-scope-industry')).toHaveCount(0);
         // The engine's own values read as words.
         await expect(page.getByTestId('fit-row-funding_stage')).toContainText('Series B');
@@ -1506,7 +1506,7 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
             await expect(value('vesting.prefer_accelerated')).toHaveText('No');
             // A fact limited to one country does not decide this reader's funding stage: one sentence.
             const notCounted = page.getByTestId('fit-row-funding_stage');
-            await expect(notCounted).toContainText('Not counted: the fact on record covers Location: US only.');
+            await expect(notCounted).toContainText('Counted as not met: the fact on record covers Location: US only.');
             await expect(notCounted.locator('.company-fit-value')).toHaveCount(0);
             await expect(page.getByTestId('fit-group-unknown')).toContainText('Funding stage');
             await expect(page.getByTestId('fit-group-meets')).not.toContainText('Funding stage');
@@ -2003,9 +2003,21 @@ test.describe('company view, review round 1 (issue #486c)', () => {
         const perJob = rows.filter({hasText: 'Checked for each job, not for the company.'});
         expect(await page.locator('[data-testid="fit-group-meets"] [data-testid^="fit-row-"]').count()).toBe(Number(figure![1]));
         expect((await rows.count()) - (await perJob.count())).toBe(Number(figure![2]));
+        // Under the figures, one line says how many rows are checked per job and left out of the count.
+        const perJobLine = page.getByTestId('fit-priorities-per-job');
+        const perJobCount = await perJob.count();
+        if (perJobCount > 0) {
+            await expect(perJobLine).toContainText(perJobCount === 1 ? 'One priority below' : `${perJobCount} priorities below`);
+        } else {
+            await expect(perJobLine).toHaveCount(0);
+        }
+        // Within the Unknown group the counted rows come before the per-job rows.
+        const unknownRows = page.locator('[data-testid="fit-group-unknown"] [data-testid^="fit-row-"]');
+        const unknownPerJob = await unknownRows.evaluateAll(items => items.map(item => (item.textContent ?? '').includes('Checked for each job, not for the company.')));
+        expect(unknownPerJob).toEqual([...unknownPerJob].sort((a, b) => Number(a) - Number(b)));
         const legend = page.getByTestId('fit-legend');
         await legend.locator('summary').click();
-        await expect(legend).toContainText('Unknown and not-counted rows count as not met');
+        await expect(legend).toContainText('and rows whose fact covers only part of the company, count as not met');
         await expect(legend).not.toContainText('cannot reach 100');
         await expect(legend).not.toContainText('Why the fit and the rows can disagree');
     });
