@@ -206,11 +206,21 @@ export function ConversationMenu({
         next?.focus();
     };
 
+    // True when focus is on the page body (lost with a closed menu item or panel), or inside `closing`.
+    const focusHasFallen = (closing?: Element | null) => {
+        const active = document.activeElement;
+        return !active || active === document.body || !!closing?.contains(active);
+    };
+
     const runExport = async (keepFocus = false) => {
         setExportError(null);
         setStatus('');
         const outcome = await onExport();
-        if (outcome === DROPPED) return;
+        if (outcome === DROPPED) {
+            // The menu item that held focus is gone; focus that fell to the page returns to More, focus the next reader placed stays.
+            if (!keepFocus && focusHasFallen()) moreRef.current?.focus();
+            return;
+        }
         if (outcome) {
             setExportError(outcome);
             return;
@@ -271,9 +281,10 @@ export function ConversationMenu({
             setFailure(outcome);
             return;
         }
+        // Focus lost with the closing confirmation returns to More; focus the next reader placed elsewhere stays.
+        const focusLost = focusHasFallen(confirmHeadingRef.current?.parentElement);
         setConfirming(null);
-        // The confirmation held focus and is gone; a dropped answer adopts nothing that could take it.
-        if (outcome === DROPPED) moreRef.current?.focus();
+        if (outcome === DROPPED && focusLost) moreRef.current?.focus();
     };
 
     const deleting = confirming === 'delete';

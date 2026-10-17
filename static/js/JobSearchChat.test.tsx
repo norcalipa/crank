@@ -4172,6 +4172,73 @@ describe('an account switch leaves the previous account nothing to act with (iss
             expect(screen.getByTestId('conversation-more')).toHaveFocus();
         });
 
+        test.each([
+            ['New conversation', 'reset', startNewConversation],
+            ['Delete', 'delete', deleteConversation],
+        ])('%s dropped by a switch leaves focus in the composer the next reader is typing in', async (_name, path, start) => {
+            await mountOld();
+            const held = hold(when('POST', `${CONVERSATIONS_URL}42/${path}/`));
+            start();
+            await held.arrived;
+            await switchAccount();
+            const composer = screen.getByLabelText('Message');
+            composer.focus();
+            type('bob types');
+            await act(async () => { held.settle(jsonResponse(path === 'reset' ? emptyConversation(555) : {deleted: true})); });
+            await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+            expect(composer).toHaveFocus();
+            expect(composer).toHaveValue('bob types');
+        });
+
+        test('New conversation dropped by a switch leaves focus on a control outside the chat', async () => {
+            resumeWith(42, [assistantMessage(1, 'Old account reply.')]);
+            render(<><button type="button" data-testid="outside">Outside</button><JobSearchChat/></>);
+            await screen.findByText('Old account reply.');
+            const held = hold(when('POST', `${CONVERSATIONS_URL}42/reset/`));
+            startNewConversation();
+            await held.arrived;
+            await switchAccount();
+            screen.getByTestId('outside').focus();
+            await act(async () => { held.settle(jsonResponse(emptyConversation(555))); });
+            await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+            expect(screen.getByTestId('outside')).toHaveFocus();
+        });
+
+        test('Export dropped by a switch returns focus to More in the workspace panel', async () => {
+            setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+            resumeWith(42, [assistantMessage(1, 'Old account reply.')]);
+            render(<JobSearchChat workspaceMode="docked"/>);
+            await screen.findByText('Old account reply.');
+            const held = hold(when('GET', `${CONVERSATIONS_URL}42/export/`));
+            openMore();
+            const item = screen.getByTestId('conversation-export');
+            item.focus();
+            fireEvent.click(item);
+            await held.arrived;
+            await switchAccount();
+            await act(async () => { held.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            expect(screen.getByTestId('conversation-more')).toHaveFocus();
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+        });
+
+        test('Export dropped by a switch leaves focus in the composer the next reader is typing in', async () => {
+            setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+            resumeWith(42, [assistantMessage(1, 'Old account reply.')]);
+            render(<JobSearchChat workspaceMode="docked"/>);
+            await screen.findByText('Old account reply.');
+            const held = hold(when('GET', `${CONVERSATIONS_URL}42/export/`));
+            openMore();
+            const item = screen.getByTestId('conversation-export');
+            item.focus();
+            fireEvent.click(item);
+            await held.arrived;
+            await switchAccount();
+            const composer = screen.getByLabelText('Message');
+            composer.focus();
+            await act(async () => { held.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            expect(composer).toHaveFocus();
+        });
+
         test('Export pressed after the switch asks the server nothing', async () => {
             await mountOld();
             openMore();
@@ -4584,7 +4651,9 @@ describe('an account switch leaves the previous account nothing to act with (iss
             expect(storedFor(55)).toEqual([]);
             answer(when('POST', `${CONVERSATIONS_URL}55/`), {message: assistantMessage(91, 'Answer.'), preferences_changed: false}, 201);
             send();
-            expect(sentBodies().filter((b) => b.includes('alice private draft'))).toEqual([]);
+            // Send posts the message only after the status check has answered, so wait for it.
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+            expect(messagePosts(55).map(([, init]) => String((init as RequestInit).body))).toEqual([]);
         });
 
         test('a keystroke in the same account fills its composer', async () => {
