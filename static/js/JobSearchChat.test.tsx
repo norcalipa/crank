@@ -4138,6 +4138,40 @@ describe('an account switch leaves the previous account nothing to act with (iss
         });
     });
 
+    describe('a history action pressed in the instant after the switch', () => {
+        test.each([
+            ['New conversation', 'reset'],
+            ['Delete', 'delete'],
+        ])('%s confirmed after the switch asks the server nothing', async (_name, path) => {
+            await mountOld();
+            openMore();
+            fireEvent.click(screen.getByTestId(path === 'reset' ? 'conversation-new' : 'conversation-delete'));
+            const callsBefore = fetchMock.mock.calls.length;
+            await pressAfterSwitch(() => { confirmPanelAction(); });
+            expect(fetchMock.mock.calls.slice(callsBefore).filter(([u]) => String(u).endsWith(`/${path}/`))).toEqual([]);
+            expect(getWorkspaceSnapshot().conversationId).toBe(55);
+            expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument();
+        });
+
+        test('Export pressed after the switch asks the server nothing', async () => {
+            await mountOld();
+            openMore();
+            const item = screen.getByTestId('conversation-export');
+            await pressAfterSwitch(() => fireEvent.click(item));
+            expect(callsTo(`${CONVERSATIONS_URL}42/export/`)).toEqual([]);
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+        });
+
+        test('Start a conversation pressed after the switch creates nothing', async () => {
+            route(isResume, () => jsonResponse({}, 500));
+            render(<JobSearchChat/>);
+            const start = await screen.findByRole('button', {name: 'Start a conversation'});
+            await pressAfterSwitch(() => fireEvent.click(start));
+            expect(created()).toEqual([]);
+            expect(screen.queryByText(/could not start a conversation/i)).not.toBeInTheDocument();
+        });
+    });
+
     describe('a conversation that could not be started after the switch', () => {
         const kinds = [
             ['an HTTP error', () => jsonResponse({}, 500)],
@@ -4239,13 +4273,18 @@ describe('an account switch leaves the previous account nothing to act with (iss
             await mountOld();
             expect(await screen.findByTestId('availability-notice')).toHaveTextContent('Old account has no matches');
             expect(availabilityCalls()).toHaveLength(1);
-            answer(isAvailability, nextNoMatches);
             const resume = hold(isResume);
             act(() => { purgeEvent(); });
             await resume.arrived;
             expect(screen.queryByTestId('availability-notice')).not.toBeInTheDocument();
             expect(availabilityCalls()).toHaveLength(1);
+            // The next account's own read is still out: nothing of the previous account's shows meanwhile.
+            const read = hold(isAvailability);
             await act(async () => { resume.settle(jsonResponse(emptyConversation(55, [assistantMessage(70, 'New account reply.')]))); });
+            await read.arrived;
+            expect(screen.getByText('New account reply.')).toBeInTheDocument();
+            expect(screen.queryByTestId('availability-notice')).not.toBeInTheDocument();
+            await act(async () => { read.settle(jsonResponse(nextNoMatches)); });
             expect(await screen.findByTestId('availability-notice')).toHaveTextContent('New account has no matches');
             expect(availabilityCalls()).toHaveLength(2);
         });
@@ -4462,12 +4501,21 @@ describe('an account switch leaves the previous account nothing to act with (iss
             expect(storedFor(42)).not.toEqual([]);
         });
 
+        test('Check for response pressed in the same account asks the server about the turn', async () => {
+            const pendingTurn = userTurn(OLD_QUESTION, 'k-pending', 'pending', 2);
+            await mountOld([assistantMessage(1, 'Old account reply.'), pendingTurn]);
+            const callsBefore = fetchMock.mock.calls.length;
+            answer(when('GET', `${CONVERSATIONS_URL}42/`), emptyConversation(42, [assistantMessage(1, 'Old account reply.'), pendingTurn]));
+            fireEvent.click(screen.getByTestId('check-response-button'));
+            await waitFor(() => expect(fetchMock.mock.calls.slice(callsBefore).filter(([u]) => String(u) === `${CONVERSATIONS_URL}42/`).length).toBeGreaterThan(0));
+        });
+
         test('Check for response pressed after the switch asks the server nothing', async () => {
             const pendingTurn = userTurn(OLD_QUESTION, 'k-pending', 'pending', 2);
             await mountOld([assistantMessage(1, 'Old account reply.'), pendingTurn]);
             const callsBefore = fetchMock.mock.calls.length;
             await pressAfterSwitch(() => fireEvent.click(screen.getByTestId('check-response-button')));
-            expect(sentBodies().slice(callsBefore).some((b) => b.includes('k-pending'))).toBe(false);
+            expect(fetchMock.mock.calls.slice(callsBefore).filter(([u]) => String(u) === `${CONVERSATIONS_URL}42/`)).toEqual([]);
             expect(screen.queryByTestId('chat-error')).not.toBeInTheDocument();
         });
 
@@ -4498,8 +4546,8 @@ describe('an account switch leaves the previous account nothing to act with (iss
             expect(screen.getByRole('button', {name: 'Send message'})).toBeDisabled();
             send();
             pressEnter();
-            // A second submit made in the same instant, before the page has redrawn.
-            act(() => { fireEvent.submit(form()); fireEvent.submit(form()); });
+            // A submit that does not come through the disabled button.
+            fireEvent.submit(form());
             await act(async () => { status.settle(statusResponse('ready')); });
         }
 
@@ -4525,6 +4573,41 @@ describe('an account switch leaves the previous account nothing to act with (iss
             expect(messagePosts(42)).toHaveLength(1);
             type('and a second one');
             expect(screen.getByRole('button', {name: 'Send message'})).toBeEnabled();
+        });
+
+        test('a submit of the previous account still out does not hold up the next account', async () => {
+            await mountOld();
+            type('old account question');
+            const oldStatus = hold((u) => isStatus(u));
+            send();
+            await oldStatus.arrived;
+            await switchAccount();
+            type('new account question');
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeEnabled();
+            await act(async () => { oldStatus.settle(statusResponse('ready')); });
+            expect(sentBodies().some((b) => b.includes('old account question'))).toBe(false);
+        });
+
+        test('a submit of the previous account ending does not end the next account\'s submit', async () => {
+            await mountOld();
+            type('old account question');
+            const oldStatus = hold((u) => isStatus(u));
+            send();
+            await oldStatus.arrived;
+            await switchAccount();
+            type('new account question');
+            const newStatus = hold((u) => isStatus(u));
+            send();
+            await newStatus.arrived;
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeDisabled();
+            await act(async () => { oldStatus.settle(statusResponse('ready')); });
+            // The old submit has ended; the new one is still checking the status.
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeDisabled();
+            answer(when('POST', `${CONVERSATIONS_URL}55/`), {message: assistantMessage(90, 'New account answer.'), preferences_changed: false}, 201);
+            await act(async () => { newStatus.settle(statusResponse('ready')); });
+            await screen.findByText('New account answer.');
+            expect(messagePosts(55)).toHaveLength(1);
+            expect(sentBodies().some((b) => b.includes('old account question'))).toBe(false);
         });
 
         test('Send is off for the whole turn, from the first press to the answer', async () => {

@@ -544,9 +544,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // was made on the previous account's screen and must do nothing.
     const [renderEpoch, setRenderEpoch] = React.useState(0);
     const staleRender = () => renderEpoch !== purgeEpochRef.current;
-    // One submit at a time (issue #588): set synchronously, before the status
-    // check and the conversation creation, which pendingRef does not yet cover.
-    const submittingRef = React.useRef(false);
+    // One submit at a time (issue #588): on from the first press, before the
+    // status check and the conversation creation that pendingRef does not yet cover.
     const [submitting, setSubmitting] = React.useState(false);
 
     // Resume the user's most recent conversation on load. Skipped entirely
@@ -664,7 +663,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // new epoch and discard itself even though abort() came too late.
         purgeEpochRef.current += 1;
         setRenderEpoch(purgeEpochRef.current);
-        submittingRef.current = false;
         setSubmitting(false);
         abortRef.current?.abort();
         resumeAbortRef.current?.abort();
@@ -1281,18 +1279,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // turn when it now reports a futile state. The notice is already updated
     // by refreshStatus; a failed check (null) proceeds with the send.
     const submitTurn = async (content: string) => {
-        if (submittingRef.current) return;
         const submitEpoch = purgeEpochRef.current;
-        submittingRef.current = true;
         setSubmitting(true);
         try {
             await runSubmit(content, submitEpoch);
         } finally {
             // After a purge the flag already belongs to the next account's submit.
-            if (purgeEpochRef.current === submitEpoch) {
-                submittingRef.current = false;
-                setSubmitting(false);
-            }
+            if (purgeEpochRef.current === submitEpoch) setSubmitting(false);
         }
     };
 
