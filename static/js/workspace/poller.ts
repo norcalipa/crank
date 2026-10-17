@@ -12,8 +12,9 @@ import {createLatestGuard} from './requests';
 
 export const MIN_POLL_SECONDS = 30;
 export const MAX_POLL_SECONDS = 600;
-/** A tab that returns after this long since the last check asks at once,
- * whether or not the interval has passed; a quicker flip waits for the timer. */
+/** A tab that returns after this long since the last check may ask at once,
+ * before the interval has passed; a quicker flip waits for the timer. Never
+ * while a failure back-off is pending, and at most once per interval. */
 export const RETURN_MIN_GAP_MS = 10_000;
 
 // Monotonic: a wall-clock step (manual change, a resumed virtual machine) must
@@ -66,6 +67,7 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
     let delayMs = intervalMs;
     let failures = 0;
     let lastCheckAt = 0;
+    let lastReturnCheckAt = -Infinity;
 
     const clearTimer = () => {
         if (timer !== null) {
@@ -134,7 +136,12 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
         }
         if (inFlight) return;
         const waited = now() - lastCheckAt;
-        if (waited >= Math.min(delayMs, RETURN_MIN_GAP_MS)) {
+        // A prompt check at the return, but none while a failure is pending
+        // and at most one early check per interval (AC 9).
+        const early = failures === 0 && waited >= RETURN_MIN_GAP_MS
+            && now() - lastReturnCheckAt >= intervalMs;
+        if (waited >= delayMs || early) {
+            if (waited < delayMs) lastReturnCheckAt = now();
             void check(true);
         } else {
             arm(delayMs - waited);
@@ -150,6 +157,7 @@ export function createPoller<T>(options: PollerOptions<T>): Poller {
             intervalMs = clampPollSeconds(options.intervalSeconds) * 1000;
             delayMs = intervalMs;
             lastCheckAt = now();
+            lastReturnCheckAt = -Infinity;
             document.addEventListener('visibilitychange', onVisibility);
             arm(delayMs);
         },

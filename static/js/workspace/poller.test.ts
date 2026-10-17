@@ -387,4 +387,149 @@ describe('createPoller', () => {
         setVisibility('visible');
         expect(jest.getTimerCount()).toBe(0);
     });
+
+    // Issue #485 review (round 2): the prompt check at the return stays inside
+    // AC 9. None while a failure is pending; at most one early check per interval.
+    describe('the bound on the check at the return', () => {
+        async function flip(times: number, hiddenMs = 1_000, visibleMs = 10_000) {
+            for (let i = 0; i < times; i += 1) {
+                setVisibility('hidden');
+                await tick(hiddenMs);
+                setVisibility('visible');
+                await tick(visibleMs);
+            }
+        }
+
+        it('tab flips every 11 s for 10 minutes send at most two checks per interval', async () => {
+            const request = jest.fn().mockResolvedValue(answer(60));
+            const {poller} = make(request);
+            poller.start();
+            await flip(Math.floor((10 * 60_000) / 11_000));
+            // One timer check and at most one early check per 60 s: 10 + 10 at
+            // most (the unbounded rule sent 54).
+            expect(request.mock.calls.length).toBeLessThanOrEqual(20);
+            expect(request.mock.calls.length).toBeGreaterThanOrEqual(10);
+            poller.stop();
+        });
+
+        it('a larger interval named by the server limits the early checks too', async () => {
+            const request = jest.fn().mockResolvedValue(answer(600));
+            const {poller} = make(request, 600);
+            poller.start();
+            await flip(Math.floor((10 * 60_000) / 11_000));
+            // 600 s interval: one timer check and one early check in 10 minutes.
+            expect(request.mock.calls.length).toBeLessThanOrEqual(2);
+            poller.stop();
+        });
+
+        it('a failing server gets no early check while the back-off is pending', async () => {
+            const request = jest.fn().mockRejectedValue(new Error('503'));
+            const {poller} = make(request);
+            poller.start();
+            await tick(60_000);
+            expect(request).toHaveBeenCalledTimes(1);
+            // The wait is now 120 s; 5 minutes of flips may send only what the
+            // doubling allows (at 180 s and at 420 s), never one per return.
+            await flip(Math.floor((5 * 60_000) / 11_000));
+            expect(request.mock.calls.length).toBeLessThanOrEqual(3);
+            poller.stop();
+        });
+
+        it('a second early check waits for a whole interval after the first', async () => {
+            const request = jest.fn().mockResolvedValue(answer(60));
+            const {poller, results} = make(request);
+            poller.start();
+            await tick(15_000);
+            setVisibility('hidden');
+            await tick(1_000);
+            setVisibility('visible');
+            await tick(0);
+            expect(request).toHaveBeenCalledTimes(1);
+            await tick(15_000);
+            setVisibility('hidden');
+            await tick(1_000);
+            setVisibility('visible');
+            await tick(0);
+            // 16 s after the first early check: no second one.
+            expect(request).toHaveBeenCalledTimes(1);
+            expect(results.map((r) => r.afterReturn)).toEqual([true]);
+            poller.stop();
+        });
+    });
+
+    it('start() forgets the early check of an earlier run', async () => {
+        const request = jest.fn().mockResolvedValue(answer(600));
+        const {poller} = make(request, 600);
+        poller.start();
+        await tick(20_000);
+        setVisibility('hidden');
+        await tick(1_000);
+        setVisibility('visible');
+        await tick(0);
+        expect(request).toHaveBeenCalledTimes(1);
+        poller.stop();
+        // A new run (a sign-in, a header refresh) is a fresh start: its first
+        // return after 10 s may ask early again.
+        poller.start();
+        await tick(20_000);
+        setVisibility('hidden');
+        await tick(1_000);
+        setVisibility('visible');
+        await tick(0);
+        expect(request).toHaveBeenCalledTimes(2);
+        poller.stop();
+    });
+
+    it('a success resets the back-off: the next failure waits 2 minutes again', async () => {
+        const request = jest.fn()
+            .mockRejectedValueOnce(new Error('boom'))
+            .mockRejectedValueOnce(new Error('boom'))
+            .mockResolvedValueOnce(answer(60))
+            .mockRejectedValueOnce(new Error('boom'))
+            .mockResolvedValue(answer(60));
+        const {poller} = make(request);
+        poller.start();
+        await tick(60_000 + 120_000 + 240_000);
+        expect(request).toHaveBeenCalledTimes(3);
+        await tick(60_000);
+        expect(request).toHaveBeenCalledTimes(4);
+        await tick(119_000);
+        expect(request).toHaveBeenCalledTimes(4);
+        await tick(1_000);
+        expect(request).toHaveBeenCalledTimes(5);
+        poller.stop();
+    });
+
+    it('a flip back within seconds of start() waits for the timer', async () => {
+        const request = jest.fn().mockResolvedValue(answer(60));
+        const {poller} = make(request);
+        await tick(5 * 60_000);
+        poller.start();
+        await tick(2_000);
+        setVisibility('hidden');
+        await tick(3_000);
+        setVisibility('visible');
+        await tick(0);
+        expect(request).not.toHaveBeenCalled();
+        await tick(55_000);
+        expect(request).toHaveBeenCalledTimes(1);
+        poller.stop();
+    });
+
+    it('a return after the back-off delay has passed asks at once', async () => {
+        const request = jest.fn()
+            .mockRejectedValueOnce(new Error('boom'))
+            .mockResolvedValue(answer(60));
+        const {poller, results} = make(request);
+        poller.start();
+        await tick(60_000);
+        expect(request).toHaveBeenCalledTimes(1);
+        setVisibility('hidden');
+        await tick(140_000);
+        setVisibility('visible');
+        await tick(0);
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(results).toEqual([{value: 1, afterReturn: true}]);
+        poller.stop();
+    });
 });
