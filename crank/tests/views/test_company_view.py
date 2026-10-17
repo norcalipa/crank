@@ -94,7 +94,8 @@ class FitEndpointTests(CompanyViewTestBase):
         body = self.fit().json()
         self.assertFalse(body["has_preferences"])
         self.assertEqual(body["requirements"], [])
-        self.assertIsNone(body["fit_score"])
+        self.assertIsNone(body["priorities_met"])
+        self.assertNotIn("fit_score", body)
         self.assertEqual(body["organization_id"], self.org.pk)
 
     def test_default_preferences_have_no_requirements(self):
@@ -127,9 +128,79 @@ class FitEndpointTests(CompanyViewTestBase):
         self.assertEqual(
             set(body["revision"]), {"preference_revision", "ranking_version", "data_revision", "generated_at", "stale"}
         )
-        self.assertIsNotNone(body["fit_score"])
+        self.assertEqual(body["priorities_met"], {"met": 1, "counted": 2})
+        self.assertNotIn("fit_score", body)
+        self.assertEqual(
+            {path: r["counted"] for path, r in by_path.items()},
+            {"funding_stage": True, "work_location.max_in_office_days": True},
+        )
         self.assertIn("coverage", body)
         self.assertIn("company_score", body)
+
+    def test_priorities_met_counts_only_what_a_company_fact_can_decide(self):
+        evidence(self.org, "funding_round", "Series A")
+        evidence(self.org, "rto_policy", "Hybrid")
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=prefs(
+                funding_stage=["A"],
+                work_location={"modes": ["remote"]},
+                compensation={"minimum_salary": 100000, "currency": "USD"},
+                geography={"remote_friendly": True},
+            ),
+            schema_version=3,
+        )
+        body = self.fit().json()
+        by_path = {r["path"]: r for r in body["requirements"]}
+        self.assertEqual(body["priorities_met"], {"met": 1, "counted": 2})
+        self.assertEqual(
+            {path: r["counted"] for path, r in by_path.items()},
+            {
+                "funding_stage": True,
+                "work_location.modes": True,
+                "compensation.minimum_salary": False,
+                "geography.remote_friendly": False,
+            },
+        )
+        meets = [r for r in body["requirements"] if r["status"] == "match" and r["scope_ok"] and r["counted"]]
+        self.assertEqual(len(meets), body["priorities_met"]["met"])
+
+    def test_only_per_job_priorities_leave_the_figure_empty(self):
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=prefs(compensation={"minimum_salary": 100000, "currency": "USD"}),
+            schema_version=3,
+        )
+        body = self.fit().json()
+        self.assertTrue(body["requirements"])
+        self.assertTrue(all(r["counted"] is False for r in body["requirements"]))
+        self.assertIsNone(body["priorities_met"])
+
+    def test_a_fact_that_does_not_cover_the_reader_is_counted_but_not_met(self):
+        evidence(self.org, "funding_round", "Series A", scope={"countries": ["Narnia"]})
+        UserPreference.objects.create(
+            user=self.user, preferences=prefs(funding_stage=["A"]), schema_version=3
+        )
+        body = self.fit().json()
+        self.assertEqual(body["priorities_met"], {"met": 0, "counted": 1})
+        self.assertTrue(body["requirements"][0]["counted"])
+
+    def test_an_excluded_company_still_gets_its_figure(self):
+        evidence(self.org, "funding_round", "Series A")
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=prefs(funding_stage=["A"], exclusions={"companies": ["Acme"]}),
+            schema_version=3,
+        )
+        body = self.fit().json()
+        self.assertTrue(body["excluded"])
+        self.assertEqual(body["priorities_met"], {"met": 1, "counted": 1})
+
+    def test_a_reader_with_only_exclusions_has_no_figure(self):
+        UserPreference.objects.create(
+            user=self.user, preferences=prefs(exclusions={"companies": ["Acme"]}), schema_version=3
+        )
+        self.assertIsNone(self.fit().json()["priorities_met"])
 
     def test_the_observed_values_the_engine_sends_under_six_priorities(self):
         # The client turns these into words in static/js/company/FitSection.tsx
@@ -329,9 +400,9 @@ class FitEndpointTests(CompanyViewTestBase):
         self.assertEqual([cache.get(k) for k in keys], [None, None, None])
 
     def test_the_only_shared_entry_it_fills_is_the_reader_neutral_average_scores(self):
-        # Both `_score_organization_match` and `_company_score` read the
-        # company's ratings through `Organization.avg_scores()`, the one read
-        # path every reader of a company's scores uses; it fills this entry
+        # `_company_score` reads the company's ratings through
+        # `Organization.avg_scores()`, the one read path every reader of a
+        # company's scores uses; it fills this entry
         # (`cache.get_or_set`). The value depends on the company's ratings
         # alone, never on the reader, so no private data reaches the cache.
         UserPreference.objects.create(
@@ -447,7 +518,7 @@ class FitEndpointTests(CompanyViewTestBase):
             body = self.fit().json()
         self.assertEqual(body["coverage"], 1.0)
         self.assertEqual(body["company_score"], 3.0)
-        self.assertGreater(body["fit_score"], 0)
+        self.assertEqual(body["priorities_met"], {"met": 1, "counted": 1})
         self.assertIsNone(self.fit().json()["company_score"])  # no ratings
 
 
