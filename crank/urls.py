@@ -37,6 +37,7 @@ from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.health import readiness
 from crank.views.help import HelpView, PrivacyView
 from crank.views.index import IndexView, algo_page
+from crank.views.rankings_api import rankings_list_view, rankings_revision_view
 from crank.views.job_matches import (
     job_match_detail,
     job_match_dismiss,
@@ -82,6 +83,8 @@ urlpatterns = [
     path("algo/<int:algorithm_id>/", algo_page, name="index"),
     path('api/funding-round-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(FundingRoundChoicesView.as_view()), name='funding_round_choices'),
     path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
+    path('api/rankings/<int:algorithm_id>/revision/', rankings_revision_view, name='rankings-revision'),
+    path('api/rankings/<int:algorithm_id>/', rankings_list_view, name='rankings-list'),
     path('api/organizations/<int:pk>/', organization_detail, name='organization-detail'),
     path('api/account/whoami/', account_whoami, name='account-whoami'),
     path('api/organizations/<int:pk>/provenance/', organization_provenance, name='organization-provenance'),

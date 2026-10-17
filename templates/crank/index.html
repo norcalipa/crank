@@ -7,7 +7,7 @@
 {% block content %}
     {% if algorithm %}
         <div class="container homepage-container">
-            <h1 class="h4 mb-1">Company rankings</h1>
+            <h1 class="h4 mb-1" id="rankings-heading" tabindex="-1">Company rankings</h1>
             <p class="text-muted mb-3">Compare companies by what matters to you, then open one to see the evidence.</p>
             <details class="how-ranking-works mb-3" data-testid="how-ranking-works">
                 <summary class="how-ranking-works-summary">How ranking works</summary>
@@ -78,6 +78,7 @@
             <span id="organization-list-config"
                   data-can-suggest-company="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"
                   data-current-algorithm-id="{{ current_algorithm_id|default_if_none:'' }}"
+                  data-revision="{{ rankings_revision }}"
                   data-algorithm-url-template="/algo/__ALGORITHM_ID__/"
                   data-sign-in-url-template="{{ company_sign_in_url_template }}"></span>
         </div>
