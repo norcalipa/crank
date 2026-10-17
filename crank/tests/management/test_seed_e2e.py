@@ -165,6 +165,31 @@ class SeedE2ECommandTests(TestCase):
         self.assertEqual(row.state, CompanyFieldEvidence.State.ACCEPTED)
         self.assertEqual(row.source_domain, "e2e.example.test")
 
+    def test_seeds_one_scoped_accepted_funding_fact_for_alpha(self):
+        call_command("seed_e2e", stdout=StringIO())
+        call_command("seed_e2e", stdout=StringIO())
+        rows = CompanyFieldEvidence.objects.filter(
+            organization__name="E2E Alpha Corp", scope_json__isnull=False
+        ).exclude(scope_json={})
+        self.assertEqual(rows.count(), 1)
+        row = rows.get()
+        self.assertEqual(row.field_key, "funding_round")
+        self.assertEqual(row.state, CompanyFieldEvidence.State.ACCEPTED)
+        self.assertEqual(row.scope_json, {"countries": ["US"]})
+        self.assertIsNotNone(row.last_verified_at)
+        # A rerun repairs a drifted scope instead of adding a second row.
+        row.scope_json = {}
+        row.save(update_fields=["scope_json"])
+        call_command("seed_e2e", stdout=StringIO())
+        self.assertEqual(
+            CompanyFieldEvidence.objects.filter(
+                organization__name="E2E Alpha Corp", field_key="funding_round"
+            ).count(),
+            1,
+        )
+        row.refresh_from_db()
+        self.assertEqual(row.scope_json, {"countries": ["US"]})
+
     def test_seeds_evidence_status_fixtures_for_issue_473(self):
         call_command("seed_e2e", stdout=StringIO())
         call_command("seed_e2e", stdout=StringIO())

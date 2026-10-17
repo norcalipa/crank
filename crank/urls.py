@@ -31,6 +31,7 @@ from crank.views.api import (
 )
 from crank.views.assistant_status import assistant_status
 from crank.views.company_requests import company_requests
+from crank.views.company_view import organization_fit_view, organization_jobs_view
 from crank.views.company_corrections import company_corrections
 from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.health import readiness
@@ -84,6 +85,8 @@ urlpatterns = [
     path('api/account/whoami/', account_whoami, name='account-whoami'),
     path('api/organizations/<int:pk>/provenance/', organization_provenance, name='organization-provenance'),
     path('api/organizations/<int:pk>/scores/', organization_scores, name='organization-scores'),
+    path('api/organizations/<int:pk>/fit/', organization_fit_view, name='organization-fit'),
+    path('api/organizations/<int:pk>/jobs/', organization_jobs_view, name='organization-jobs'),
     path('api/company-requests/', company_requests, name='company-request-list'),
     path('api/company-requests/<int:pk>/', company_requests, name='company-request-detail'),
     path('api/company-corrections/', company_corrections, name='company-correction-list'),

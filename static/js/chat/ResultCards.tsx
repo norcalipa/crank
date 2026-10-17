@@ -3,6 +3,8 @@
 import * as React from 'react';
 import EvidenceSummary from '../evidence/EvidenceSummary';
 import {EvidenceSummaryData, fundingRoundLabel, rtoPolicyLabel} from '../labels';
+import {parseCompanyId} from '../company/companyId';
+import {openWorkspaceCompany} from '../workspace/store';
 import type {JobResult, OrganizationResult, StructuredResults} from './types';
 
 export function formatCompensation(comp: JobResult['compensation']): string {
@@ -67,7 +69,23 @@ const isEvidenceSummary = (value: unknown): value is EvidenceSummaryData => {
         .every((key) => Number.isInteger(summary[key]));
 };
 
+// A plain click opens the company view through the typed target when this page
+// hosts one; anywhere else (no list mounted, or the list does not show the
+// company) it follows the link to `/?company=<id>`. A modified click keeps the
+// browser's own behaviour. The id is parsed before it reaches a target or an
+// address (issue #486).
+function openCompany(event: React.MouseEvent<HTMLAnchorElement>, companyId: number): void {
+    if (event.defaultPrevented || event.button !== 0
+        || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+    }
+    if (openWorkspaceCompany(companyId) === 'opened') {
+        event.preventDefault();
+    }
+}
+
 export function OrgCard({org}: {org: OrganizationResult}) {
+    const companyId = parseCompanyId(org.id);
     const funding = fundingRoundLabel(org.funding_round);
     const rto = rtoPolicyLabel(org.rto_policy);
     const evidence = isEvidenceSummary(org.evidence) ? org.evidence : null;
@@ -102,14 +120,25 @@ export function OrgCard({org}: {org: OrganizationResult}) {
                 </div>
             )}
             <div className="org-card-actions d-flex flex-wrap align-items-center column-gap-3 mt-1">
+            {companyId !== null && (
+                <a
+                    href={`/?company=${companyId}`}
+                    className="org-card-view-company"
+                    data-testid={`view-company-${org.id}`}
+                    aria-label={`View company: ${org.name}`}
+                    onClick={(event) => openCompany(event, companyId)}
+                >
+                    View company
+                </a>
+            )}
             {org.url && (
                 <a
                     href={org.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    aria-label={`View details for ${org.name} (opens in a new tab)`}
+                    aria-label={`Website of ${org.name} (opens in a new tab)`}
                 >
-                    Details ↗
+                    Website <i className="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
                 </a>
             )}
             <button

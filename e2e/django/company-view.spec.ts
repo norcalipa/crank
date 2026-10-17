@@ -1147,3 +1147,859 @@ test.describe('company view (issue #486b)', () => {
         });
     }
 });
+
+// Fit, open jobs and scope in words (issue #486c). The seeded reader's saved
+// priorities are one work-mode requirement, so the real fit has one row; the
+// other states are stubbed answers of the two endpoints, never stored data.
+test.describe('company view fit, jobs and scope (issue #486c)', () => {
+    test.beforeEach(() => {
+        requireDjangoTier();
+    });
+
+    const BETA = 'E2E Beta Labs';
+    const openCompanyNamed = async (page: Page, name: string) => {
+        await page.locator(`tr[aria-label="View details for ${name}"], article[aria-label="View details for ${name}"]`)
+            .locator('visible=true').first().click();
+        await expect(view(page)).toBeVisible();
+    };
+    const fitBody = (overrides: Record<string, unknown> = {}) => ({
+        organization_id: 1, has_preferences: true, fit_score: 72.5, company_score: 4.2, coverage: 0.5,
+        unsupported: [], revision: {preference_revision: 1, ranking_version: '1.0.0', data_revision: 1},
+        requirements: [
+            {path: 'funding_stage', status: 'match', hard: false, observed: 'b', scope_ok: true, scope: null,
+                evidence_status: {state: 'verified', last_verified_at: null}},
+            {path: 'work_location.max_in_office_days', status: 'mismatch', hard: true, observed: 3, scope_ok: true,
+                scope: null, evidence_status: {state: 'profile'}},
+            {path: 'compensation.require_public_company', status: 'mismatch', hard: false, observed: false,
+                scope_ok: true, scope: null, evidence_status: {state: 'sourced'}},
+            {path: 'industry', status: 'unknown', hard: false, observed: null, scope_ok: false,
+                scope: {countries: ['US'], role_families: ['Engineering']}, evidence_status: {state: 'stale'}},
+        ],
+        ...overrides,
+    });
+    const stub = (page: Page, kind: 'fit' | 'jobs', respond: Parameters<Page['route']>[1]) =>
+        page.route(`**/api/organizations/*/${kind}/`, respond);
+    const json = (body: unknown, status = 200) => ({status, contentType: 'application/json', body: JSON.stringify(body)});
+
+    test('the real fit and jobs answers render in the view, private and uncached', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/');
+        const fit = page.waitForResponse((r) => /\/api\/organizations\/\d+\/fit\/$/.test(r.url()));
+        const jobs = page.waitForResponse((r) => /\/api\/organizations\/\d+\/jobs\/$/.test(r.url()));
+        await opener(page).click();
+        const [fitResponse, jobsResponse] = await Promise.all([fit, jobs]);
+        for (const response of [fitResponse, jobsResponse]) {
+            expect(response.status()).toBe(200);
+            expect(response.headers()['cache-control']).toBe('private, no-store');
+        }
+        await expect(page.getByTestId('fit-ready')).toBeVisible();
+        for (const id of ['fit-score', 'fit-company-score', 'fit-coverage']) {
+            await expect(page.getByTestId(id)).toBeVisible();
+        }
+        await expect(page.getByTestId('fit-row-work_location.modes')).toBeVisible();
+        await expect(page.getByTestId('fit-scope-work_location.modes')).toHaveText(/Company-wide/);
+        const jobRow = page.locator('[data-testid^="job-row-"]').first();
+        await expect(jobRow).toContainText('E2E Seed Software Engineer');
+        await expect(jobRow).toContainText('USD 120,000–160,000 per year');
+        const link = jobRow.getByRole('link', {name: /View posting/});
+        await expect(link).toHaveAttribute('target', '_blank');
+        await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+        await expect(link).toHaveAttribute('href', /^https?:\/\//);
+        // Headings: the view's h2, then its sections.
+        const levels = await view(page).evaluate((section) => [...section.querySelectorAll('h2, h3')]
+            .map((h) => `${h.tagName}:${h.textContent}`));
+        expect(levels.indexOf('H2:E2E Alpha Corp')).toBe(0);
+        expect(levels.indexOf('H3:Fit with your priorities')).toBeLessThan(levels.indexOf('H3:Open jobs'));
+        expect(levels.indexOf('H3:Open jobs')).toBeLessThan(levels.indexOf('H3:Data Freshness & Sources'));
+    });
+
+    test('a company with no listings says "No open roles listed."', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        await openCompanyNamed(page, BETA);
+        await expect(page.getByTestId('jobs-empty')).toHaveText('No open roles listed.');
+    });
+
+    test('View jobs moves focus to the Jobs heading and puts it on screen', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 500});
+        await login(page);
+        await page.goto('/');
+        await openCompanyNamed(page, BETA);
+        await expect(page.getByTestId('jobs-empty')).toBeVisible();
+        await page.getByTestId('company-view-jobs').click();
+        await expect(page.getByRole('heading', {name: 'Open jobs'})).toBeFocused();
+        await expect.poll(() => page.getByRole('heading', {name: 'Open jobs'}).evaluate((h) => {
+            const box = h.getBoundingClientRect();
+            return box.top >= 0 && box.bottom <= window.innerHeight;
+        })).toBe(true);
+    });
+
+    test('scope is named in words: a scoped fact says where it applies, a company-wide one says so', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('field-evidence')).toBeVisible();
+        await expect(page.getByTestId('field-scope-funding_round')).toHaveText(/Location: US/);
+        await expect(page.getByTestId('field-scope-rto_policy')).toHaveText(/Company-wide/);
+        const text = await view(page).innerText();
+        expect(text).not.toMatch(/countries|role_families/);
+    });
+
+    test('the four groups, a fact that does not cover the reader, and the three numbers', async ({page}) => {
+        await login(page);
+        await stub(page, 'fit', (route) => route.fulfill(json(fitBody())));
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-ready')).toBeVisible();
+        await expect(page.getByTestId('fit-group-meets')).toContainText('Funding stage');
+        await expect(page.getByTestId('fit-group-does-not-meet')).toContainText('In-office days');
+        await expect(page.getByTestId('fit-group-tradeoffs')).toContainText('Public company');
+        const unknown = page.getByTestId('fit-group-unknown');
+        await expect(unknown).toContainText('Industry');
+        // One sentence for a fact that does not cover the reader: no value, no status word, the scope said once.
+        await expect(page.getByTestId('fit-out-of-scope-industry')).toHaveText(
+            'Not counted: the fact on record covers Location: US; Roles: Engineering only.');
+        await expect(page.getByTestId('fit-scope-industry')).toHaveCount(0);
+        // The engine's own values read as words.
+        await expect(page.getByTestId('fit-row-funding_stage')).toContainText('Series B');
+        await expect(page.getByTestId('fit-row-work_location.max_in_office_days')).toContainText('3 days a week in the office');
+        await expect(page.getByTestId('fit-score')).toHaveText('72.5');
+        await expect(page.getByTestId('fit-company-score')).toHaveText('4.2 / 5');
+        await expect(page.getByTestId('fit-coverage')).toHaveText('50%');
+        expect(await view(page).innerText()).not.toMatch(/countries|role_families/);
+    });
+
+    test('empty groups, no saved priorities, and the control that opens the editor', async ({page}) => {
+        await login(page);
+        await stub(page, 'fit', (route) => route.fulfill(json(fitBody({requirements: [fitBody().requirements[0]]}))));
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-empty-tradeoffs')).toBeVisible();
+        await expect(page.getByTestId('fit-empty-does-not-meet')).toBeVisible();
+        await expect(page.getByTestId('fit-empty-unknown')).toBeVisible();
+        await page.unroute('**/api/organizations/*/fit/');
+        await stub(page, 'fit', (route) => route.fulfill(json(fitBody({has_preferences: false, requirements: []}))));
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await opener(page).click();
+        await expect(page.getByTestId('fit-no-priorities')).toContainText('Set your priorities to see how E2E Alpha Corp fits.');
+        await page.getByTestId('fit-set-priorities').click();
+        await expect(page.getByTestId('assistant-panel')).toBeVisible();
+        await expect(page.getByTestId('priorities-sidebar')).toBeVisible();
+        await expect(view(page)).toBeVisible();
+    });
+
+    test('a failing fit shows a fixed sentence and Retry; the rest of the view is unaffected', async ({page}) => {
+        await login(page);
+        let calls = 0;
+        await stub(page, 'fit', (route) => {
+            calls += 1;
+            return calls === 1 ? route.fulfill(json({detail: 'internal secret'}, 500)) : route.fulfill(json(fitBody()));
+        });
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-error')).toHaveText(/Fit could not be loaded\./);
+        expect(await view(page).innerText()).not.toContain('internal secret');
+        await expect(page.getByTestId('popup-details-grid')).toBeVisible();
+        await page.getByTestId('fit-retry').click();
+        await expect(page.getByTestId('fit-ready')).toBeVisible();
+    });
+
+    test('an expired session (redirect or 401) is the sign-in prompt, never an error that cannot clear', async ({page}) => {
+        await login(page);
+        await stub(page, 'fit', (route) => route.fulfill(json({}, 401)));
+        await stub(page, 'jobs', (route) => route.fulfill({status: 302, headers: {location: '/accounts/login/?next=/'}}));
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-sign-in')).toBeVisible();
+        await expect(page.getByTestId('jobs-sign-in')).toBeVisible();
+        await expect(page.getByTestId('fit-error')).toHaveCount(0);
+        await expect(page.getByTestId('jobs-error')).toHaveCount(0);
+    });
+
+    test('signed out: sign-in prompts in both sections and no request to either endpoint', async ({page}) => {
+        const asked: string[] = [];
+        page.on('request', (request) => {
+            if (/\/api\/organizations\/\d+\/(fit|jobs)\//.test(request.url())) asked.push(request.url());
+        });
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-sign-in')).toBeVisible();
+        await expect(page.getByTestId('jobs-sign-in')).toBeVisible();
+        await expect(page.getByTestId('fit-sign-in').getByRole('link')).toHaveAttribute('href', /\/accounts\/login\//);
+        await page.getByTestId('company-view-jobs').click();
+        await expect(page.getByRole('heading', {name: 'Open jobs'})).toBeFocused();
+        await expect(view(page).getByTestId('provenance-section')).toBeVisible();
+        expect(asked).toEqual([]);
+    });
+
+    test('jobs: inventory unavailable is worded apart from empty; an error has Retry; a javascript: address has no link', async ({page}) => {
+        await login(page);
+        await stub(page, 'jobs', (route) => route.fulfill(json({organization_id: 1, inventory: 'unavailable', count: 0, results: []})));
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('jobs-unavailable')).toContainText('Job listings are not available yet');
+        await expect(page.getByTestId('jobs-empty')).toHaveCount(0);
+        await page.unroute('**/api/organizations/*/jobs/');
+        let calls = 0;
+        await stub(page, 'jobs', (route) => {
+            calls += 1;
+            if (calls === 1) return route.fulfill(json({}, 500));
+            return route.fulfill(json({organization_id: 1, inventory: 'available', count: 2, results: [
+                {id: 1, title: 'Risky link', location_text: '', is_remote: false, compensation_min: null, compensation_max: null,
+                    compensation_currency: '', compensation_interval: '', canonical_url: 'javascript:alert(1)', status: 'active'},
+                {id: 2, title: 'Fine link', location_text: 'Remote', is_remote: true, compensation_min: '100000.00',
+                    compensation_max: '120000.00', compensation_currency: 'USD', compensation_interval: 'year',
+                    canonical_url: 'https://jobs.example.test/2', status: 'active'},
+            ]}));
+        });
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await opener(page).click();
+        await expect(page.getByTestId('jobs-error')).toContainText('Open jobs could not be loaded.');
+        await page.getByTestId('jobs-retry').click();
+        await expect(page.getByTestId('job-row-1')).toContainText('Risky link');
+        await expect(page.getByTestId('job-link-1')).toHaveCount(0);
+        await expect(page.getByTestId('job-link-2')).toHaveAttribute('href', 'https://jobs.example.test/2');
+        await expect(page.getByTestId('job-row-2')).toContainText('USD 100,000–120,000 per year');
+    });
+
+    test('opening another company shows the next company\'s sections, never the previous one\'s', async ({page}) => {
+        await login(page);
+        await stub(page, 'jobs', async (route) => {
+            const id = /organizations\/(\d+)\/jobs/.exec(route.request().url())![1];
+            if (id !== (await page.evaluate(() => new URLSearchParams(window.location.search).get('company')))) {
+                await new Promise((resolve) => setTimeout(resolve, 600));
+            }
+            return route.fulfill(json({organization_id: Number(id), inventory: 'available', count: 1, results: [
+                {id: Number(id), title: `Job of ${id}`, location_text: '', is_remote: false, compensation_min: null,
+                    compensation_max: null, compensation_currency: '', compensation_interval: '',
+                    canonical_url: 'https://jobs.example.test/x', status: 'active'}]}));
+        });
+        await page.goto('/');
+        await opener(page).click();
+        const first = await companyParam(page);
+        await expect(page.getByTestId(`job-row-${first}`)).toBeVisible();
+        await page.evaluate(() => window.dispatchEvent(new CustomEvent('crank:company-open', {detail: {organizationId: 999999}})));
+        await expect(page.getByTestId('company-not-found')).toBeVisible();
+        await expect(page.locator('[data-testid^="job-row-"]')).toHaveCount(0);
+    });
+
+    for (const size of [
+        {width: 1280, height: 900, assistant: false},
+        {width: 1280, height: 900, assistant: true},
+        {width: 1024, height: 800, assistant: true},
+        {width: 768, height: 1024, assistant: false},
+        {width: 375, height: 667, assistant: false},
+        {width: 320, height: 640, assistant: false},
+    ]) {
+        test(`the new sections fit at ${size.width}x${size.height}${size.assistant ? ' with the assistant open' : ''}: no sideways scroll, 44px controls on phones`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page);
+            await stub(page, 'fit', (route) => route.fulfill(json(fitBody())));
+            await stub(page, 'jobs', (route) => route.fulfill(json({organization_id: 1, inventory: 'available', count: 1, results: [
+                {id: 1, title: 'A very long job title that keeps going to test wrapping inside the narrow column',
+                    location_text: 'Remote (United States and Canada only, with some overlap hours)', is_remote: true,
+                    compensation_min: '100000.00', compensation_max: '120000.00', compensation_currency: 'USD',
+                    compensation_interval: 'year', canonical_url: 'https://jobs.example.test/1', status: 'active'}]})));
+            await page.goto('/');
+            if (size.assistant) await page.locator('[data-testid="assistant-launcher"]').click();
+            await opener(page).click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await expect(page.getByTestId('job-row-1')).toBeVisible();
+            await expectNoHorizontalOverflow(page);
+            const wide = await view(page).evaluate((section) => section.scrollWidth > section.clientWidth + 1);
+            expect(wide).toBe(false);
+            if (size.width <= 768) {
+                const small = await view(page).evaluate((section) => [...section.querySelectorAll(
+                    '.company-fit :is(button, a, summary), .company-jobs :is(button, a), [data-testid="company-view-jobs"], [data-testid="company-see-fit"]')]
+                    .map((el) => ({name: el.textContent?.trim(), height: el.getBoundingClientRect().height}))
+                    .filter((box) => box.height < 44));
+                expect(small).toEqual([]);
+            }
+        });
+    }
+});
+
+// What the page says on a real server, never a stub (issue #486c, visual review
+// round 1). These cases write the priorities of the seeded `e2e_prefs_user`,
+// which only priorities.spec.ts, assistant-actions.spec.ts and chat-layout.spec.ts
+// also read; every case puts the account back as seeded (one remote-work
+// priority) in `finally`.
+const PREFS_USER = 'e2e_prefs_user';
+const E2E_PASSWORD = 'e2e-throwaway-password';
+const SIX = {set: {
+    'work_location.modes': ['remote'], 'work_location.max_in_office_days': 2, funding_stage: ['public'],
+    'compensation.require_public_company': true, industry: ['Software'], 'vesting.prefer_accelerated': true,
+    importance: {'work_location.max_in_office_days': 1.0, 'compensation.require_public_company': 1.0},
+}};
+const SEEDED = {set: {'work_location.modes': ['remote']}};
+
+/** Resets the signed-in account's priorities through the API, then applies `patch` (null: none). */
+async function setPriorities(page: Page, patch: object | null): Promise<void> {
+    const failed = await page.evaluate(async (todo) => {
+        const csrf = document.cookie.split('; ').find((c) => c.startsWith('csrftoken='))?.split('=')[1] || '';
+        const headers = {'Content-Type': 'application/json', 'X-CSRFToken': decodeURIComponent(csrf)};
+        const send = (url: string, body: unknown) => fetch(url, {method: 'POST', headers, body: JSON.stringify(body)});
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            const current = await (await fetch('/api/agent/preferences/')).json();
+            let status = 0;
+            if (current.chips.length > 0) {
+                status = (await send('/api/agent/preferences/reset/', {expected_revision: current.revision})).status;
+                if (status >= 400) { if (status === 409) continue; return `reset ${status}`; }
+            }
+            if (!todo) return '';
+            const proposed = await send('/api/agent/preferences/propose/', {patch: todo, scope: 'account'});
+            if (!proposed.ok) return `propose ${proposed.status}`;
+            const applied = await send('/api/agent/preferences/apply/', {proposal: (await proposed.json()).token, decision: 'apply'});
+            if (applied.ok) return '';
+            if (applied.status !== 409) return `apply ${applied.status}`;
+        }
+        return 'conflict';
+    }, patch);
+    expect(failed).toBe('');
+}
+
+const BG = [33, 37, 41];
+const luminance = ([r, g, b]: number[]) => {
+    const lin = [r, g, b].map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+};
+const contrastOf = (a: number[], b: number[]) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+};
+const colourOf = (locator: ReturnType<Page['locator']>) => locator.evaluate((el) =>
+    (getComputedStyle(el).color.match(/\d+(\.\d+)?/g) || []).slice(0, 3).map(Number));
+
+/** The page's smooth scrolling has come to rest. */
+async function scrollRested(page: Page): Promise<void> {
+    let last = -1;
+    await expect.poll(async () => {
+        const now = await page.evaluate(() => window.scrollY);
+        const rested = now === last;
+        last = now;
+        return rested;
+    }, {intervals: [150]}).toBe(true);
+}
+
+const SIZES = [
+    {width: 1280, height: 900}, {width: 1024, height: 800}, {width: 768, height: 1024},
+    {width: 375, height: 667}, {width: 320, height: 640},
+];
+
+test.describe('company view on a real server, round 2 (issue #486c)', () => {
+    test.beforeEach(() => {
+        requireDjangoTier();
+    });
+
+    test('real fit rows print words for the engine\'s own values, one sentence for a fact that does not cover the reader, and "No accepted evidence"', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, SIX);
+            await page.goto('/');
+            await opener(page).click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            const value = (path: string) => page.getByTestId(`fit-row-${path}`).locator('.company-fit-value');
+            await expect(value('work_location.modes')).toHaveText('Remote');
+            await expect(value('work_location.max_in_office_days')).toHaveText('0 days a week in the office');
+            await expect(value('vesting.prefer_accelerated')).toHaveText('No');
+            // A fact limited to one country does not decide this reader's funding stage: one sentence.
+            const notCounted = page.getByTestId('fit-row-funding_stage');
+            await expect(notCounted).toContainText('Not counted: the fact on record covers Location: US only.');
+            await expect(notCounted.locator('.company-fit-value')).toHaveCount(0);
+            await expect(page.getByTestId('fit-group-unknown')).toContainText('Funding stage');
+            await expect(page.getByTestId('fit-group-meets')).not.toContainText('Funding stage');
+            // No fact behind a requirement is said as such, not "Company-wide".
+            await expect(page.getByTestId('fit-scope-compensation.require_public_company')).toHaveText('No accepted evidence');
+            // A value is never a bare lower-case code or a bare number, and "In-office days: In-Office" cannot occur.
+            const values = await view(page).locator('.company-fit-value').allInnerTexts();
+            expect(values.length).toBeGreaterThan(0);
+            for (const text of values) expect(text).not.toMatch(/^([a-z]|\d+|in-office|remote|hybrid)$/);
+            await expect(page.getByTestId('fit-row-work_location.max_in_office_days')).not.toContainText(/In-office days\s*In-Office/);
+
+            // Another company, a different path of the same requirements: a funding letter becomes a stage.
+            await page.getByRole('button', {name: 'Back to results'}).click();
+            await page.locator(`tr[aria-label="View details for E2E Beta Labs"], article[aria-label="View details for E2E Beta Labs"]`)
+                .locator('visible=true').first().click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await expect(value('funding_stage')).toHaveText('Series B');
+        } finally {
+            await setPriorities(page, SEEDED);
+        }
+    });
+
+    test('real answers for priorities decided per job, a country, and priorities the engine cannot check', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, {set: {
+                'work_location.modes': ['remote'], 'work_location.countries': ['US'], 'compensation.minimum_salary': 100000,
+                'geography.remote_friendly': true, 'roles.titles': ['Engineer'], 'compensation.minimum_total_compensation': 150000,
+            }});
+            await page.goto('/');
+            await opener(page).click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            // Decided from a job's own pay, place and remote flag, so a company is never given an answer: the row says where.
+            for (const path of ['compensation.minimum_salary', 'geography.remote_friendly']) {
+                await expect(page.getByTestId(`fit-scope-${path}`)).toHaveText('Checked for each job, not for the company. See Open jobs.');
+            }
+            // The reader's own country in capitals, not the engine's lower-case token.
+            await expect(page.getByTestId('fit-row-work_location.countries').locator('.company-fit-value')).not.toHaveText(/^[a-z]+$/);
+            // Priorities the engine cannot check are named, not left out.
+            await expect(page.getByTestId('fit-unsupported'))
+                .toHaveText('Not checked for a company: Role titles, Minimum total compensation.');
+            expect(await view(page).innerText()).not.toContain('No fact on record');
+
+            // A reader who has only priorities of that kind is not told to set priorities.
+            await setPriorities(page, {set: {'roles.titles': ['Engineer']}});
+            await page.reload();
+            await expect(page.getByTestId('fit-unsupported-only')).toContainText('Role titles');
+            await expect(page.getByTestId('fit-no-priorities')).toHaveCount(0);
+            await expect(page.getByRole('button', {name: 'Edit your priorities'})).toBeVisible();
+        } finally {
+            await setPriorities(page, SEEDED);
+        }
+    });
+
+    for (const [kind, button, heading] of [['fit', 'fit-retry', 'company-fit-title'], ['jobs', 'jobs-retry', 'company-jobs-title']]) {
+        test(`Retry loading ${kind} keeps the keyboard focus in the section, on its heading`, async ({page}) => {
+            await page.setViewportSize({width: 375, height: 667});
+            await login(page);
+            let calls = 0;
+            await page.route(`**/api/organizations/*/${kind}/`, (route) => {
+                calls += 1;
+                return calls === 1 ? route.fulfill({status: 500, contentType: 'application/json', body: '{}'}) : route.continue();
+            });
+            await page.goto('/');
+            await opener(page).click();
+            const retry = page.getByTestId(button);
+            await expect(retry).toBeVisible();
+            await retry.focus();
+            await page.keyboard.press('Enter');
+            await expect(page.locator(`#${heading}`)).toBeFocused();
+            await expect(page.getByTestId(kind === 'fit' ? 'fit-ready' : 'company-jobs').first()).toBeVisible();
+            await expect(page.locator(`#${heading}`)).toBeFocused();
+        });
+    }
+
+    test('a reader who scrolled past the fit is not moved when its answer arrives and grows the page', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, SIX);
+            let release: () => void = () => {};
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            await page.route('**/api/organizations/*/fit/', async (route) => {
+                await held;
+                await route.continue();
+            });
+            await page.goto('/');
+            await opener(page).click();
+            await expect(page.getByTestId('fit-loading')).toBeVisible();
+            const evidence = page.getByTestId('field-evidence');
+            await evidence.scrollIntoViewIfNeeded();
+            await evidence.evaluate((el) => el.scrollIntoView({block: 'start'}));
+            await scrollRested(page);
+            const top = () => evidence.evaluate((el) => el.getBoundingClientRect().top);
+            const before = await top();
+            release();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await scrollRested(page);
+            // The answer is more than 500 px tall; what the reader was looking at stays where it was.
+            expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(40);
+        } finally {
+            await page.unroute('**/api/organizations/*/fit/');
+            await setPriorities(page, SEEDED);
+        }
+    });
+
+    test('the summary names the fact it counts as unknown for covering only part of the company', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('field-evidence')).toBeVisible();
+        const line = page.getByTestId('coverage-scoped');
+        await expect(line).toHaveText('Counted as unknown because it covers only part of the company: Funding Round (Location: US).');
+        await expect(page.getByTestId('coverage-facts')).toContainText('2 of 7 tracked facts');
+        const scoped = page.getByTestId('field-scope-funding_round');
+        await expect(scoped).toHaveText('Covers only Location: US');
+        // Not the muted colour, and readable on the view's background.
+        expect(contrastOf(await colourOf(scoped), BG)).toBeGreaterThanOrEqual(4.5);
+        expect(contrastOf(await colourOf(line), BG)).toBeGreaterThanOrEqual(4.5);
+        expect(await colourOf(scoped)).not.toEqual(await colourOf(page.getByTestId('field-scope-rto_policy')));
+        await expect(page.getByTestId('field-scope-rto_policy')).toHaveText(/Company-wide/);
+        for (const size of SIZES) {
+            await page.setViewportSize(size);
+            await expectNoHorizontalOverflow(page);
+        }
+    });
+
+    for (const path of ['/', '/algo/1/']) {
+        test(`"View jobs" and "See your fit" put the heading on screen below the top bar, with a ring from the keyboard (${path})`, async ({page}) => {
+            await login(page);
+            for (const size of [...SIZES, {width: 1280, height: 500}]) {
+                await page.setViewportSize(size);
+                for (const [button, heading, name] of [['company-view-jobs', 'company-jobs-title', 'Open jobs'],
+                    ['company-see-fit', 'company-fit-title', 'Fit with your priorities']]) {
+                    for (const how of ['pointer', 'enter']) {
+                        await page.goto(path);
+                        await opener(page).click();
+                        await expect(page.getByTestId('jobs-empty').or(page.locator('[data-testid^="job-row-"]').first())).toBeVisible();
+                        await expect(page.getByTestId('fit-ready')).toBeVisible();
+                        if (how === 'pointer') {
+                            await page.getByTestId(button).click();
+                        } else {
+                            await page.getByTestId(button).focus();
+                            await page.keyboard.press('Enter');
+                        }
+                        const h = page.locator(`#${heading}`);
+                        await expect(h).toBeFocused();
+                        await scrollRested(page);
+                        await page.mouse.move(0, 0);
+                        const m = await h.evaluate((el) => {
+                            const bar = document.querySelector('.app-mobile-topbar');
+                            const barBottom = bar && getComputedStyle(bar).display !== 'none' ? bar.getBoundingClientRect().bottom : 0;
+                            const box = el.getBoundingClientRect();
+                            const hits = [[box.left + 2, box.top + 2], [box.left + box.width / 2, box.top + box.height / 2],
+                                [Math.min(box.right, innerWidth) - 2, box.bottom - 2]]
+                                .map(([x, y]) => { const t = document.elementFromPoint(x, y); return !!t && (t === el || el.contains(t)); });
+                            return {top: box.top, bottom: box.bottom, barBottom, hits, outline: getComputedStyle(el).outlineStyle,
+                                focusVisible: el.matches(':focus-visible'), inner: innerHeight};
+                        });
+                        const label = `${path} ${size.width}x${size.height} ${button} by ${how}: ${JSON.stringify(m)}`;
+                        expect(m.top, label).toBeGreaterThanOrEqual(m.barBottom);
+                        expect(m.bottom, label).toBeLessThanOrEqual(m.inner);
+                        expect(m.hits, label).toEqual([true, true, true]);
+                        if (how === 'enter') {
+                            expect(m.focusVisible, label).toBe(true);
+                            expect(m.outline, label).not.toBe('none');
+                        }
+                        expect(name).toBeTruthy();
+                    }
+                }
+            }
+        });
+    }
+
+    test('with no listings the Jobs heading is on screen above "No open roles listed."', async ({page}) => {
+        await login(page);
+        for (const size of [{width: 375, height: 667}, {width: 320, height: 640}, {width: 1280, height: 900}]) {
+            await page.setViewportSize(size);
+            await page.goto('/');
+            await page.locator('tr[aria-label="View details for E2E Beta Labs"], article[aria-label="View details for E2E Beta Labs"]')
+                .locator('visible=true').first().click();
+            await expect(page.getByTestId('jobs-empty')).toBeVisible();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await page.getByTestId('company-view-jobs').click();
+            await scrollRested(page);
+            const [heading, empty] = await Promise.all([
+                page.locator('#company-jobs-title').boundingBox(), page.getByTestId('jobs-empty').boundingBox()]);
+            expect(heading!.y).toBeGreaterThanOrEqual(0);
+            expect(heading!.y + heading!.height).toBeLessThanOrEqual(empty!.y);
+            expect(empty!.y + empty!.height).toBeLessThanOrEqual(size.height);
+        }
+    });
+
+    test('the two jump buttons share one row on phones, each 44px high with its label on one line', async ({page}) => {
+        await login(page);
+        for (const size of [{width: 375, height: 667}, {width: 320, height: 640}]) {
+            await page.setViewportSize(size);
+            await page.goto('/');
+            await opener(page).click();
+            const [fit, jobs] = await Promise.all([
+                page.getByTestId('company-see-fit').boundingBox(), page.getByTestId('company-view-jobs').boundingBox()]);
+            expect(fit!.y).toBe(jobs!.y);
+            expect(fit!.x).toBeLessThan(jobs!.x);
+            for (const box of [fit!, jobs!]) {
+                expect(box.height).toBeGreaterThanOrEqual(44);
+                expect(box.height).toBeLessThan(60);
+            }
+            await expectNoHorizontalOverflow(page);
+        }
+    });
+
+    test('a late fit answer does not carry the focused heading off the screen; a reader who scrolled is left alone', async ({page}) => {
+        await login(page);
+        for (const size of [{width: 375, height: 667}, {width: 320, height: 640}]) {
+            await page.setViewportSize(size);
+            let release: () => void = () => {};
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            await page.route('**/api/organizations/*/fit/', async (route) => {
+                await held;
+                await route.continue();
+            });
+            await page.goto('/');
+            // The browser's own scroll anchoring would keep a fully visible heading in place by itself; this
+            // case is about what the page does when it does not (a heading under the bar, a browser without it).
+            await page.addStyleTag({content: '* { overflow-anchor: none !important; }'});
+            await opener(page).click();
+            await expect(page.getByTestId('fit-loading')).toBeVisible();
+            await page.getByTestId('company-view-jobs').click();
+            await scrollRested(page);
+            const position = () => page.locator('#company-jobs-title').evaluate((el) => {
+                const box = el.getBoundingClientRect();
+                return {top: box.top, bottom: box.bottom, inner: innerHeight};
+            });
+            const before = await position();
+            expect(before.top).toBeGreaterThanOrEqual(49);
+            release();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            // While the answer is out the page is short, so the heading can only reach where the page ends; once
+            // the answer lands the heading is brought to its scroll margin (4.5rem below the top), not left
+            // wherever the grown page put it.
+            await expect.poll(async () => {
+                const after = await position();
+                return after.top >= 49 && after.top <= 110 && after.bottom <= after.inner;
+            }).toBe(true);
+            await page.unroute('**/api/organizations/*/fit/');
+        }
+    });
+
+    test('a reader who scrolled after the jump is not moved when the answer lands', async ({page}) => {
+        await login(page);
+        await page.setViewportSize({width: 375, height: 667});
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        await page.route('**/api/organizations/*/fit/', async (route) => {
+            await held;
+            await route.continue();
+        });
+        await page.goto('/');
+        await opener(page).click();
+        await expect(page.getByTestId('fit-loading')).toBeVisible();
+        await page.getByTestId('company-view-jobs').click();
+        await scrollRested(page);
+        const jumpTop = await page.locator('#company-jobs-title').evaluate((el) => el.getBoundingClientRect().top);
+        await page.mouse.move(180, 400);
+        await page.mouse.wheel(0, 120);
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+        await scrollRested(page);
+        const scrolled = await page.evaluate(() => window.scrollY);
+        release();
+        await expect(page.getByTestId('fit-ready')).toBeVisible();
+        await scrollRested(page);
+        // The page did not jump back to the heading: it is where the reader left it, give or take
+        // the browser's own scroll anchoring for content that grew above it.
+        const top = await page.locator('#company-jobs-title').evaluate((el) => el.getBoundingClientRect().top);
+        expect(scrolled).toBeGreaterThan(0);
+        expect(Math.abs(top - jumpTop)).toBeGreaterThan(40);
+    });
+
+    test('the disclosure under the numbers opens by keyboard and answers the two questions', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page);
+        await page.goto('/');
+        await opener(page).click();
+        const legend = page.getByTestId('fit-legend');
+        await expect(legend).toBeVisible();
+        const summary = legend.locator('summary');
+        expect((await summary.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+        await summary.focus();
+        await page.keyboard.press('Enter');
+        await expect(legend).toHaveAttribute('open', '');
+        await expect(legend).toContainText('so it cannot reach 100');
+        await expect(legend).toContainText('Why the fit and the rows can disagree');
+        await expect(legend).toContainText('Sourced, not confirmed describes how a row was decided from it');
+        await expect(legend).not.toContainText('Refresh matches');
+        await expect(legend).toContainText('Sourced, not confirmed');
+        await expectNoHorizontalOverflow(page);
+    });
+
+    test('a save of the priorities on a phone: Set your priorities, save, Back to the company shows the numbers; one request on load, one more per save', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, null);
+            const asked: string[] = [];
+            page.on('request', (request) => {
+                if (/\/api\/organizations\/\d+\/(fit|jobs)\//.test(request.url())) asked.push(request.url().replace(/^.*\/api\//, ''));
+            });
+            await page.goto('/');
+            await opener(page).click();
+            await expect(page.getByTestId('fit-no-priorities')).toBeVisible();
+            // The jobs answer is the other read of the page: both have landed before the count.
+            await expect(page.locator('[data-testid="jobs-list"], [data-testid="jobs-empty"], [data-testid="jobs-unavailable"]')).toBeVisible();
+            // A plain page load: exactly one fit request and one jobs request.
+            expect(asked.filter((url) => url.endsWith('/fit/')).length).toBe(1);
+            expect(asked.filter((url) => url.endsWith('/jobs/')).length).toBe(1);
+            await page.getByTestId('fit-set-priorities').click();
+            const panel = page.getByTestId('assistant-panel');
+            await expect(panel).toBeVisible();
+            await panel.getByLabel('Public companies only').selectOption({index: 1});
+            await panel.getByRole('button', {name: 'Review changes'}).click();
+            await panel.getByRole('button', {name: /^Apply to account/}).first().click();
+            await expect(panel).toContainText('Priorities saved');
+            await panel.locator('.assistant-back-to-results').first().click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            for (const id of ['fit-score', 'fit-company-score', 'fit-coverage']) await expect(page.getByTestId(id)).toBeVisible();
+            for (const key of ['meets', 'tradeoffs', 'does-not-meet', 'unknown']) await expect(page.getByTestId(`fit-group-${key}`)).toBeVisible();
+            await expect(page.getByTestId('fit-no-priorities')).toHaveCount(0);
+            // One save, one more fit request, and never another read of the jobs.
+            expect(asked.filter((url) => url.endsWith('/fit/')).length).toBe(2);
+            expect(asked.filter((url) => url.endsWith('/jobs/')).length).toBe(1);
+        } finally {
+            await setPriorities(page, SEEDED);
+        }
+    });
+
+    test('with the assistant docked, a save changes the coverage and the rows without a reload', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, SEEDED);
+            await page.goto('/');
+            await page.locator('[data-testid="assistant-launcher"]').click();
+            await opener(page).click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            const rows = () => page.locator('[data-testid^="fit-row-"]').count();
+            const before = {coverage: await page.getByTestId('fit-coverage').innerText(), rows: await rows()};
+            const panel = page.getByTestId('assistant-panel');
+            await expect(panel).toBeVisible();
+            await panel.getByRole('button', {name: /Edit priorities|Add priorities/}).first().click();
+            await panel.getByLabel('Public companies only').selectOption({index: 1});
+            await panel.getByRole('button', {name: 'Review changes'}).click();
+            await panel.getByRole('button', {name: /^Apply to account/}).first().click();
+            await expect(panel).toContainText('Priorities saved');
+            await expect.poll(rows).toBe(before.rows + 1);
+            expect(await page.getByTestId('fit-coverage').innerText()).not.toBe(before.coverage);
+            await expect(page.getByTestId('company-view')).toBeVisible();
+        } finally {
+            await setPriorities(page, SEEDED);
+        }
+    });
+});
+
+// Adversarial review round 1 and the screenshot review's round-3 findings (issue #486c).
+test.describe('company view, review round 1 (issue #486c)', () => {
+    test.beforeEach(() => {
+        requireDjangoTier();
+    });
+
+    for (const size of [{width: 375, height: 667}, {width: 320, height: 640}]) {
+        test(`${size.width}x${size.height}: after View jobs and a small scroll, the fit arriving does not push Open jobs away`, async ({page}) => {
+            await page.setViewportSize(size);
+            await login(page, PREFS_USER, E2E_PASSWORD);
+            try {
+                await setPriorities(page, SIX);
+                let release: () => void = () => {};
+                const held = new Promise<void>((resolve) => { release = resolve; });
+                await page.route('**/api/organizations/*/fit/', async (route) => {
+                    await held;
+                    await route.continue();
+                });
+                await page.goto('/');
+                await opener(page).click();
+                await expect(page.getByTestId('fit-loading')).toBeVisible();
+                await page.getByTestId('company-view-jobs').click();
+                // The jump scrolls smoothly: wait for the heading to arrive below the top bar, then for rest.
+                await expect.poll(() => page.locator('#company-jobs-title').evaluate((el) => el.getBoundingClientRect().top))
+                    .toBeGreaterThan(49);
+                await scrollRested(page);
+                await page.mouse.move(size.width / 2, size.height / 2);
+                const scrolledTo = await page.evaluate(() => window.scrollY);
+                await page.mouse.wheel(0, 30);
+                await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrolledTo + 20);
+                await scrollRested(page);
+                // The strip under the sticky top bar: the fit ends below the top of the window
+                // but above the bottom of the bar, so the reader sees none of it.
+                const strip = await page.evaluate(() => ({
+                    fitBottom: document.querySelector('[data-testid="company-fit"]')!.getBoundingClientRect().bottom,
+                    barBottom: document.querySelector('header.app-mobile-topbar')!.getBoundingClientRect().bottom,
+                }));
+                expect(strip.fitBottom, 'the fit ends in the strip under the bar').toBeGreaterThan(0);
+                expect(strip.fitBottom).toBeLessThanOrEqual(strip.barBottom);
+                const heading = page.locator('#company-jobs-title');
+                const before = await heading.evaluate((el) => el.getBoundingClientRect().top);
+                release();
+                await expect(page.getByTestId('fit-ready')).toBeVisible();
+                await scrollRested(page);
+                const after = await heading.evaluate((el) => el.getBoundingClientRect().top);
+                // Round 3 measured 718 px (375x667) and 782 px (320x640) here.
+                expect(Math.abs(after - before)).toBeLessThanOrEqual(40);
+            } finally {
+                await page.unroute('**/api/organizations/*/fit/');
+                await setPriorities(page, SEEDED);
+            }
+        });
+    }
+
+    test('a reader who scrolled past the jobs is not moved when a long list arrives; the pay reads in words', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await login(page);
+        const listings = Array.from({length: 25}, (_, n) => ({
+            id: n + 1, title: `Role ${n + 1}`, location_text: 'Remote (US)', is_remote: true,
+            compensation_min: '85000', compensation_max: '95000', compensation_currency: 'USD',
+            compensation_interval: n % 2 ? 'PA' : 'per year', canonical_url: `https://jobs.example.test/${n + 1}`, status: 'active',
+        }));
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        await page.route('**/api/organizations/*/jobs/', async (route) => {
+            await held;
+            await route.fulfill({json: {organization_id: 1, inventory: 'available', count: 25, results: listings}});
+        });
+        try {
+            await page.goto('/');
+            await opener(page).click();
+            await expect(page.getByTestId('fit-ready')).toBeVisible();
+            await expect(page.getByTestId('jobs-loading')).toBeVisible();
+            // The browser's own scroll anchoring would hold a fully hidden section anyway; the case is
+            // about the page's own correction.
+            await page.addStyleTag({content: '* { overflow-anchor: none !important; }'});
+            const evidence = page.getByTestId('field-evidence');
+            await evidence.evaluate((el) => el.scrollIntoView({block: 'start', behavior: 'instant'}));
+            await scrollRested(page);
+            const jobsBottom = await page.getByTestId('company-jobs').evaluate((el) => el.getBoundingClientRect().bottom);
+            expect(jobsBottom, 'the Jobs section is above the reader').toBeLessThanOrEqual(0);
+            const top = () => evidence.evaluate((el) => el.getBoundingClientRect().top);
+            const before = await top();
+            release();
+            await expect(page.getByTestId('jobs-list')).toBeVisible();
+            await scrollRested(page);
+            // Twenty-five rows are well over a screen tall; what the reader was reading stays put.
+            expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(40);
+            const rows = page.getByTestId('job-row-1');
+            await expect(rows).toContainText('USD 85,000–95,000 per year');
+            await expect(page.getByTestId('job-row-2')).toContainText('USD 85,000–95,000 per year');
+            await expect(page.getByTestId('jobs-list')).not.toContainText(/per PA|per per/);
+        } finally {
+            await page.unroute('**/api/organizations/*/jobs/');
+        }
+    });
+
+    test('a reader who excluded this company is told where the exclusion applies; one with only that priority gets a sentence, not empty groups', async ({page}) => {
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        try {
+            await setPriorities(page, {set: {'exclusions.companies': [COMPANY]}});
+            await page.goto('/');
+            await opener(page).click();
+            const sentence = page.getByTestId('fit-excluded');
+            await expect(sentence).toBeVisible();
+            // Opened from Company rankings, which never use the reader's priorities.
+            await expect(sentence).toContainText(`You excluded ${COMPANY} in your priorities, so the assistant’s company matches leave it out.`);
+            await expect(sentence).toContainText('Company rankings do not use your priorities.');
+            await expect(sentence).not.toContainText('ranked results');
+            await expect(page.getByTestId('fit-no-priorities')).toHaveCount(0);
+            await expect(page.getByTestId('fit-exclusions-only')).toContainText('only exclusions');
+            await expect(page.getByTestId('fit-ready')).toHaveCount(0);
+            await expect(page.getByTestId('fit-coverage')).toHaveCount(0);
+            await expect(page.getByTestId('fit-group-meets')).toHaveCount(0);
+        } finally {
+            await setPriorities(page, SEEDED);
+        }
+    });
+
+    test('the Fit number is explained where it is read, and the explanation is true of this scoring', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        await opener(page).click();
+        const note = page.getByTestId('fit-number-note');
+        await expect(note).toBeVisible();
+        await expect(note).toHaveText('Fit is the ranking’s score, not a count of the rows below, and the two can disagree.');
+        await expect(page.locator('.job-match-figure-label').nth(1)).toHaveText('Average rating');
+        const legend = page.getByTestId('fit-legend');
+        await legend.locator('summary').click();
+        await expect(legend).toContainText('Only four of the ranking’s eight factors can score for a company');
+        await expect(legend).not.toContainText(/industry|five of/i);
+    });
+});
