@@ -1798,7 +1798,7 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
         await summary.focus();
         await page.keyboard.press('Enter');
         await expect(legend).toHaveAttribute('open', '');
-        await expect(legend).toContainText('Your priorities that a fact about the company can decide');
+        await expect(legend).toContainText('How many of your priorities that a fact about the company can decide are confirmed for you');
         await expect(legend).not.toContainText('Why the fit and the rows can disagree');
         await expect(legend).toContainText('Sourced, not confirmed describes how a row was decided from it');
         await expect(legend).not.toContainText('Refresh matches');
