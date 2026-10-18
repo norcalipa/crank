@@ -3,6 +3,7 @@
 import * as React from 'react';
 
 import {CONFIRM_ARM_DELAY_MS} from './confirmArmDelay';
+import {SESSION_ENDED_COPY} from '../session';
 
 export const NEW_CONVERSATION_COPY =
     'Your current history will be archived. Your saved priorities are not changed.';
@@ -31,6 +32,8 @@ export interface ConversationMenuProps {
     onDeleteConversation: () => Promise<HistoryOutcome>;
     // Reports whether a New / Delete confirmation is open, so the chat can make what lies beneath it inert.
     onConfirmationChange?: (open: boolean) => void;
+    // Where "Sign in again" leads when a failure says the session has ended.
+    signInUrl?: string;
 }
 
 interface MenuItem {
@@ -42,11 +45,25 @@ interface MenuItem {
     separatorBefore?: boolean;
 }
 
-const InlineError = React.forwardRef<HTMLParagraphElement, {message: string; id?: string}>(function InlineError({message, id}, ref) {
+// The ended-session copy names "Sign in again": make those words the way to do it, returning to this page.
+const SIGN_IN_WORDS = 'Sign in again';
+
+const InlineError = React.forwardRef<HTMLParagraphElement, {message: string; id?: string; signInUrl?: string}>(function InlineError({message, id, signInUrl}, ref) {
+    const [before, after] = message === SESSION_ENDED_COPY && signInUrl !== undefined
+        ? message.split(SIGN_IN_WORDS) : [message, null];
     return (
         <p className="chat-confirm-error" role="alert" id={id} ref={ref}>
             <i className="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
-            <span>{message}</span>
+            <span>
+                {before}
+                {after !== null && (
+                    <>
+                        <a className="chat-confirm-signin chat-focus" href={`${signInUrl}?next=${encodeURIComponent(window.location.pathname)}`}
+                           data-testid="confirm-sign-in">{SIGN_IN_WORDS}</a>
+                        {after}
+                    </>
+                )}
+            </span>
         </p>
     );
 });
@@ -69,7 +86,7 @@ function revealWithin(target: HTMLElement | null, context: HTMLElement | null) {
 
 export function ConversationMenu({
     title, hasConversation, hasMessages, pending,
-    onExport, onNewConversation, onDeleteConversation, onConfirmationChange,
+    onExport, onNewConversation, onDeleteConversation, onConfirmationChange, signInUrl,
 }: ConversationMenuProps) {
     const [open, setOpen] = React.useState(false);
     const [confirming, setConfirming] = React.useState<ConfirmKind | null>(null);
@@ -382,20 +399,7 @@ export function ConversationMenu({
                     <p id="chat-confirm-copy" className="chat-confirm-copy">
                         {deleting ? DELETE_CONVERSATION_COPY : NEW_CONVERSATION_COPY}
                     </p>
-                    {failure && <InlineError message={failure} id="chat-confirm-failure" ref={failureRef}/>}
-                    {deleting && (
-                        <div className="chat-confirm-actions">
-                            <button
-                                type="button"
-                                className="btn btn-sm btn-link chat-focus"
-                                disabled={working || exporting || !hasMessages}
-                                onClick={() => void runExport(true)}
-                                data-testid="confirm-export-first"
-                            >
-                                {exporting ? 'Exporting…' : 'Export first'}
-                            </button>
-                        </div>
-                    )}
+                    {failure && <InlineError message={failure} id="chat-confirm-failure" ref={failureRef} signInUrl={signInUrl}/>}
                     <div className="chat-confirm-dismiss">
                         <button
                             type="button"
@@ -423,6 +427,20 @@ export function ConversationMenu({
                             Cancel
                         </button>
                     </div>
+                    {deleting && (
+                        <div className="chat-confirm-actions">
+                            <button
+                                type="button"
+                                className="btn btn-sm btn-link chat-focus"
+                                disabled={working || !hasMessages}
+                                aria-disabled={exporting || undefined}
+                                onClick={() => void runExport(true)}
+                                data-testid="confirm-export-first"
+                            >
+                                {exporting ? 'Exporting…' : 'Export first'}
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -444,7 +462,7 @@ export function ConversationMenu({
             {exportError && (
                 <div ref={exportPanelRef} className="chat-confirm-panel chat-confirm-panel-danger"
                      data-testid="export-error">
-                    <InlineError message={exportError}/>
+                    <InlineError message={exportError} signInUrl={signInUrl}/>
                     <div className="chat-confirm-actions">
                         <button type="button" ref={exportRetryRef} className="btn btn-sm btn-outline-light chat-focus"
                                 onClick={() => void runExport()}>

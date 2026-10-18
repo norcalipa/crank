@@ -361,6 +361,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Room between the header and the composer band: inline panels scroll
     // inside it instead of covering the composer.
     const [stackMax, setStackMax] = React.useState<number | null>(null);
+    const [stackCoverMax, setStackCoverMax] = React.useState<number | null>(null);
     // Footer notices never take more than 40% of the card (or of the panel
     // body, where the card is taller than it), not of the viewport.
     const [noticesMax, setNoticesMax] = React.useState<number | null>(null);
@@ -381,6 +382,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         const headerBottom = card.querySelector('.card-header')?.getBoundingClientRect().bottom ?? 0;
         const formTop = card.querySelector('form')?.getBoundingClientRect().top ?? 0;
         setStackMax(Math.max(MIN_STACK_PX, formTop - headerBottom - 12));
+        const formBottom = card.querySelector('form')?.getBoundingClientRect().bottom ?? 0;
+        setStackCoverMax(Math.max(MIN_STACK_PX, formBottom - headerBottom - 4));
         const panelBody = card.closest<HTMLElement>('.assistant-panel-body');
         const noticesBase = panelBody && panelBody.clientHeight > 0
             ? Math.min(card.offsetHeight, panelBody.clientHeight)
@@ -443,10 +446,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const chatCardStyle = React.useMemo<React.CSSProperties>(() => {
         return {
             ...(stackMax === null ? {} : {'--chat-stack-max': `${stackMax}px`}),
+            ...(stackCoverMax === null ? {} : {'--chat-stack-cover-max': `${stackCoverMax}px`}),
             ...(noticesMax === null ? {} : {'--chat-notices-max': `${noticesMax}px`}),
             '--chat-keyboard-inset': `${keyboardInset}px`,
         } as React.CSSProperties;
-    }, [stackMax, noticesMax, keyboardInset]);
+    }, [stackMax, stackCoverMax, noticesMax, keyboardInset]);
 
     const revealingPrefs = preferencesChanged && !prefDismissed;
     // Issue #466: the detailed diff notice supersedes the plain banner when
@@ -1811,6 +1815,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     onNewConversation={handleReset}
                     onDeleteConversation={handleDelete}
                     onConfirmationChange={setConfirmationOpen}
+                    signInUrl={signInUrl}
                 />
             </div>
 

@@ -293,6 +293,9 @@ interface ConfirmationMeasure {
     heading: {top: number; bottom: number};
     copy: {top: number; bottom: number};
     action: {top: number; bottom: number};
+    cancel: {top: number; bottom: number};
+    error: {top: number; bottom: number} | null;
+    viewportHeight: number;
     controls: {id: string; left: number; right: number; top: number; bottom: number}[];
 }
 
@@ -310,6 +313,9 @@ async function measureConfirmation(page: Page): Promise<ConfirmationMeasure> {
             heading: box(panel.querySelector('.chat-confirm-heading')),
             copy: box(panel.querySelector('.chat-confirm-copy')),
             action: box(panel.querySelector('[data-testid="confirm-action"]')),
+            cancel: box(panel.querySelector('[data-testid="confirm-cancel"]')),
+            error: panel.querySelector('.chat-confirm-error') ? box(panel.querySelector('.chat-confirm-error')) : null,
+            viewportHeight: window.innerHeight,
             // The buttons and the text blocks they must never cover.
             controls: Array.from(panel.querySelectorAll('button, .chat-confirm-heading, .chat-confirm-copy, .chat-confirm-error')).map((b) => {
                 const r = b.getBoundingClientRect();
@@ -327,8 +333,12 @@ function checkConfirmation(m: ConfirmationMeasure, opened: boolean): string[] {
         if (m.heading.top < m.stack.top - slack) problems.push('the heading starts above the stack');
         if (m.copy.bottom > m.stack.bottom + slack) problems.push('the consequence sentence is clipped by the stack');
     }
-    if (m.copy.bottom > m.stack.bottom + slack && m.action.top < m.copy.bottom - slack) {
-        problems.push('the destructive button is above the clipped end of the sentence');
+    // The consequence, a failure's text and the action row are on screen together (no scrolling) at every size.
+    if (m.copy.top < m.stack.top - slack || m.copy.bottom > m.stack.bottom + slack) problems.push('the consequence sentence is not inside the stack');
+    if (m.error && (m.error.top < m.stack.top - slack || m.error.bottom > m.stack.bottom + slack)) problems.push('the failure text is not inside the stack');
+    if (m.action.top < m.copy.top - slack) problems.push('the destructive button is above the sentence');
+    for (const [name, box] of [['the action button', m.action], ['Cancel', m.cancel]] as const) {
+        if (box.bottom > m.stack.bottom + slack || box.bottom > m.viewportHeight + slack) problems.push(`${name} is not on screen`);
     }
     for (let i = 0; i < m.controls.length; i += 1) {
         for (let j = i + 1; j < m.controls.length; j += 1) {
@@ -415,6 +425,16 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
                 await expectLayout(page, false);
             });
 
+            test('a Delete failure after the session ended keeps the sentence, the sign-in link and the retry together', async ({page}) => {
+                await page.route(DELETE_URL, (route) => route.fulfill({status: 401, contentType: 'application/json', body: '{}'}));
+                await chooseItem(page, 'conversation-delete');
+                await waitForConfirmArmed(page);
+                await page.getByTestId('confirm-action').click();
+                await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
+                await expect(page.getByTestId('confirm-sign-in')).toHaveAttribute('href', /^\/accounts\/login\/\?next=/);
+                await expectLayout(page, false);
+            });
+
             test('Export first in flight: Exporting…, Delete disabled, no controls overlap', async ({page}) => {
                 let release: () => void = () => undefined;
                 const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -467,7 +487,7 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         await chooseItem(page, 'conversation-delete');
         const exportFirst = page.getByTestId('confirm-export-first');
         await exportFirst.click();
-        await expect(exportFirst).toBeDisabled();
+        await expect(exportFirst).toHaveAttribute('aria-disabled', 'true');
         await expect(page.getByTestId('confirm-action')).toBeDisabled();
         await expect(page.getByTestId('confirm-cancel')).toBeEnabled();
         await expect(page.getByTestId('conversation-status')).toHaveText('Exporting conversation…');
@@ -477,6 +497,25 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         release();
         await expect(page.getByTestId('confirm-action')).toBeEnabled();
         expect(exports).toBe(1);
+        await page.getByTestId('confirm-cancel').click();
+    });
+
+    test('Export first keeps keyboard focus, and its ring, while it exports', async ({page}) => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        await page.route(EXPORT_URL, async (route) => { await gate; return route.continue(); });
+        await chooseItem(page, 'conversation-delete');
+        const exportFirst = page.getByTestId('confirm-export-first');
+        await page.getByTestId('confirm-action').focus();
+        await page.keyboard.press('Tab');
+        await page.keyboard.press('Tab');
+        await expect(exportFirst).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(exportFirst).toHaveText('Exporting…');
+        await expect(exportFirst, 'focus does not fall to the page body').toBeFocused();
+        release();
+        await expect(exportFirst).toHaveText('Export first');
+        await expect(exportFirst).toBeFocused();
         await page.getByTestId('confirm-cancel').click();
     });
 

@@ -12,6 +12,7 @@ import {
     DELETE_CONVERSATION_COPY,
     NEW_CONVERSATION_COPY,
 } from './ConversationMenu';
+import {SESSION_ENDED_COPY} from '../session';
 
 const setup = (overrides: Partial<ConversationMenuProps> = {}) => {
     const props: ConversationMenuProps = {
@@ -670,7 +671,8 @@ describe('ConversationMenu history follow-ups (issue #547)', () => {
             armConfirm();
             fireEvent.click(screen.getByTestId('confirm-export-first'));
             expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Exporting…');
-            expect(screen.getByTestId('confirm-export-first')).toBeDisabled();
+            // aria-disabled, not disabled: the button keeps the keyboard focus it was pressed with.
+            expect(screen.getByTestId('confirm-export-first')).toHaveAttribute('aria-disabled', 'true');
             expect(screen.getByTestId('confirm-action')).toBeDisabled();
             expect(screen.getByTestId('confirm-cancel')).toBeEnabled();
             expect(screen.getByTestId('conversation-status')).toHaveTextContent('Exporting conversation…');
@@ -682,7 +684,65 @@ describe('ConversationMenu history follow-ups (issue #547)', () => {
             expect(screen.getByTestId('confirm-action')).toBeEnabled();
             expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Export first');
             expect(screen.getByTestId('confirm-export-first')).toBeEnabled();
+            expect(screen.getByTestId('confirm-export-first')).not.toHaveAttribute('aria-disabled');
             expect(screen.getByTestId('conversation-status')).toHaveTextContent('Conversation exported');
+        });
+
+        test('keyboard focus stays on Export first while it exports (visual review round 1, P1-3)', async () => {
+            const exported = held<null>();
+            setup({onExport: jest.fn(() => exported.promise)});
+            openDelete();
+            armConfirm();
+            const exportFirst = screen.getByTestId('confirm-export-first');
+            exportFirst.focus();
+            fireEvent.click(exportFirst);
+            expect(exportFirst).toHaveAttribute('aria-disabled', 'true');
+            expect(document.activeElement).toBe(exportFirst);
+            await exported.settle(null);
+            expect(document.activeElement).toBe(exportFirst);
+        });
+
+        test('the action row follows the consequence and precedes Export first, so a short stack shows them together (round 1, P1-1/P1-2)', () => {
+            setup();
+            openDelete();
+            const panel = screen.getByTestId('confirm-panel');
+            const order = Array.from(panel.children).map((el) => el.className);
+            expect(order).toEqual(['chat-confirm-heading', 'chat-confirm-copy', 'chat-confirm-dismiss', 'chat-confirm-actions']);
+        });
+
+        test('the ended-session failure turns "Sign in again" into a link back to this page (round 1, P2-3)', async () => {
+            setup({onDeleteConversation: jest.fn(async () => SESSION_ENDED_COPY), signInUrl: '/accounts/login/'});
+            openDelete();
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            const link = await screen.findByTestId('confirm-sign-in');
+            expect(link).toHaveTextContent('Sign in again');
+            expect(link).toHaveAttribute('href', `/accounts/login/?next=${encodeURIComponent(window.location.pathname)}`);
+            expect(screen.getByRole('alert')).toHaveTextContent(SESSION_ENDED_COPY);
+        });
+
+        test('an ended session without a sign-in address, and an ended export with one, show the copy as given', async () => {
+            const {unmount} = setup({onDeleteConversation: jest.fn(async () => SESSION_ENDED_COPY)});
+            openDelete();
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await screen.findByText(SESSION_ENDED_COPY);
+            expect(screen.queryByTestId('confirm-sign-in')).toBeNull();
+            unmount();
+            setup({onExport: jest.fn(async () => SESSION_ENDED_COPY), signInUrl: '/accounts/login/'});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            const panel = await screen.findByTestId('export-error');
+            expect(panel).toContainElement(screen.getByTestId('confirm-sign-in'));
+        });
+
+        test('another failure shows plain text', async () => {
+            setup({onDeleteConversation: jest.fn(async () => 'Could not delete the conversation.'), signInUrl: '/accounts/login/'});
+            openDelete();
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await screen.findByText('Could not delete the conversation.');
+            expect(screen.queryByTestId('confirm-sign-in')).toBeNull();
         });
 
         test('a second press while one is in flight starts no second request', async () => {

@@ -626,6 +626,14 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         expect(popupCss).not.toMatch(/\.chat-panel-stack \.chat-confirm-actions\s*\{/);
         expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);
     });
+
+    it('lets an open New / Delete confirmation cover the inert composer band, spaces the action row either side of Export first, and keeps a busy Export first readable (visual review round 1)', () => {
+        expect(rule('.chat-panel-stack:has(> .chat-confirm-panel[role="group"])')).toMatch(/max-height:\s*var\(--chat-stack-cover-max,\s*var\(--chat-stack-max,\s*none\)\)/);
+        expect(popupCss).toMatch(/\.chat-confirm-actions \+ \.chat-confirm-dismiss,\s*\.chat-confirm-dismiss \+ \.chat-confirm-actions\s*\{[^}]*margin-top:\s*\.5rem/);
+        expect(rule('.chat-confirm-actions .btn[aria-disabled="true"]')).toMatch(/opacity:\s*1;[^}]*text-decoration:\s*none/);
+        expect(rule('#job-search-chat .chat-footer[inert] .form-control')).toMatch(/background-color:\s*var\(--bs-secondary-bg\)/);
+        expect(popupCss).toMatch(/@media \(max-height: 30rem\)\s*\{[\s\S]*?\.chat-confirm-error\s*\{[^}]*font-size:\s*\.8125rem/);
+    });
 });
 
 describe('one transcript scroller in the assistant panel (issue #483)', () => {

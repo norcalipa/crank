@@ -239,17 +239,18 @@ describe('JobSearchChat', () => {
             document.querySelectorAll('.assistant-panel-body').forEach((el) => el.remove());
         });
 
-        test('writes three custom properties and no height, and marks no scroll owner', async () => {
+        test('writes four custom properties and no height, and marks no scroll owner', async () => {
             await renderChat();
             await act(async () => { await flushRaf(); });
             const chat = screen.getByTestId('job-search-chat');
             const log = screen.getByRole('log');
             expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('96px');
+            expect(chat.style.getPropertyValue('--chat-stack-cover-max')).toBe('96px');
             expect(chat.style.getPropertyValue('--chat-notices-max')).toBe('64px');
             expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
             expect(chat.style.height).toBe('');
             expect(chat.style.minHeight).toBe('');
-            expect(chat.style.length).toBe(3);
+            expect(chat.style.length).toBe(4);
             // The transcript is always the scroller: its sizing lives in the stylesheet.
             expect(log.getAttribute('style')).toBeNull();
             expect(document.querySelector('[data-scroll-owner]')).toBeNull();
@@ -265,9 +266,11 @@ describe('JobSearchChat', () => {
             const header = chat.querySelector('.card-header') as HTMLElement;
             const form = chat.querySelector('form') as HTMLElement;
             jest.spyOn(header, 'getBoundingClientRect').mockReturnValue({bottom: 100} as DOMRect);
-            jest.spyOn(form, 'getBoundingClientRect').mockReturnValue({top: 400} as DOMRect);
+            jest.spyOn(form, 'getBoundingClientRect').mockReturnValue({top: 400, bottom: 520} as DOMRect);
             await remeasure();
             expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('288px');
+            // A confirmation may also cover the (inert) composer band: down to 4px above the form's bottom.
+            expect(chat.style.getPropertyValue('--chat-stack-cover-max')).toBe('416px');
         });
 
         test('caps footer notices at 40% of the card', async () => {
