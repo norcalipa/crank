@@ -1442,23 +1442,85 @@ describe('OrganizationList', () => {
             expect(screen.getByTestId('accelerated-vesting-checkbox')).toBeChecked();
             expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
             expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Showing updated rankings.');
-            expect(document.activeElement).toBe(heading);
+            // The row put back takes focus (Alpha kept its place), not the heading that may be off screen.
+            expect(document.activeElement).toBe(screen.getAllByText('Alpha Co')[0].closest('tr'));
             // No "Updated" mark after a press.
             expect(screen.queryByTestId('rankings-updated-badge')).not.toBeInTheDocument();
             // The notice left (-80px) and the first row was put back.
             expect(scrollBy).toHaveBeenCalled();
         });
 
-        test('the swap shows the new order and keeps the first listed row that survives at its offset', async () => {
+        test('the swap shows the new order and holds a row that kept its place, not one that moved', async () => {
             mount();
             await foundNotice();
             scrollBy.mockClear();
-            // Alpha was first in view; after the swap it is second (100px lower) and the notice (80px) is gone.
+            // Alpha, first in view, is now second; Gamma kept its place and is held: 480 with the notice, 400 without.
             await press();
             expect(names()).toEqual(['Beta Co', 'Alpha Co', 'Gamma Co', 'Delta Co']);
             expect(screen.getByText('Showing 1-4 of 4 organizations')).toBeInTheDocument();
-            // Held row is Alpha: its top went from 280 (with notice) to 300.
-            expect(scrollBy).toHaveBeenCalledWith({top: 20, left: 0, behavior: 'instant'});
+            expect(scrollBy).toHaveBeenCalledTimes(1);
+            expect(scrollBy).toHaveBeenCalledWith({top: -80, left: 0, behavior: 'instant'});
+        });
+
+        test('when every row in view moved, the first one that is still listed is held', async () => {
+            mount();
+            await foundNotice();
+            scrollBy.mockClear();
+            // Nobody keeps their place.
+            serverRows = [org(2, 'Beta Co', 1, 5), org(3, 'Gamma Co', 2, 4.8), org(1, 'Alpha Co', 3, 4.2)];
+            await press();
+            expect(names()).toEqual(['Beta Co', 'Gamma Co', 'Alpha Co']);
+            // Alpha, first captured, was at 280 under the notice and is third now: 400.
+            expect(scrollBy).toHaveBeenCalledWith({top: 120, left: 0, behavior: 'instant'});
+        });
+
+        test('a page too short to scroll as far as the hold needs gets the room, and gives it back with the notice', async () => {
+            const height = jest.spyOn(document.documentElement, 'scrollHeight', 'get');
+            // 30px of room below the reader; the notice pushes the rows 80px.
+            height.mockReturnValue(window.innerHeight + 30);
+            mount();
+            await foundNotice();
+            expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
+            expect(screen.getByTestId('organization-results-region').style.paddingBottom).toBe('50px');
+            serverRevision = SHOWN;
+            await tick(60_000);
+            expect(screen.getByTestId('organization-results-region').style.paddingBottom).toBe('');
+            height.mockRestore();
+        });
+
+        test('a page with room to scroll gets no extra room', async () => {
+            const height = jest.spyOn(document.documentElement, 'scrollHeight', 'get');
+            height.mockReturnValue(window.innerHeight + 500);
+            mount();
+            await foundNotice();
+            expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
+            expect(screen.getByTestId('organization-results-region').style.paddingBottom).toBe('');
+            height.mockRestore();
+        });
+
+        test('a row that starts under the phone’s Assistant button is not the one held', async () => {
+            const dock = document.createElement('div');
+            dock.className = 'assistant-dock';
+            document.body.appendChild(dock);
+            const base = rectSpy.getMockImplementation()!;
+            rectSpy.mockImplementation(function (this: Element) {
+                if (this === dock) return {height: 44, top: 250, bottom: 294} as DOMRect;
+                return base.call(this);
+            });
+            mount();
+            await foundNotice();
+            // Alpha (200 before, 280 after) is the only row above the button, and it moved: it is held.
+            expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
+            scrollBy.mockClear();
+            // Scrolled so that no row starts above the button: nothing is held.
+            rectSpy.mockImplementation(function (this: Element) {
+                if (this === dock) return {height: 44, top: 100, bottom: 144} as DOMRect;
+                return base.call(this);
+            });
+            serverRevision = SHOWN;
+            await tick(60_000);
+            expect(scrollBy).not.toHaveBeenCalled();
+            dock.remove();
         });
 
         test('when no captured row survives the swap the scroll position is left alone', async () => {
@@ -1471,10 +1533,19 @@ describe('OrganizationList', () => {
             expect(scrollBy).not.toHaveBeenCalled();
         });
 
+        test('with no row held focus goes to the heading, and to the results region when the page has none', async () => {
+            mount();
+            await foundNotice();
+            serverRows = [org(9, 'Omega Co', 1, 5)];
+            await press();
+            expect(document.activeElement).toBe(heading);
+        });
+
         test('focus falls back to the results region when the page has no heading', async () => {
             heading.remove();
             mount();
             await foundNotice();
+            serverRows = [org(9, 'Omega Co', 1, 5)];
             await press();
             expect(document.activeElement).toBe(screen.getByTestId('organization-results-region'));
         });
@@ -1512,6 +1583,8 @@ describe('OrganizationList', () => {
             await press();
             expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
             expect(screen.getByTestId('rankings-updated-error')).toHaveTextContent("Couldn't refresh. Try again.");
+            // The line replaces the sentence, so the notice keeps one line of text on a phone.
+            expect(screen.getByTestId('rankings-updated-notice')).not.toHaveTextContent('Updated results available.');
             expect(screen.getByTestId('rankings-announcement')).toHaveTextContent("Couldn't refresh. Try again.");
             expect(screen.getByTestId('rankings-updated-refresh')).not.toHaveAttribute('aria-disabled');
             // Trying again works and clears the line.
@@ -1632,6 +1705,8 @@ describe('OrganizationList', () => {
                 expect(screen.getByTestId('rankings-updated-badge')).toHaveTextContent('Updated');
                 expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Showing updated rankings.');
                 expect(document.activeElement).not.toBe(heading);
+                // At the top of the page nothing is held, so the page does not move.
+                expect(scrollBy).not.toHaveBeenCalled();
             });
 
             test('the mark goes at the reader’s own input, keeps its box, and ignores typing in the Assistant', async () => {

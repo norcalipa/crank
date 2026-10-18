@@ -175,6 +175,18 @@ async function requestRankingsRevision(algorithmId: number, signal: AbortSignal)
 interface RowAnchor {
     id: string;
     top: number;
+    index: number;
+}
+
+// The result rows on display, in list order (the layout that is not shown has
+// empty boxes).
+function displayedRows(): HTMLElement[] {
+    return Array.from(document.querySelectorAll<HTMLElement>(RESULT_ANCHOR_SELECTOR))
+        .filter((element) => element.getBoundingClientRect().height > 0);
+}
+
+function rowId(element: HTMLElement): string {
+    return element.getAttribute('data-organization-id') as string;
 }
 
 class OrganizationList extends React.Component<OrganizationListProps, OrganizationListState> {
@@ -322,6 +334,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // committed (`settleRefresh`).
     private pendingRows: RowAnchor[] | null = null;
     private pendingFocus = false;
+    // The row put back by the last restore; it takes focus after a press.
+    private heldRow: HTMLElement | null = null;
     private stopMarkListeners?: () => void;
 
     private startRevisionPolling() {
@@ -338,45 +352,65 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     }
 
     // The result rows being read: those in view that start below the phone's
-    // sticky top bar first, then the one it partly covers.
+    // sticky top bar and above its Assistant button first, then the one the
+    // bar partly covers.
     private captureRows(): RowAnchor[] {
         const bar = document.querySelector<HTMLElement>('.app-mobile-topbar');
         const visibleTop = bar ? Math.max(0, bar.getBoundingClientRect().bottom) : 0;
+        const dock = document.querySelector<HTMLElement>('.assistant-dock');
+        const dockRect = dock ? dock.getBoundingClientRect() : null;
+        const visibleBottom = dockRect && dockRect.height > 0 ? Math.min(window.innerHeight, dockRect.top) : window.innerHeight;
         const whole: RowAnchor[] = [];
         const partial: RowAnchor[] = [];
-        document.querySelectorAll<HTMLElement>(RESULT_ANCHOR_SELECTOR).forEach((element) => {
+        displayedRows().forEach((element, index) => {
             const rect = element.getBoundingClientRect();
-            if (rect.height > 0 && rect.bottom > visibleTop && rect.top < window.innerHeight) {
-                (rect.top >= visibleTop ? whole : partial).push({id: element.getAttribute('data-organization-id') as string, top: rect.top});
+            if (rect.bottom > visibleTop && rect.top < visibleBottom) {
+                (rect.top >= visibleTop ? whole : partial).push({id: rowId(element), top: rect.top, index});
             }
         });
         return [...whole, ...partial];
     }
 
-    // The first captured row that is still listed goes back to its offset;
-    // when none is, the scroll position stays as it is.
+    // A row whose place in the list did not change goes back to its offset
+    // (one that moved would drag the rows around it); when every captured row
+    // moved, the first that is still listed does; when none is, the scroll
+    // position stays as it is. A page too short to scroll that far gets the
+    // room it needs below the rows.
     private restoreRows(rows: RowAnchor[]) {
-        for (const row of rows) {
-            const element = this.findOrganizationAnchor(row.id);
-            if (element) {
-                const delta = element.getBoundingClientRect().top - row.top;
-                if (delta !== 0) {
-                    window.scrollBy({top: delta, left: 0, behavior: INSTANT});
-                }
-                return;
-            }
+        const now = displayedRows();
+        const at = (id: string) => now.findIndex((element) => rowId(element) === id);
+        const row = rows.find((candidate) => at(candidate.id) === candidate.index)
+            ?? rows.find((candidate) => at(candidate.id) >= 0);
+        this.heldRow = null;
+        if (!row) {
+            return;
         }
+        const element = now[at(row.id)];
+        const delta = element.getBoundingClientRect().top - row.top;
+        if (delta !== 0) {
+            const room = Math.max(0, document.documentElement.scrollHeight - window.innerHeight - window.scrollY);
+            if (delta > room && this.resultsRef.current) {
+                this.resultsRef.current.style.paddingBottom = `${delta - room}px`;
+            }
+            window.scrollBy({top: delta, left: 0, behavior: INSTANT});
+        }
+        this.heldRow = element;
     }
 
     private settleRefresh(prevState: OrganizationListState) {
         const rows = this.pendingRows;
+        if (this.state.newerRevision === null && this.resultsRef.current) {
+            // The notice is gone: so is the room it needed.
+            this.resultsRef.current.style.removeProperty('padding-bottom');
+        }
         if (rows) {
             this.pendingRows = null;
             this.restoreRows(rows);
         }
         if (this.pendingFocus) {
             this.pendingFocus = false;
-            (document.getElementById('rankings-heading') ?? this.resultsRef.current)?.focus({preventScroll: true});
+            // The held row is on screen by construction; the heading may not be.
+            (this.heldRow ?? document.getElementById('rankings-heading') ?? this.resultsRef.current)?.focus({preventScroll: true});
         }
         if (this.state.updatedMark !== prevState.updatedMark) {
             this.stopMarkListeners?.();
@@ -484,7 +518,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             }
             return;
         }
-        this.pendingRows = this.captureRows();
+        // An idle apply only happens at the top of the page: it holds nothing.
+        this.pendingRows = mode === 'auto' ? null : this.captureRows();
+        this.heldRow = null;
         if (revision === this.state.shownRevision) {
             this.setState({newerRevision: null, refreshing: false, refreshFailed: false, announcement: ''});
             return;
@@ -1309,8 +1345,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 <div className="alert alert-info rankings-updated-notice" data-testid="rankings-updated-notice"
                      aria-busy={refreshing || undefined}>
                     <div className="rankings-updated-text">
-                        <strong>Updated results available.</strong>
-                        {refreshFailed && <span className="rankings-updated-error" data-testid="rankings-updated-error"> {REFRESH_FAILED}</span>}
+                        {refreshFailed
+                            ? <strong className="rankings-updated-error" data-testid="rankings-updated-error">{REFRESH_FAILED}</strong>
+                            : <strong>Updated results available.</strong>}
                     </div>
                     <button type="button" className="btn btn-primary btn-sm rankings-updated-refresh"
                             data-testid="rankings-updated-refresh" aria-disabled={refreshing || undefined}
@@ -1324,7 +1361,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
             {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary organization-empty-state" role="alert">
                 <h2 className="h5">No organizations found</h2>
-                <p>There are no organizations that match your search or filters.</p>
+                <p>{searchTerm || acceleratedVesting || rtoPolicy
+                    ? 'There are no organizations that match your search or filters.'
+                    : 'No companies are ranked with this preset right now.'}</p>
                 {(searchTerm || acceleratedVesting || rtoPolicy) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
                 {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>

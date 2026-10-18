@@ -521,7 +521,13 @@ test.describe('Updated rankings available (company rankings)', () => {
             await expect(notice(page)).toHaveCount(0);
             expect(seen.list).toBe(1);
             await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
-            await expect(page.locator('#rankings-heading')).toBeFocused();
+            // Focus goes to the row that was held, or to the heading when none was; either way it is on screen.
+            await expect.poll(() => page.evaluate(() => {
+                const active = document.activeElement as HTMLElement | null;
+                const rect = active?.getBoundingClientRect();
+                const held = !!active && (active.id === 'rankings-heading' || active.hasAttribute('data-organization-id'));
+                return held && rect!.height > 0 && rect!.bottom > 0 && rect!.top < window.innerHeight;
+            })).toBe(true);
             await expect(page.getByTestId('rankings-announcement')).toHaveText('Showing updated rankings.');
             await expectNoHorizontalOverflow(page);
             // The page a reader would reload to shows the same order.
@@ -613,6 +619,24 @@ test.describe('Updated rankings available (company rankings)', () => {
         await expect(notice(page)).toHaveCount(0);
     });
 
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
+        test(`a list shorter than the screen keeps its row still when the notice arrives and when it goes at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            await openRankings(page, '/?search=Gamma');
+            expect(await rowNames(page)).toEqual(['E2E Gamma Works']);
+            const reading = (await readingOrg(page))!;
+            expect(reading).not.toBeNull();
+            raiseGamma();
+            await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+            await expect(notice(page)).toBeVisible();
+            await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            await notice(page).getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+            await expect(notice(page)).toHaveCount(0);
+            await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            await expectNoHorizontalOverflow(page);
+        });
+    }
+
     test('idle at the top after a return: the rows are swapped without a press and an "Updated" mark follows the reader\u2019s input', async ({page}) => {
         await openRankings(page);
         await page.evaluate(() => {
@@ -624,6 +648,8 @@ test.describe('Updated rankings available (company rankings)', () => {
         raiseGamma();
         await setTabVisibility(page, 'visible');
         await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
+        // The page stays at the top: the heading is where it was.
+        expect(await page.evaluate(() => window.scrollY)).toBe(0);
         await expect(notice(page)).toHaveCount(0);
         await expect(page.getByTestId('rankings-updated-badge')).toBeVisible();
         const count = (await page.locator('.organization-results-count').boundingBox())!;

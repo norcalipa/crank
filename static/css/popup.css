@@ -1563,7 +1563,18 @@ body.app-nav-drawer-open {
 .rankings-updated-notice .rankings-updated-refresh {
     white-space: nowrap;
     min-height: 44px;
-    min-width: 44px;
+    min-width: 8.5rem; /* the busy spinner does not widen it */
+}
+
+/* A failed refresh replaces the sentence and reads as a problem. */
+.rankings-updated-notice .rankings-updated-error {
+    color: var(--bs-danger-text-emphasis);
+}
+
+/* The heading takes focus after a refresh when no row was held. */
+#rankings-heading:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
 }
 
 .rankings-updated-notice .rankings-updated-refresh[aria-disabled="true"] {

@@ -957,7 +957,9 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
         const section = popupCss.slice(start, next);
         expect(section).toMatch(/\.rankings-updated-notice \{\s*display: flex;\s*flex-wrap: wrap;/);
-        expect(section).toMatch(/\.rankings-updated-notice \.rankings-updated-refresh \{\s*white-space: nowrap;\s*min-height: 44px;\s*min-width: 44px;\s*\}/);
+        expect(section).toMatch(/\.rankings-updated-notice \.rankings-updated-refresh \{\s*white-space: nowrap;\s*min-height: 44px;\s*min-width: 8\.5rem;[^\n]*\s*\}/);
+        expect(section).toMatch(/\.rankings-updated-notice \.rankings-updated-error \{\s*color: var\(--bs-danger-text-emphasis\);/);
+        expect(section).toMatch(/#rankings-heading:focus-visible \{\s*outline: 3px solid var\(--bs-warning\);\s*outline-offset: 2px;/);
         expect(section).toMatch(/\.rankings-updated-refresh\[aria-disabled="true"\] \{\s*cursor: progress;/);
     });
 
