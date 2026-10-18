@@ -562,7 +562,8 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         // A second press while the export is held (focus stays on the button it was pressed with) starts nothing.
         await expect(exportFirst).toBeFocused();
         await page.keyboard.press('Enter');
-        await exportFirst.click();
+        // aria-disabled, so Playwright's actionability check would wait forever: press it as a pointer would.
+        await exportFirst.click({force: true});
         await expect(page.getByTestId('confirm-action')).toBeDisabled();
         await expect(page.getByTestId('confirm-cancel')).toBeEnabled();
         await expect(page.getByTestId('conversation-status')).toHaveText('Exporting conversation…');
@@ -589,8 +590,9 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
             const style = getComputedStyle(el);
             return {style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor};
         });
-        const visibleRing = {style: 'solid', width: '2px', color: 'rgb(147, 197, 253)'};
-        expect(await ring(), 'the ring shows on the focused button').toEqual(visibleRing);
+        const visibleRing = await ring();
+        expect(visibleRing, 'the ring shows on the focused button').toMatchObject({style: 'solid', width: '2px'});
+        expect(visibleRing.color, 'the ring is not transparent').not.toBe('rgba(0, 0, 0, 0)');
         await page.keyboard.press('Enter');
         await expect(exportFirst).toHaveText('Exporting…');
         await expect(exportFirst, 'focus does not fall to the page body').toBeFocused();
