@@ -24,19 +24,21 @@ The Django tier is reached at `http://local.crank.fyi:4174` (Chromium
 `--host-resolver-rules` maps it to 127.0.0.1 so dev settings' `.crank.fyi` cookies are
 accepted without settings or hosts-file changes).
 
-## Commands and results (this implementation run)
+## Commands and results (last updated by #492c)
 
-All commands executed locally from the repository root, `ENV=dev`, SQLite, Redis on
-localhost:6379.
+All commands executed locally from the repository root, `ENV=dev`, SQLite (a fresh
+file per run), Redis private to the run. The Django rows are re-measured by #492c
+(`CI=1`, so retries are on and no server is reused); the other rows are from the
+implementation run and are re-run by CI.
 
 | Command | Result |
 | --- | --- |
 | `npx webpack` | compiled successfully (webpack 5.95.0, both `main` and `jobsearch`/`jobmatch` bundles) |
-| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **32 passed, 12 skipped (40.3s)** — every skip carries an explicit named reason (pending #500/#496/#471/#464 merges, the eight AC7 ticket-owned skips, capture-pass-only) |
-| `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **1 passed, 3 skipped (8.6s)** — the server-persistence assertion passes against the real outage server (stable `AssistantUnavailable` via the env-gated, **dev-only** hook); the cancel/direct-edit and retry-flow assertions stay skipped pending #496/#501 |
-| `npx playwright test --project=chromium` (fixture tier, unchanged files) | **49 passed, 0 failed**; 48 skipped (all named-reason skips: Django-tier specs collected by the fixture config, including the 8 new AC7 specs). Full-run webkit `browserType.launch` errors remain host environment issues (missing system libraries for WebKit), unrelated to this branch |
-| `npx jest` | **180 passed (7 suites)** |
-| `ENV=dev DJANGO_SETTINGS_MODULE=crank.settings SECRET_KEY=… REDIS_MASTER_URL=redis://localhost:6379/0 python3 -m pytest -q` | **1891 passed, 36 subtests passed in 169.17s** (review-round delta: +5 — two seeder determinism tests, three provider-hook inertness tests) |
+| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **469 passed, 5 skipped, 1 flaky (21.1m)** — the skips are the #490 and #504 tests (named above), and the three capture-pass-only tests; the flaky test (`company-view.spec.ts` "Ask keeps the view…") passed on its retry |
+| `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **7 passed, 0 skipped (29.5s)**; with `--repeat-each=2` on one database: 14 passed (the failed-turn tests scope every locator to their own probe, so a second run passes) |
+| `npx playwright test --project=chromium --project=firefox` (fixture tier) | **402 passed, 971 skipped (Django-tier specs collected by the fixture config, named-reason skips), 1 flaky** (Firefox, `job-search-chat-viewport.spec.ts` double press on Delete; passed on retry). WebKit cannot launch on the local host; CI runs it |
+| `npx jest` | **2285 passed (50 suites)** |
+| `coverage run -m pytest -q` (`ENV=dev`, private Redis) | **4979 passed, 18 skipped** |
 | `.github/workflows/playwright-django.yml` YAML lint | `pull_request` trigger mirrors `push` paths exactly (parsed + asserted via PyYAML `safe_load`) |
 | `git diff --check` | clean |
 | trailing-newline / license-header check on all new files | clean |
