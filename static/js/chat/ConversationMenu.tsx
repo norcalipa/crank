@@ -83,6 +83,12 @@ export function ConversationMenu({
     const moreRef = React.useRef<HTMLButtonElement>(null);
     const menuRef = React.useRef<HTMLDivElement>(null);
     const containerRef = React.useRef<HTMLDivElement>(null);
+    // The chat is told in the same update that opens or closes the confirmation, so what lies beneath it never
+    // stays inert for a moment after the confirmation is gone.
+    const changeConfirming = (next: ConfirmKind | null) => {
+        setConfirming(next);
+        onConfirmationChange?.(next !== null);
+    };
     const confirmHeadingRef = React.useRef<HTMLHeadingElement>(null);
     const aboutHeadingRef = React.useRef<HTMLHeadingElement>(null);
     const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
@@ -258,7 +264,7 @@ export function ConversationMenu({
             return;
         }
         if (item.id === 'about') {
-            setConfirming(null);
+            changeConfirming(null);
             setAboutOpen(true);
             return;
         }
@@ -267,11 +273,11 @@ export function ConversationMenu({
         confirmOpenedAtRef.current = performance.now();
         confirmOpenedStampRef.current = e.timeStamp;
         confirmPressStartRef.current = null;
-        setConfirming(item.id);
+        changeConfirming(item.id);
     };
 
     const cancelConfirm = () => {
-        setConfirming(null);
+        changeConfirming(null);
         setFailure(null);
         moreRef.current?.focus();
     };
@@ -303,7 +309,7 @@ export function ConversationMenu({
         }
         // Focus lost with the closing confirmation returns to More; focus the next reader placed elsewhere stays.
         const focusLost = focusHasFallen(confirmHeadingRef.current?.parentElement);
-        setConfirming(null);
+        changeConfirming(null);
         if (outcome === DROPPED && focusLost) moreRef.current?.focus();
     };
 
