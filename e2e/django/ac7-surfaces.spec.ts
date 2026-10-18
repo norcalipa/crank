@@ -17,6 +17,7 @@
 // turn the executable assertions on; a merged surface with a leftover skip
 // is caught by the ledger review in docs/e2e-validation.md.
 import {expect, test} from '@playwright/test';
+import {openRankings, POLL_INTERVAL_MS, raiseGamma, rankingsFixture, rowNames} from './rankings-fixture';
 import {expectNoHorizontalOverflow, login, pendingTicketMerge, requireDjangoTier} from './support';
 
 requireDjangoTier();
@@ -340,29 +341,31 @@ test.describe('ingestion outcome visibility', () => {
 });
 
 // -- Update-revision race: post-commit visibility (#504 / issue #470) --------
+// A score is raised through the real write path (persist_score_observation,
+// which clears the result caches on commit) behind an open rankings page.
 test.describe('update-revision race', () => {
+    test.afterEach(() => rankingsFixture('restore'));
+
     test('a mid-session score update invalidates caches and appears only on refresh', async ({page}) => {
-        // NON-EXECUTABLE from the browser harness (fix-verification round 2,
-        // named per the skip ledger). #504's contract is server-side
-        // publication and invalidation: the outbox clears the
-        // algorithm_<id>_page full-page key and the algorithm result keys on
-        // commit. No browser-reachable seam can create a score revision —
-        // verified at the #504 head 2f130e8, where no view mutates Score —
-        // so a browser-only flow cannot exercise the race. Deleting this
-        // skip without wiring a real revision trigger fails loudly below
-        // instead of passing vacuously on rectangle bookkeeping.
-        pendingTicketMerge(
-            504,
-            'post-commit cache invalidation / update-revision visibility ships ' +
-            'with #504 (issue #470, with #485\'s non-disruptive refresh); the ' +
-            'browser harness cannot drive the server-side revision/publication ' +
-            'path, so wire a real revision trigger (or move the contract to the ' +
-            'Django unit tier) when deleting this skip',
-        );
-        throw new Error(
-            'non-executable: the #504 update-revision race has no browser-reachable ' +
-            'revision trigger; wire the real publication flow (or move the contract ' +
-            'to the Django unit tier) before unskipping this test',
-        );
+        await openRankings(page);
+        const before = await rowNames(page);
+        expect(before.slice(0, 3)).toEqual(['E2E Alpha Corp', 'E2E Beta Labs', 'E2E Gamma Works']);
+
+        raiseGamma();
+        await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+        const notice = page.getByTestId('rankings-updated-notice');
+        await expect(notice).toBeVisible();
+        // The open page keeps its order until the reader presses the button...
+        expect(await rowNames(page)).toEqual(before);
+        // ...while a fresh read of the same cache entry already has the new one.
+        const fresh = await page.evaluate(async () => {
+            const id = document.getElementById('organization-list-config')!.dataset.currentAlgorithmId;
+            return (await (await fetch(`/api/rankings/${id}/`)).json()).organizations.map((org: {name: string}) => org.name);
+        });
+        expect(fresh.slice(0, 3)).toEqual(['E2E Gamma Works', 'E2E Alpha Corp', 'E2E Beta Labs']);
+
+        await notice.getByRole('button', {name: 'Refresh results'}).click();
+        await expect(notice).toHaveCount(0);
+        await expect.poll(() => rowNames(page)).toEqual(fresh);
     });
 });
