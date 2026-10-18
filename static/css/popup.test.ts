@@ -952,6 +952,15 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         expect(popupCss).toMatch(/#job-match-panel \.btn \{\s*min-height: 44px;\s*min-width: 44px;\s*\}/);
     });
 
+    it('lays out the rankings notice so its button keeps one line and a 44px target (485c)', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        const section = popupCss.slice(start, next);
+        expect(section).toMatch(/\.rankings-updated-notice \{\s*display: flex;\s*flex-wrap: wrap;/);
+        expect(section).toMatch(/\.rankings-updated-notice \.rankings-updated-refresh \{\s*white-space: nowrap;\s*min-height: 44px;\s*min-width: 44px;\s*\}/);
+        expect(section).toMatch(/\.rankings-updated-refresh\[aria-disabled="true"\] \{\s*cursor: progress;/);
+    });
+
     it('scopes the heading scroll margin to the widths that show the sticky top bar', () => {
         expect(popupCss).toMatch(/@media \(max-width: 767\.98px\) \{\s*#job-match-panel \.job-match-panel-title \{ scroll-margin-top: 4\.5rem; \}\s*\}/);
         expect(popupCss).not.toMatch(/^#job-match-panel \.job-match-panel-title \{ scroll-margin-top/m);

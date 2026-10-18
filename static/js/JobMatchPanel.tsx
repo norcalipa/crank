@@ -6,6 +6,7 @@ import {EVIDENCE_CHANGED_MARKER, EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_
 import {csrfFetch} from './priorities/csrf';
 import {installPositionTracking, restoreResultPosition} from './workspace/position';
 import {createPoller, PollStop} from './workspace/poller';
+import {shouldAutoApplyRefresh} from './workspace/refreshRules';
 import {createLatestGuard} from './workspace/requests';
 import {
     getWorkspaceSnapshot,
@@ -201,17 +202,9 @@ function readsAgree(
     return new Set(carried).size <= 1;
 }
 
-/** The idle rule (issue #485, owner decision): newer results are applied
- * without asking only when they were found on the first check after the tab
- * became visible again, the page is at the top, and nothing inside the panel
- * has focus. Any other case shows the notice and changes nothing. */
-export function shouldAutoApplyRefresh(state: {
-    foundOnFirstCheckAfterReturn: boolean;
-    scrollY: number;
-    focusInsidePanel: boolean;
-}): boolean {
-    return state.foundOnFirstCheckAfterReturn && state.scrollY === 0 && !state.focusInsidePanel;
-}
+// The idle rule lives in workspace/refreshRules.ts (shared with the rankings);
+// re-exported so this module's importers and tests keep their import.
+export {shouldAutoApplyRefresh};
 
 interface RevisionAnswer {
     result_generation: number | null;

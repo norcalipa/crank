@@ -8,6 +8,8 @@ import {isCompanyId, parseCompanyId} from './company/companyId';
 import EvidenceSummary, {evidenceDescription} from './evidence/EvidenceSummary';
 import {EvidenceSummaryData, RTO_POLICY_LABELS} from './labels';
 import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './suggestCompany/controller';
+import {createPoller, PollInfo, Poller} from './workspace/poller';
+import {shouldAutoApplyRefresh} from './workspace/refreshRules';
 import {installPositionTracking, PositionAnchor, restoreResultPosition, saveResultPosition} from './workspace/position';
 import {
     clearWorkspaceContext,
@@ -73,6 +75,9 @@ interface OrganizationListProps {
     rankingPresets?: RankingPreset[];
     currentAlgorithmId?: number | null;
     algorithmUrlTemplate?: string;
+    // Revision of the rows in `organizations` (issue #485c), embedded by the
+    // server; absent on fixture pages and older cached shells, which never poll.
+    revision?: string | null;
 }
 
 // Query parameters the list preserves when it rewrites the URL; anything
@@ -130,6 +135,46 @@ interface OrganizationListState {
     // id that is not a list row, and stays null for an id that is gone.
     view: CompanyViewState | null;
     choicesStatus: 'loading' | 'ready' | 'error';
+    // Newer rankings (issue #485c): the revision of the rows on screen, the
+    // newer one the last poll found (null: none), a press in flight, its
+    // failure, the sentence the toolbar's polite region speaks, and the
+    // "Updated" mark after an idle swap ('seen' keeps its box, hidden).
+    shownRevision: string | null;
+    newerRevision: string | null;
+    refreshing: boolean;
+    refreshFailed: boolean;
+    announcement: string;
+    updatedMark: 'off' | 'on' | 'seen';
+}
+
+// Newer rankings (issue #485c). One poll a minute, the same setting as the
+// job-match panel's (`poll_after_seconds` in the answer overrides it).
+const DEFAULT_POLL_SECONDS = 60;
+const UPDATED_AVAILABLE = 'Updated results available.';
+const UPDATED_SHOWN = 'Showing updated rankings.';
+const REFRESH_FAILED = "Couldn't refresh. Try again.";
+
+async function requestRankingsRevision(algorithmId: number, signal: AbortSignal) {
+    const res = await fetch(`/api/rankings/${algorithmId}/revision/`, {signal, headers: {Accept: 'application/json'}});
+    if (!res.ok) {
+        throw new Error(`rankings revision ${res.status}`);
+    }
+    const body = await res.json() as {revision?: unknown; poll_after_seconds?: unknown};
+    if (typeof body.revision !== 'string') {
+        throw new Error('rankings revision missing');
+    }
+    const seconds = body.poll_after_seconds;
+    return {
+        value: body.revision,
+        pollAfterSeconds: typeof seconds === 'number' && seconds > 0 ? seconds : null,
+    };
+}
+
+// A result row in the viewport and where it sits, so the one being read can
+// be put back after the notice appears or the rows are replaced.
+interface RowAnchor {
+    id: string;
+    top: number;
 }
 
 class OrganizationList extends React.Component<OrganizationListProps, OrganizationListState> {
@@ -147,7 +192,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             rtoPolicy: urlState.rtoPolicy,
             searchTerm: urlState.searchTerm,
             view: null,
-            choicesStatus: 'loading'
+            choicesStatus: 'loading',
+            shownRevision: props.revision ?? null,
+            newerRevision: null,
+            refreshing: false,
+            refreshFailed: false,
+            announcement: '',
+            updatedMark: 'off',
         };
     }
 
@@ -217,6 +268,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.unsubscribeWorkspace = subscribeWorkspace(this.handleWorkspaceChange);
         this.unregisterFilterTarget = registerFilterTarget(this.applyAssistantFilters);
         this.unregisterCompanyTarget = registerCompanyTarget(this.openCompanyById);
+        this.startRevisionPolling();
     }
 
     componentDidUpdate(_prevProps: unknown, prevState: OrganizationListState) {
@@ -243,9 +295,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             || prevState.currentPage !== this.state.currentPage) {
             this.reportContext();
         }
+        this.settleRefresh(prevState);
     }
 
     componentWillUnmount() {
+        this.refreshEpoch += 1;
+        this.poller?.stop();
+        this.poller = null;
+        this.stopMarkListeners?.();
         window.removeEventListener('popstate', this.handlePopState);
         window.removeEventListener(COMPANY_OPEN_EVENT, this.handleCompanyOpenEvent);
         window.removeEventListener('crank:private-state-purged', this.handlePrivateStatePurged, true);
@@ -253,6 +310,204 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.unsubscribeWorkspace?.();
         this.unregisterFilterTarget?.();
         this.unregisterCompanyTarget?.();
+    }
+
+    // ---- Newer rankings (issue #485c) --------------------------------------
+    private poller: Poller | null = null;
+    // Bumped on unmount: an answer for a list that is gone changes nothing.
+    private refreshEpoch = 0;
+    private refreshRunning = false;
+    // Rows in view captured just before the notice appears or the rows are
+    // replaced; put back (and focus moved, after a press) once React has
+    // committed (`settleRefresh`).
+    private pendingRows: RowAnchor[] | null = null;
+    private pendingFocus = false;
+    private stopMarkListeners?: () => void;
+
+    private startRevisionPolling() {
+        const algorithmId = this.props.currentAlgorithmId;
+        if (!this.props.revision || !algorithmId) {
+            return;
+        }
+        this.poller = createPoller<string>({
+            request: (signal) => requestRankingsRevision(algorithmId, signal),
+            onResult: this.handlePolled,
+            intervalSeconds: DEFAULT_POLL_SECONDS,
+        });
+        this.poller.start();
+    }
+
+    // The result rows being read: those in view that start below the phone's
+    // sticky top bar first, then the one it partly covers.
+    private captureRows(): RowAnchor[] {
+        const bar = document.querySelector<HTMLElement>('.app-mobile-topbar');
+        const visibleTop = bar ? Math.max(0, bar.getBoundingClientRect().bottom) : 0;
+        const whole: RowAnchor[] = [];
+        const partial: RowAnchor[] = [];
+        document.querySelectorAll<HTMLElement>(RESULT_ANCHOR_SELECTOR).forEach((element) => {
+            const rect = element.getBoundingClientRect();
+            if (rect.height > 0 && rect.bottom > visibleTop && rect.top < window.innerHeight) {
+                (rect.top >= visibleTop ? whole : partial).push({id: element.getAttribute('data-organization-id') as string, top: rect.top});
+            }
+        });
+        return [...whole, ...partial];
+    }
+
+    // The first captured row that is still listed goes back to its offset;
+    // when none is, the scroll position stays as it is.
+    private restoreRows(rows: RowAnchor[]) {
+        for (const row of rows) {
+            const element = this.findOrganizationAnchor(row.id);
+            if (element) {
+                const delta = element.getBoundingClientRect().top - row.top;
+                if (delta !== 0) {
+                    window.scrollBy({top: delta, left: 0, behavior: INSTANT});
+                }
+                return;
+            }
+        }
+    }
+
+    private settleRefresh(prevState: OrganizationListState) {
+        const rows = this.pendingRows;
+        if (rows) {
+            this.pendingRows = null;
+            this.restoreRows(rows);
+        }
+        if (this.pendingFocus) {
+            this.pendingFocus = false;
+            (document.getElementById('rankings-heading') ?? this.resultsRef.current)?.focus({preventScroll: true});
+        }
+        if (this.state.updatedMark !== prevState.updatedMark) {
+            this.stopMarkListeners?.();
+            this.stopMarkListeners = undefined;
+            if (this.state.updatedMark === 'on') {
+                // The reader's own input (not typing in the Assistant) ends the
+                // mark; it keeps its box so nothing moves.
+                const clear = (event: Event) => {
+                    if ((event.target as Element | null)?.closest?.('#assistant-panel')) return;
+                    this.setState({updatedMark: 'seen'});
+                };
+                const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+                events.forEach((name) => window.addEventListener(name, clear, {passive: true}));
+                this.stopMarkListeners = () => events.forEach((name) => window.removeEventListener(name, clear));
+            }
+        }
+    }
+
+    // The notice goes up (or its revision moves on); the row being read stays.
+    private showNotice(revision: string) {
+        if (this.state.newerRevision === null) {
+            this.pendingRows = this.captureRows();
+            this.setState({newerRevision: revision, announcement: UPDATED_AVAILABLE});
+        } else if (this.state.newerRevision !== revision) {
+            this.setState({newerRevision: revision});
+        }
+    }
+
+    private handlePolled = (revision: string, info: PollInfo) => {
+        if (revision === this.state.shownRevision) {
+            // The data went back to what is on screen: the notice has no point.
+            if (this.state.newerRevision !== null) {
+                this.pendingRows = this.captureRows();
+                this.setState({newerRevision: null, refreshFailed: false, announcement: ''});
+            }
+            return;
+        }
+        if (this.refreshRunning) {
+            return;
+        }
+        const idle = shouldAutoApplyRefresh({
+            foundOnFirstCheckAfterReturn: info.afterReturn,
+            scrollY: window.scrollY,
+            focusInsidePanel: this.resultsRef.current?.contains(document.activeElement) === true,
+            blocked: this.state.view !== null,
+        });
+        if (idle) {
+            void this.refreshRankings('auto', revision);
+        } else {
+            this.showNotice(revision);
+        }
+    };
+
+    // One read of the rows the page would embed now. `press` is the reader's
+    // button; `auto` is the idle rule (no notice, no focus move, an "Updated"
+    // mark instead). Single flight.
+    private refreshRankings = async (mode: 'press' | 'auto', polledRevision?: string) => {
+        const algorithmId = this.props.currentAlgorithmId;
+        if (this.refreshRunning || !algorithmId) {
+            return;
+        }
+        this.refreshRunning = true;
+        const epoch = this.refreshEpoch;
+        if (mode === 'press') {
+            this.setState({refreshing: true, refreshFailed: false});
+        }
+        let payload: {revision: string; organizations: Organization[]};
+        try {
+            const res = await fetch(`/api/rankings/${algorithmId}/`, {headers: {Accept: 'application/json'}});
+            if (!res.ok) {
+                throw new Error(`rankings ${res.status}`);
+            }
+            payload = await res.json();
+            if (typeof payload?.revision !== 'string' || !Array.isArray(payload.organizations)) {
+                throw new Error('rankings malformed');
+            }
+        } catch {
+            this.refreshRunning = false;
+            if (epoch !== this.refreshEpoch) {
+                return;
+            }
+            if (mode === 'press') {
+                this.setState({refreshing: false, refreshFailed: true, announcement: REFRESH_FAILED});
+            } else {
+                // The idle swap did not happen: say so the usual way.
+                this.showNotice(polledRevision as string);
+            }
+            return;
+        }
+        this.refreshRunning = false;
+        if (epoch !== this.refreshEpoch) {
+            return;
+        }
+        this.applyRankings(payload, mode);
+    };
+
+    private applyRankings(payload: {revision: string; organizations: Organization[]}, mode: 'press' | 'auto') {
+        const {revision, organizations} = payload;
+        if (this.state.view !== null) {
+            // A company was opened while the rows were on their way: nothing
+            // is applied under it; the notice waits in the hidden results.
+            this.setState({refreshing: false});
+            if (revision !== this.state.shownRevision) {
+                this.showNotice(revision);
+            }
+            return;
+        }
+        this.pendingRows = this.captureRows();
+        if (revision === this.state.shownRevision) {
+            this.setState({newerRevision: null, refreshing: false, refreshFailed: false, announcement: ''});
+            return;
+        }
+        const {searchTerm, acceleratedVesting, rtoPolicy} = this.state;
+        const filteredOrganizations = this.filterOrganizations(organizations, searchTerm, acceleratedVesting, rtoPolicy);
+        const currentPage = Math.min(this.state.currentPage, this.getPageCount(filteredOrganizations.length));
+        if (currentPage !== this.state.currentPage) {
+            // A stale ?page= would 404 on reload (the server pages by 15).
+            this.updateUrl(currentPage, searchTerm, acceleratedVesting, true);
+        }
+        this.pendingFocus = mode === 'press';
+        this.setState({
+            organizations,
+            filteredOrganizations,
+            currentPage,
+            shownRevision: revision,
+            newerRevision: null,
+            refreshing: false,
+            refreshFailed: false,
+            announcement: UPDATED_SHOWN,
+            updatedMark: mode === 'auto' ? 'on' : 'off',
+        });
     }
 
     private unregisterFilterTarget?: () => void;
@@ -910,7 +1165,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             rtoPolicy,
             searchTerm,
             view,
-            choicesStatus
+            choicesStatus,
+            shownRevision,
+            newerRevision,
+            refreshing,
+            refreshFailed,
+            announcement,
+            updatedMark,
         } = this.state;
 
         const pageCount = this.getPageCount(filteredOrganizations.length);
@@ -1019,7 +1280,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 </div>
                 {this.renderChips()}
                 <div className="rankings-toolbar-count" role="status" aria-live="polite">
-                    <div className="organization-results-count">{isEmpty ? 'Showing 0 organizations' : `Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}</div>
+                    <div className="organization-results-count">{isEmpty ? 'Showing 0 organizations' : `Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}
+                        {updatedMark !== 'off' && (
+                            <span className={`badge text-bg-info ms-2${updatedMark === 'seen' ? ' invisible' : ''}`}
+                                  data-testid={updatedMark === 'on' ? 'rankings-updated-badge' : 'rankings-updated-badge-seen'}
+                                  aria-hidden="true">Updated</span>
+                        )}
+                    </div>
+                    <div className="visually-hidden" data-testid="rankings-announcement">{announcement}</div>
                     <div className="choices-status-slot">
                     {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Loading funding round and RTO labels…</span></div>}
                     {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">
@@ -1037,6 +1305,21 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     </button>
                 )}
             </div>
+            {newerRevision !== null && newerRevision !== shownRevision && (
+                <div className="alert alert-info rankings-updated-notice" data-testid="rankings-updated-notice"
+                     aria-busy={refreshing || undefined}>
+                    <div className="rankings-updated-text">
+                        <strong>Updated results available.</strong>
+                        {refreshFailed && <span className="rankings-updated-error" data-testid="rankings-updated-error"> {REFRESH_FAILED}</span>}
+                    </div>
+                    <button type="button" className="btn btn-primary btn-sm rankings-updated-refresh"
+                            data-testid="rankings-updated-refresh" aria-disabled={refreshing || undefined}
+                            onClick={() => { void this.refreshRankings('press'); }}>
+                        {refreshing && <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>}
+                        Refresh results
+                    </button>
+                </div>
+            )}
             {pageCount > 1 && renderPager('top')}
 
             {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary organization-empty-state" role="alert">
@@ -1164,13 +1447,15 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('Error parsing ranking presets:', error);
         }
         const currentAlgorithmId = Number(configElement?.getAttribute('data-current-algorithm-id'));
+        const revision = configElement?.getAttribute('data-revision') || null;
         const render = () => root.render(<OrganizationList organizations={organizationsData}
             canSuggestCompany={configElement?.getAttribute('data-can-suggest-company') === 'true'}
             isAuthenticated={container.dataset.authenticated === 'true'}
             signInUrlTemplate={configElement?.getAttribute('data-sign-in-url-template') || ''}
             rankingPresets={rankingPresets}
             currentAlgorithmId={Number.isInteger(currentAlgorithmId) && currentAlgorithmId > 0 ? currentAlgorithmId : null}
-            algorithmUrlTemplate={configElement?.getAttribute('data-algorithm-url-template') || undefined}/>);
+            algorithmUrlTemplate={configElement?.getAttribute('data-algorithm-url-template') || undefined}
+            revision={revision}/>);
         render();
         // The full-page-cached shell renders auth-neutral and app-nav.js
         // hydrates the auth flags per request (issue #470); re-render once
