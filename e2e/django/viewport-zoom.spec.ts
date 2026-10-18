@@ -6,7 +6,7 @@
 // long content — each combination asserting measurable invariants
 // (getBoundingClientRect / scrollWidth), never screenshot diffing.
 import {expect, Page, test} from '@playwright/test';
-import {DJANGO_BASE_URL, expectNoHorizontalOverflow, login, pendingTicketMerge, rectOf, requireDjangoTier} from './support';
+import {DJANGO_BASE_URL, expectNoHorizontalOverflow, login, rectOf, requireDjangoTier} from './support';
 
 requireDjangoTier();
 
@@ -173,21 +173,6 @@ test.describe('long content', () => {
             page.locator('article[aria-label="Your message"]', {hasText: 'long content probe'}).first(),
         ).toBeVisible();
         await expect(page.locator('article[aria-label="Assistant message"]').last()).toBeVisible();
-        await expectNoHorizontalOverflow(page);
-    });
-});
-
-test.describe('assistant sidebar open/closed states', () => {
-    test('assistant panel open/closed layout invariants', async ({page}) => {
-        pendingTicketMerge(
-            471,
-            'the desktop assistant sidebar and its open/closed states ship with #471/#477; ' +
-            'assert sidebar-aware layout invariants when they merge and delete this skip',
-        );
-        await page.setViewportSize({width: 1280, height: 800});
-        await login(page);
-        await page.goto('/chat/');
-        await expect(page.getByTestId('job-search-chat')).toBeVisible();
         await expectNoHorizontalOverflow(page);
     });
 });
