@@ -68,31 +68,40 @@ the workflow executes. Artifacts: `playwright-report/` (on failure) and
 
 ## Skip ledger (named, greppable)
 
-Every skip names its owning ticket. Tickets with an in-flight PR carry that PR's
-number (review-disposition round: PRs #496, #497, #500, #501, #502, #503, #504);
-#471 (shared request form) and #490 (comparison) are owning tickets whose PRs have
-not been opened yet. **Unskip mechanism:** each skip is a single
-`pendingTicketMerge(ticket, …)` call in the spec file listed below — delete that
-call when the owning PR merges and the executable assertions turn on. The
-implementation behind every skip is already written; nothing passes silently.
+Every skip names why it is skipped. Ticket-owned skips are a single
+`pendingTicketMerge(ticket, …)` call in the spec file listed below; only tickets
+that are still open appear here. A ticket-owned skip whose PR has merged is
+re-enabled (re-targeted where the product moved) or deleted in favour of a named
+successor, never left in place. Skips that depend on the run, not on a ticket,
+are listed after them.
 
 | Surface | Owning ticket / PR | Reason (greppable) | Where |
 | --- | --- | --- | --- |
-| #500 dialog z-order vs nav rail/toggle | #500 | `pending #500 merge: the dialog paints under the nav rail…` | `e2e/django/regression.spec.ts` |
-| #496 failed-turn immediate-visibility + Retry | #496 | `pending #496 merge: the optimistic turn is rolled back on failure…` | `e2e/django/regression.spec.ts` |
-| #471/#477 assistant sidebar open/closed | #471 | `pending #471 merge: the desktop assistant sidebar…` | `e2e/django/viewport-zoom.spec.ts` |
-| #464 SuggestCompanyModal Escape hardening | #500 (fixes #464) | `pending #464 merge: SuggestCompanyModal Escape/focus-return hardening…` | `e2e/django/a11y-keyboard.spec.ts` |
-| AC7: failed-turn cancel | #496 | `pending #496 merge: the persisted failed-turn delivery state…` (selectors verified at head fa8714d — Retry / "Edit as new message" / Stop; no `cancel-button`) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: independent direct action during outage | #501 | `pending #501 merge: the typed-action fail-closed and stale-patch/late-reply guards…` (head eec6baf ships no preference-editor UI; the test pins that an independent direct action never clobbers a failed turn) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: shared request form from the rankings Suggest action | #471 (PR pending) | `pending #471 merge: the shared company-request form…` (pins the rankings entry point; extend to the remaining Suggest actions when the form lands) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: company comparison vs saved priorities | #490 (PR pending) | `pending #490 merge: the 2–4 company comparison surface…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: jobs availability states (refresh progress + honest result states) | #502 | `pending #502 merge: the distinct match-panel availability states…` (selectors verified at head c971eb9: job-match-refresh / refresh-notice / empty-state-*; the genuine-zero and partial-coverage variants need data-dependent fixtures) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: assistant availability disclosed before submission (healthy + outage) | #503 | `pending #503 merge: pre-submission availability disclosure…` (selectors verified at head 96390aa: assistant-status-notice / assistant-status-retry) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: ingestion outcome visibility (queued runs) | #497 | `pending #497 merge: single-owner ingestion with queued-run consumption…` (head ed4ee0e: job-match-refresh, job-reasons-<listing_id>) | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: company comparison vs saved priorities | #490 (open) | `pending #490 merge: the 2–4 company comparison surface…` | `e2e/django/ac7-surfaces.spec.ts` |
 | AC7: update-revision race (post-commit cache) | #504 | `pending #504 merge: post-commit cache invalidation…` — **explicitly non-executable from the browser harness**: no browser-reachable seam can create a score revision (head 2f130e8 has no Score-mutating view), so deleting the skip without wiring a real revision trigger fails loudly instead of passing vacuously | `e2e/django/ac7-surfaces.spec.ts` |
-| Non-outage pass outage specs | — | `provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1…` | `e2e/django/regression.spec.ts`, `e2e/django/ac7-surfaces.spec.ts` |
+| Outage-only specs, in the normal pass | — | `provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1…` | `e2e/django/regression.spec.ts`, `e2e/django/ac7-surfaces.spec.ts`, `e2e/django/priorities.spec.ts` (the outage describe at the end of the file) |
+| Specs that need assistant replies, in the outage pass | — | `needs assistant replies: not part of the provider-outage pass` | `e2e/django/priorities.spec.ts`, `e2e/django/conversation-controls.spec.ts`, `e2e/django/chat-layout.spec.ts` (three describes) |
+| Touch input outside Chromium | — | `touch is emulated in Chromium only` | `e2e/django/priorities.spec.ts` (two loops) |
 | Fixture-tier collection of Django specs | — | `Django tier only: requires the seeded Django server…` | `e2e/django/support.ts` (`requireDjangoTier`) |
 | Capture pass in normal runs | — | `evidence capture pass only: set PW_CAPTURE_DIR…` | `e2e/django/captures.spec.ts` |
+
+Skips removed for merged tickets (#471, #496, #497, #500, #501, #502, #503):
+
+- Re-enabled as written: the two rankings "Suggest a company" tests (#471), the
+  composer test of the healthy pass (#503; it now counts replies before sending).
+- Re-enabled and re-targeted where the product moved: failed-turn cancel (#496)
+  and the independent direct action (#501), which now check their own probe's
+  turn and, after a reload, its enabled Retry (the footer error is client state);
+  the jobs refresh test (#502), which holds the ranked read and checks the busy
+  state and the hidden announcement; the outage notice test (#503), which expects
+  `role="alert"`; and the failed-turn reload test (#496), which also presses Retry
+  after the reload. A new outage test presses Retry until the server reports
+  the retry cap and recovers with "Edit as new message".
+- Deleted, with the test that already covers it: the dialog and nav rail test
+  (#500; the dialog is gone) is covered by `e2e/organization-popup.spec.ts` and
+  `e2e/django/company-view.spec.ts`; the queued-ingestion card test (#497) by
+  `e2e/django/journey.spec.ts::match panel shows the ranked seeded listing with reasons`;
+  the sidebar open/closed test (#471) by `e2e/django/workspace.spec.ts::no horizontal overflow at ${width}px with the panel open and closed`.
 
 The zoom scenarios are no longer skipped for non-Chromium browsers: the 200%
 text-zoom scenario uses root font-size scaling and the 400% browser-zoom
