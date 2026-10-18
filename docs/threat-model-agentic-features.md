@@ -587,11 +587,13 @@ compared with `main`, requests in flight, concurrency against real Redis), `cran
    delegations larger than a /64 (a /56 is 256 buckets) each bring a fresh
    per-address allowance. The cost of multiplying the limit rises from "create
    an account" to "obtain another address". It is not a hard stop.
-2. **Sign-up is still open, and allauth's per-address limits are not yet
-   effective.** They key on the leftmost `X-Forwarded-For`, which a client
-   behind Cloudflare controls. Throwaway accounts still multiply every other
-   per-account limit: job-search messages, company suggestions and match
-   refreshes.
+2. **Sign-up is still open, and allauth's per-address limits are effective
+   only once the client-address switch is on.** With it on and an address
+   identified, they key on the trusted address (an IPv6 /64 as its network).
+   Until then, and for a request with no identified address, they key on the
+   leftmost `X-Forwarded-For`, which a client behind Cloudflare controls.
+   Throwaway accounts still multiply every other per-account limit:
+   job-search messages, company suggestions and match refreshes.
 3. **There is no global ceiling and no alert.** One account can queue 240
    corrections a day and one address 480. Nothing notifies staff. A hard
    global cap would recreate a site-wide lockout; an alert would not.

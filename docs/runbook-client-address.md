@@ -10,9 +10,10 @@
 ## Purpose
 
 Decide whether the app may trust a client network address, turn that on, check
-it, and turn it off again. The address is used for one thing: per-address
-limits on company corrections, so that one person cannot multiply the
-per-account limits by creating accounts (issue #538).
+it, and turn it off again. The address is used for per-address limits on
+company corrections and for allauth's per-address sign-up, sign-in and
+password-reset limits, so that one person cannot multiply the per-account
+limits by creating accounts (issue #538).
 
 **The switch is off by default and this runbook is the only supported way to
 turn it on.** While it is off, production keeps the per-account limits only, exactly
@@ -63,6 +64,13 @@ The table says who is supposed to; the gate below is what makes it true.
   corrections and make at most `COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR`
   (120) rejected attempts an hour, across all accounts. The per-account limits
   (10 and 60) are checked first and are not loosened.
+- With the source on and an address identified, allauth's per-address limits
+  (sign-up, sign-in, failed sign-in, password reset and sign-in code request,
+  at allauth's default values) key on that address, an IPv6 /64 as its
+  network, instead of the leftmost `X-Forwarded-For`. A request with no
+  identified address keeps allauth's own value. A tripped limit answers a `429`
+  page ("Too many attempts"). While the switch is off, these limits key on the
+  leftmost `X-Forwarded-For`, which a client behind Cloudflare chooses.
 - A request whose header is missing, duplicated or malformed is not refused and
   is not put in a shared bucket: it gets the per-account limits only, and the
   app logs `client address unavailable` with the reason (`missing`,
@@ -395,6 +403,11 @@ per-address layer stays off and production keeps the per-account limits.
   have no `client address unavailable` warning. The warning is written by one
   pod, at most once every 10 minutes for each reason, so one pod's logs are
   not enough.
+- **V6.** From one machine, send a burst of 40 sign-in attempts with a
+  different `X-Forwarded-For` value on each (the `login` limit is 30 a
+  minute for each address). The burst is held: the later attempts answer `429`
+  with the "Too many attempts" page. If every attempt is answered normally, the
+  limits still key on the forwarded header: treat it as a failure and roll back.
 
 ## Roll back
 
