@@ -1864,7 +1864,7 @@ describe('additional JobSearchChat coverage', () => {
             Object.defineProperty(URL, 'createObjectURL', {value: createUrl, configurable: true});
             Object.defineProperty(URL, 'revokeObjectURL', {value: revoke, configurable: true});
             const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-            (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(new Blob(['{}'], {type: 'application/json'})));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(new Blob(['{}']), {headers: {'Content-Type': 'application/json'}}));
 
             chooseMenuItem('conversation-export');
             await waitFor(() => expect(click).toHaveBeenCalled());
@@ -4403,7 +4403,7 @@ describe('an account switch leaves the previous account nothing to act with (iss
             const exported = hold(when('GET', `${CONVERSATIONS_URL}42/export/`));
             chooseMenuItem('conversation-export');
             await exported.arrived;
-            await act(async () => { exported.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            await act(async () => { exported.settle(new Response(new Blob(['{}']), {headers: {'Content-Type': 'application/json'}})); });
             await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
             expect(createUrl).toHaveBeenCalledTimes(1);
             expect(screen.getByTestId('conversation-status')).toHaveTextContent('Conversation exported');
@@ -4512,7 +4512,7 @@ describe('an account switch leaves the previous account nothing to act with (iss
             fireEvent.click(item);
             await held.arrived;
             await switchAccount();
-            await act(async () => { held.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            await act(async () => { held.settle(new Response(new Blob(['{}']), {headers: {'Content-Type': 'application/json'}})); });
             expect(screen.getByTestId('conversation-more')).toHaveFocus();
             expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
         });
@@ -4531,7 +4531,7 @@ describe('an account switch leaves the previous account nothing to act with (iss
             await switchAccount();
             const composer = screen.getByLabelText('Message');
             composer.focus();
-            await act(async () => { held.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            await act(async () => { held.settle(new Response(new Blob(['{}']), {headers: {'Content-Type': 'application/json'}})); });
             expect(composer).toHaveFocus();
         });
 
@@ -4701,7 +4701,7 @@ describe('an account switch leaves the previous account nothing to act with (iss
             const body = new Promise((resolve) => { release = resolve; });
             let arrive: () => void = () => undefined;
             const reading = new Promise<void>((resolve) => { arrive = resolve; });
-            const res = {ok: true, status: 200, headers: new Headers(),
+            const res = {ok: true, status: 200, headers: new Headers({'Content-Type': 'application/json'}),
                 [kind]: () => { arrive(); return body; }} as unknown as Response;
             return {res, reading, release};
         }

@@ -273,10 +273,10 @@ export function ConversationMenu({
                 setExporting(false);
             }
         }
-        // The conversation went away while exporting: its outcome belongs to no view now.
-        if (generation !== exportGenRef.current) return;
-        if (outcome === DROPPED) {
-            setStatus('');
+        // The conversation went away while exporting: its outcome belongs to no view now (the status is the next one's).
+        const stale = generation !== exportGenRef.current;
+        if (stale || outcome === DROPPED) {
+            if (!stale) setStatus('');
             // The menu item that held focus is gone; focus that fell to the page returns to More, focus the next reader placed stays.
             if (!keepFocus && focusHasFallen()) moreRef.current?.focus();
             return;
