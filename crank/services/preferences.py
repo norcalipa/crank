@@ -1058,6 +1058,8 @@ def _token_digest(value):
 def _token_claims(kind, token, user):
     """The values a signature binds, read from ``token``.
 
+    ``user`` is the opaque :func:`token_owner` tag, not the primary key: the
+    signature is readable in the browser and must not expose the raw id.
     ``scope`` defaults to ``account`` for proposals, as the apply view does;
     undo tokens carry none. ``origin`` is whatever the token says (absent for
     chat proposals).
@@ -1065,7 +1067,7 @@ def _token_claims(kind, token, user):
     if kind == "proposal":
         return {
             "kind": kind,
-            "user": user.pk,
+            "user": token_owner(user),
             "scope": token.get("scope", "account"),
             "revision": token.get("base_revision"),
             "origin": token.get("origin"),
@@ -1073,7 +1075,7 @@ def _token_claims(kind, token, user):
         }
     return {
         "kind": kind,
-        "user": user.pk,
+        "user": token_owner(user),
         "scope": None,
         "revision": token.get("expected_revision"),
         "origin": token.get("origin"),
@@ -1121,7 +1123,9 @@ def verify_token(kind, token, user, *, allow_scope_narrowing=False):
         ):
             posted["scope"] = "account"
         return _canonical_json(signed) == _canonical_json(posted)
-    except (signing.BadSignature, ValueError, TypeError, AttributeError):
+    except (
+        signing.BadSignature, ValueError, TypeError, AttributeError, RecursionError
+    ):
         return False
 
 

@@ -4,6 +4,7 @@
 import copy
 import json
 import time
+import zlib
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -754,9 +755,62 @@ class TestSignedTokens:
         undo = self._undo(alice, client_a)
         before = self._state(bob)
         assert post(client_b, "agent-preference-apply", {"decision": "apply", "proposal": theirs}).status_code == 403
-        theirs = {**undo, "owner": prefs.token_owner(bob), "expected_revision": UserPreference.objects.get(user=bob).revision}
+        assert self._state(bob) == before
+        # Move bob to the revision alice's undo targets, then change only the owner:
+        # the "user" claim alone must refuse it.
+        UserPreference.objects.filter(user=bob).update(revision=undo["expected_revision"])
+        before = self._state(bob)
+        theirs = {**undo, "owner": prefs.token_owner(bob)}
         assert post(client_b, "agent-preference-undo", {"undo": theirs}).status_code == 403
         assert self._state(bob) == before
+
+    @pytest.mark.parametrize("salt", ["other.salt", None])
+    @pytest.mark.parametrize("kind", ["proposal", "undo"])
+    def test_real_claims_under_another_salt_are_refused(self, alice, client_a, kind, salt):
+        seed(alice)
+        token = self._proposal(client_a) if kind == "proposal" else self._undo(alice, client_a)
+        claims = prefs._token_claims(kind, token, alice)
+        kwargs = {} if salt is None else {"salt": salt}
+        forged = {**token, "sig": signing.dumps(claims, compress=True, **kwargs)}
+        assert not prefs.verify_token(kind, forged, alice)
+        before = self._state(alice)
+        if kind == "proposal":
+            response = post(client_a, "agent-preference-apply", {"decision": "apply", "proposal": forged})
+        else:
+            response = post(client_a, "agent-preference-undo", {"undo": forged})
+        assert response.status_code == 403
+        assert self._state(alice) == before
+
+    def test_sig_does_not_expose_the_user_pk(self, db):
+        user = get_user_model().objects.create_user("carol", password="pw", id=7654321)
+        client = Client()
+        client.force_login(user)
+        seed(user)
+        for token in (self._proposal(client), self._undo(user, client)):
+            payload = token["sig"].split(":")[0]
+            raw = signing.b64_decode(payload.lstrip(".").encode())
+            decoded = zlib.decompress(raw) if payload.startswith(".") else raw
+            assert json.loads(decoded)["user"] == prefs.token_owner(user)
+            assert str(user.pk) not in decoded.decode()
+            assert str(user.pk) not in json.dumps(token)
+
+    def test_pathologically_deep_document_is_403_not_500(self, alice):
+        seed(alice)
+        quiet = Client(raise_request_exception=False)
+        quiet.force_login(alice)
+        token = self._proposal(quiet)
+        undo = post(quiet, "agent-preference-apply", {"decision": "apply", "proposal": token}).json()["undo"]
+        deep = []
+        for _ in range(3000):
+            deep = [deep]
+        assert not prefs.verify_token("undo", {**undo, "document": deep}, alice)
+        before = self._state(alice)
+        body = json.dumps({"undo": {**undo, "document": {"x_future": 1}}}).replace(
+            '{"x_future": 1}', "[" * 400 + "]" * 400
+        )
+        response = quiet.post(reverse("agent-preference-undo"), data=body, content_type="application/json")
+        assert response.status_code == 403
+        assert self._state(alice) == before
 
     def test_expired_token_is_refused(self, alice, client_a):
         seed(alice)

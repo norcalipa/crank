@@ -260,7 +260,9 @@ lands — implemented-before-documented rule, per #463's registry).
 - **Boundary:** a proposal token (chat turn, priorities editor) and an undo
   token (apply, reset) are readable JSON the client passes back. Each carries
   `owner` (a per-user tag) and `sig`, a `django.core.signing` signature under
-  the salt `crank.pref-token.v1` over the token kind, the user, the scope,
+  the salt `crank.pref-token.v1` over the token kind, the user (the opaque owner
+  tag, since a signature is signed, not encrypted, and must not expose the raw
+  user id), the scope,
   the revision (`base_revision` / `expected_revision`), the origin and a
   SHA-256 digest of the canonical `patch` or `document`. Apply and Undo accept
   a token only when the owner tag matches, the signature verifies within
