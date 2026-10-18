@@ -21,7 +21,7 @@ from django.core.cache import cache
 
 from crank.management.commands.seed_e2e import RATING_SOURCE_ORG_NAME, TARGET_ORGS
 from crank.models.organization import Organization
-from crank.models.score import ScoreType
+from crank.models.score import Score, ScoreType
 from crank.services.scores import affected_cache_keys, persist_score_observation
 
 if getattr(settings, "ENV", "") != "dev":
@@ -67,6 +67,8 @@ elif action == "pad":
 elif action == "unpad":
     pads = Organization.objects.filter(name__startswith=PAD_PREFIX)
     keys = affected_cache_keys(source.pk, score_type.pk)
+    # Scores restrict deleting their target, so they go first.
+    Score.objects.filter(target__in=pads).delete()
     pads.delete()
     cache.delete_many(keys)
 else:

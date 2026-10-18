@@ -551,11 +551,14 @@ test.describe('Updated rankings available (company rankings)', () => {
         expect(Object.keys(answer.body).sort()).toEqual(['poll_after_seconds', 'revision']);
     });
 
-    for (const [width, height] of [[1280, 420], [375, 667]] as const) {
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
         for (const anchoring of ['on', 'off'] as const) {
             for (const position of ['top', 'heading-at-top', 'mid-list'] as ReaderPosition[]) {
                 test(`the row being read does not move when the notice arrives or is applied: ${position}, scroll anchoring ${anchoring}, ${width}px`, async ({page}) => {
                     await page.setViewportSize({width, height});
+                    // Sixteen rows: a page long enough to scroll to mid-list and to lose a
+                    // notice's height without the document running out below the reader.
+                    rankingsFixture('pad');
                     await openRankings(page);
                     if (anchoring === 'off') {
                         // Safari has no scroll anchoring: stand in for it.
@@ -601,9 +604,12 @@ test.describe('Updated rankings available (company rankings)', () => {
     test('over 10 simulated visible minutes the page sends at most 10 polls', async ({page}) => {
         const seen = countRankingsRequests(page);
         await openRankings(page);
-        await page.clock.runFor(10 * 60_000);
+        // Each answer arms the next ask, so the minutes are stepped, not jumped.
+        for (let minute = 1; minute <= 10; minute += 1) {
+            await page.clock.runFor(POLL_INTERVAL_MS);
+            await expect.poll(() => seen.revisionDone).toBe(minute);
+        }
         expect(seen.revision).toBeLessThanOrEqual(10);
-        expect(seen.revision).toBeGreaterThanOrEqual(9);
         await expect(notice(page)).toHaveCount(0);
     });
 

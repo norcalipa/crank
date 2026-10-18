@@ -39,11 +39,14 @@ export async function setTabVisibility(page: Page, state: 'visible' | 'hidden'):
 
 /** Counts the polls and the reads of the rows. */
 export function countRankingsRequests(page: Page) {
-    const seen = {revision: 0, list: 0};
+    const seen = {revision: 0, revisionDone: 0, list: 0};
     page.on('request', (request) => {
         const path = new URL(request.url()).pathname;
         if (/^\/api\/rankings\/\d+\/revision\/$/.test(path)) seen.revision += 1;
         else if (/^\/api\/rankings\/\d+\/$/.test(path)) seen.list += 1;
+    });
+    page.on('requestfinished', (request) => {
+        if (/^\/api\/rankings\/\d+\/revision\/$/.test(new URL(request.url()).pathname)) seen.revisionDone += 1;
     });
     return seen;
 }
