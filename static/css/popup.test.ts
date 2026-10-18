@@ -645,6 +645,12 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         expect(popupCss).toMatch(/@media \(max-width: 575\.98px\), \(max-height: 30rem\)\s*\{\s*\.chat-confirm-signin\s*\{[^}]*display:\s*inline-block;[^}]*padding-block:\s*\.75rem;[^}]*margin-block:\s*-\.75rem/);
         expect(popupCss).toMatch(/@media \(max-height: 30rem\)\s*\{\s*\.chat-confirm-signin\s*\{[^}]*padding-block:\s*\.875rem;[^}]*margin-block:\s*-\.875rem/);
     });
+
+    it('fills the gap between two stacked panels, dims the footer buttons under [inert], and leaves the sign-in link room above the retry on a short phone (visual review round 3)', () => {
+        expect(rule('.chat-panel-stack:has(> .chat-confirm-panel + .chat-confirm-panel)')).toMatch(/background-color:\s*var\(--bs-body-bg\)/);
+        expect(rule('#job-search-chat .chat-footer[inert] .btn')).toMatch(/opacity:\s*\.65;[^}]*cursor:\s*default/);
+        expect(popupCss).toMatch(/@media \(max-width: 575\.98px\) and \(max-height: 30rem\)\s*\{\s*\.chat-confirm-panel \.chat-confirm-error:has\(\.chat-confirm-signin\)\s*\{[^}]*margin-bottom:\s*\.625rem/);
+    });
 });
 
 describe('one transcript scroller in the assistant panel (issue #483)', () => {

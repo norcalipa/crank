@@ -389,6 +389,25 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         await page.getByTestId('confirm-export-first').click();
         const panel = page.getByTestId('export-error');
         await expect(panel).toBeVisible();
+        // Two panels in the stack: the gap between them shows the panel background, never the transcript or composer.
+        // Under the open confirmation Send (and every footer button) is dimmed as the disabled control it behaves as.
+        const chrome = await page.evaluate(() => {
+            const stack = document.querySelector('.chat-panel-stack')!;
+            const probe = document.createElement('div');
+            probe.style.backgroundColor = 'var(--bs-body-bg)';
+            stack.parentElement!.appendChild(probe);
+            const body = getComputedStyle(probe).backgroundColor;
+            probe.remove();
+            return {
+                stack: getComputedStyle(stack).backgroundColor,
+                body,
+                footerButtons: Array.from(document.querySelectorAll('#job-search-chat .chat-footer .btn')).map((b) => getComputedStyle(b).opacity),
+            };
+        });
+        expect(chrome.body, 'the panel background resolves').not.toBe('rgba(0, 0, 0, 0)');
+        expect(chrome.stack, 'the gap between the two panels shows the panel background').toBe(chrome.body);
+        expect(chrome.footerButtons.length, 'the footer has buttons').toBeGreaterThan(0);
+        expect(chrome.footerButtons, 'every footer button, Send included, is dimmed under the open confirmation').toEqual(chrome.footerButtons.map(() => '0.65'));
         await expect.poll(async () => page.evaluate(() => {
             const slack = 0.5;
             const stack = document.querySelector('.chat-panel-stack')!.getBoundingClientRect();
@@ -496,31 +515,38 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
     test('an ended session on Delete and on New is reported and nothing is removed', async ({page, context}) => {
         const replies = page.locator('article[aria-label="Assistant message"]');
         const before = await replies.count();
-        await chooseItem(page, 'conversation-delete');
-        await waitForConfirmArmed(page);
-        await context.clearCookies({name: 'sessionid'});
-        await page.getByTestId('confirm-action').click();
-        await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
-        await expect(page.getByTestId('confirm-action')).toHaveText('Try deleting again');
-        expect(await replies.count(), 'the transcript is as it was').toBe(before);
-        await page.getByTestId('confirm-cancel').click();
-        await chooseItem(page, 'conversation-new');
-        await waitForConfirmArmed(page);
-        await page.getByTestId('confirm-action').click();
-        await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
-        expect(await replies.count()).toBe(before);
-        await login(page);
+        try {
+            await chooseItem(page, 'conversation-delete');
+            await waitForConfirmArmed(page);
+            await context.clearCookies({name: 'sessionid'});
+            await page.getByTestId('confirm-action').click();
+            await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
+            await expect(page.getByTestId('confirm-action')).toHaveText('Try deleting again');
+            expect(await replies.count(), 'the transcript is as it was').toBe(before);
+            await page.getByTestId('confirm-cancel').click();
+            await chooseItem(page, 'conversation-new');
+            await waitForConfirmArmed(page);
+            await page.getByTestId('confirm-action').click();
+            await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
+            expect(await replies.count()).toBe(before);
+        } finally {
+            // Signed in again even when an assertion failed, so the shared afterEach reads the saved priorities as the user.
+            await login(page);
+        }
     });
 
     test('an ended session on Export is reported in the export-error panel and nothing downloads', async ({page, context}) => {
         const downloads: string[] = [];
         page.on('download', (download) => downloads.push(download.suggestedFilename()));
-        await context.clearCookies({name: 'sessionid'});
-        await chooseItem(page, 'conversation-export');
-        await expect(page.getByTestId('export-error')).toContainText(SESSION_ENDED);
-        await expect(page.getByTestId('conversation-status')).toHaveText('');
-        expect(downloads).toEqual([]);
-        await login(page);
+        try {
+            await context.clearCookies({name: 'sessionid'});
+            await chooseItem(page, 'conversation-export');
+            await expect(page.getByTestId('export-error')).toContainText(SESSION_ENDED);
+            await expect(page.getByTestId('conversation-status')).toHaveText('');
+            expect(downloads).toEqual([]);
+        } finally {
+            await login(page);
+        }
     });
 
     test('Delete waits for an export in flight, and a second press starts no second request', async ({page}) => {
@@ -532,6 +558,11 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         const exportFirst = page.getByTestId('confirm-export-first');
         await exportFirst.click();
         await expect(exportFirst).toHaveAttribute('aria-disabled', 'true');
+        await expect.poll(() => exports, {message: 'the first press started one request'}).toBe(1);
+        // A second press while the export is held (focus stays on the button it was pressed with) starts nothing.
+        await expect(exportFirst).toBeFocused();
+        await page.keyboard.press('Enter');
+        await exportFirst.click();
         await expect(page.getByTestId('confirm-action')).toBeDisabled();
         await expect(page.getByTestId('confirm-cancel')).toBeEnabled();
         await expect(page.getByTestId('conversation-status')).toHaveText('Exporting conversation…');
@@ -540,7 +571,7 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         await more(page).click();
         release();
         await expect(page.getByTestId('confirm-action')).toBeEnabled();
-        expect(exports).toBe(1);
+        expect(exports, 'two more presses while it was held started no second request').toBe(1);
         await page.getByTestId('confirm-cancel').click();
     });
 
@@ -554,12 +585,20 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         await page.keyboard.press('Tab');
         await page.keyboard.press('Tab');
         await expect(exportFirst).toBeFocused();
+        const ring = () => exportFirst.evaluate((el) => {
+            const style = getComputedStyle(el);
+            return {style: style.outlineStyle, width: style.outlineWidth, color: style.outlineColor};
+        });
+        const visibleRing = {style: 'solid', width: '2px', color: 'rgb(147, 197, 253)'};
+        expect(await ring(), 'the ring shows on the focused button').toEqual(visibleRing);
         await page.keyboard.press('Enter');
         await expect(exportFirst).toHaveText('Exporting…');
         await expect(exportFirst, 'focus does not fall to the page body').toBeFocused();
+        expect(await ring(), 'the ring stays while it exports').toEqual(visibleRing);
         release();
         await expect(exportFirst).toHaveText('Export first');
         await expect(exportFirst).toBeFocused();
+        expect(await ring(), 'the ring is still there when it finishes').toEqual(visibleRing);
         await page.getByTestId('confirm-cancel').click();
     });
 

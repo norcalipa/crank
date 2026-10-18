@@ -48,6 +48,14 @@ interface MenuItem {
 // The ended-session copy names "Sign in again": make those words the way to do it, returning to this page.
 const SIGN_IN_WORDS = 'Sign in again';
 
+// The pinned /chat/ page's sign-in address already names where to return (built and validated by the server):
+// keep it; otherwise return to this page.
+function signInHref(signInUrl: string): string {
+    const url = new URL(signInUrl, window.location.href);
+    if (!url.searchParams.has('next')) url.searchParams.set('next', window.location.pathname);
+    return url.pathname + url.search;
+}
+
 const InlineError = React.forwardRef<HTMLParagraphElement, {message: string; id?: string; signInUrl?: string}>(function InlineError({message, id, signInUrl}, ref) {
     const [before, after] = message === SESSION_ENDED_COPY && signInUrl !== undefined
         ? message.split(SIGN_IN_WORDS) : [message, null];
@@ -58,7 +66,7 @@ const InlineError = React.forwardRef<HTMLParagraphElement, {message: string; id?
                 {before}
                 {after !== null && (
                     <>
-                        <a className="chat-confirm-signin chat-focus" href={`${signInUrl}?next=${encodeURIComponent(window.location.pathname)}`}
+                        <a className="chat-confirm-signin chat-focus" href={signInHref(signInUrl as string)}
                            data-testid="confirm-sign-in">{SIGN_IN_WORDS}</a>
                         {after}
                     </>
@@ -93,6 +101,8 @@ export function ConversationMenu({
     const [working, setWorking] = React.useState(false);
     const [exporting, setExporting] = React.useState(false);
     const exportingRef = React.useRef(false);
+    // Bumped when the conversation goes away: an export started before it no longer owns the exporting state.
+    const exportGenRef = React.useRef(0);
     const [failure, setFailure] = React.useState<string | null>(null);
     const [aboutOpen, setAboutOpen] = React.useState(false);
     const [exportError, setExportError] = React.useState<string | null>(null);
@@ -194,6 +204,9 @@ export function ConversationMenu({
             setOpen(false);
             setExportError(null);
             setStatus('');
+            exportGenRef.current += 1;
+            exportingRef.current = false;
+            setExporting(false);
         }
     }, [hasConversation, working]);
 
@@ -247,6 +260,7 @@ export function ConversationMenu({
         // One request at a time: a second press while one is in flight starts nothing.
         if (exportingRef.current) return;
         exportingRef.current = true;
+        const generation = exportGenRef.current;
         setExporting(true);
         setExportError(null);
         setStatus('Exporting conversation…');
@@ -254,9 +268,13 @@ export function ConversationMenu({
         try {
             outcome = await onExport();
         } finally {
-            exportingRef.current = false;
-            setExporting(false);
+            if (generation === exportGenRef.current) {
+                exportingRef.current = false;
+                setExporting(false);
+            }
         }
+        // The conversation went away while exporting: its outcome belongs to no view now.
+        if (generation !== exportGenRef.current) return;
         if (outcome === DROPPED) {
             setStatus('');
             // The menu item that held focus is gone; focus that fell to the page returns to More, focus the next reader placed stays.

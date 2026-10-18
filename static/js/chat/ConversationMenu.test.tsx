@@ -823,6 +823,40 @@ describe('ConversationMenu history follow-ups (issue #547)', () => {
             expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
         });
 
+        test('an export still out when the account switches does not hold the next account\'s Delete', async () => {
+            const old = held<string | null>();
+            const next = held<string | null>();
+            const onExport = jest.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+            const props: ConversationMenuProps = {
+                title: <h2>Conversation</h2>, hasConversation: true, hasMessages: true, pending: false,
+                onExport, onNewConversation: jest.fn(), onDeleteConversation: jest.fn(),
+            };
+            const {rerender} = render(<ConversationMenu {...props}/>);
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            expect(screen.getByTestId('conversation-status')).toHaveTextContent('Exporting conversation…');
+            // The account switch: the old conversation goes away, then the next account's own appears.
+            rerender(<ConversationMenu {...props} hasConversation={false} hasMessages={false}/>);
+            rerender(<ConversationMenu {...props}/>);
+            openDelete();
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Export first');
+            expect(screen.getByTestId('confirm-export-first')).not.toHaveAttribute('aria-disabled');
+            expect(screen.getByTestId('confirm-action')).toBeEnabled();
+            fireEvent.click(more());
+            expect(screen.getByTestId('conversation-export')).toBeEnabled();
+            // The old export settling afterwards shows nothing in the next account's view.
+            await old.settle('Could not export your conversation.');
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+            // ...and does not release an export the next account started meanwhile.
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-export-first'));
+            expect(onExport).toHaveBeenCalledTimes(2);
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Exporting…');
+            await next.settle(null);
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Export first');
+        });
+
         test('Delete succeeding withdraws an earlier export failure', async () => {
             const onExport = jest.fn().mockResolvedValue('Could not export your conversation.');
             const Host = () => {
@@ -911,6 +945,35 @@ describe('ConversationMenu history follow-ups (issue #547)', () => {
             expect(screen.getByRole('heading', {name: 'Delete conversation?'})).toHaveFocus();
         } finally {
             delete (HTMLElement.prototype as {scrollTop?: unknown}).scrollTop;
+        }
+    });
+});
+
+describe('ConversationMenu sign-in link (issue #547 review)', () => {
+    const endedProps = (signInUrl: string): ConversationMenuProps => ({
+        title: <h2>Conversation</h2>, hasConversation: true, hasMessages: true, pending: false,
+        onExport: jest.fn().mockResolvedValue(SESSION_ENDED_COPY),
+        onNewConversation: jest.fn(), onDeleteConversation: jest.fn(), signInUrl,
+    });
+    const endedLink = async () => {
+        fireEvent.click(screen.getByRole('button', {name: 'More'}));
+        fireEvent.click(screen.getByTestId('conversation-export'));
+        return screen.findByTestId('confirm-sign-in');
+    };
+
+    test('keeps a server-built sign-in address that already names where to return, company included', async () => {
+        const given = '/accounts/login/?next=%2Fchat%2F%3Fcompany%3D5';
+        render(<ConversationMenu {...endedProps(given)}/>);
+        expect((await endedLink()).getAttribute('href')).toBe(given);
+    });
+
+    test('adds the current page as next when the address names none', async () => {
+        window.history.pushState({}, '', '/jobs/?x=1');
+        try {
+            render(<ConversationMenu {...endedProps('/accounts/login/')}/>);
+            expect((await endedLink()).getAttribute('href')).toBe('/accounts/login/?next=%2Fjobs%2F');
+        } finally {
+            window.history.pushState({}, '', '/');
         }
     });
 });

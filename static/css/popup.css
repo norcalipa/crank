@@ -3317,6 +3317,11 @@ body.assistant-open .app-content .table-responsive,
     margin-top: .5rem;
 }
 
+/* Two panels in the stack: fill the gap between them so the transcript or the composer never shows through. */
+.chat-panel-stack:has(> .chat-confirm-panel + .chat-confirm-panel) {
+    background-color: var(--bs-body-bg);
+}
+
 /* While New / Delete is open the composer beneath is inert, so the confirmation may use its band too. */
 .chat-panel-stack:has(> .chat-confirm-panel[role="group"]) {
     max-height: var(--chat-stack-cover-max, var(--chat-stack-max, none));
@@ -3356,6 +3361,19 @@ body.assistant-open .app-content .table-responsive,
 #job-search-chat .chat-footer[inert] .form-control {
     background-color: var(--bs-secondary-bg);
     cursor: default;
+}
+
+/* ...and Send (live-looking when a draft is typed) as the disabled button it behaves as. */
+#job-search-chat .chat-footer[inert] .btn {
+    opacity: .65;
+    cursor: default;
+}
+
+/* At a phone's short heights the link's 44px box would run 4px under the retry below: leave room for it. */
+@media (max-width: 575.98px) and (max-height: 30rem) {
+    .chat-confirm-panel .chat-confirm-error:has(.chat-confirm-signin) {
+        margin-bottom: .625rem;
+    }
 }
 
 /* Wider than a phone, the export-error panel's retry and Dismiss share one row under the message. */

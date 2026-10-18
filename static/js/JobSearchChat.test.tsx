@@ -1508,6 +1508,56 @@ describe('history actions: ended session, server word, busy composer, inert (iss
         expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
     });
 
+    test.each([
+        ['a text/plain 200', () => new Response('{"messages": []}', {status: 200, headers: {'Content-Type': 'text/plain'}})],
+        ['a 200 without a Content-Type', () => new Response(null, {status: 200})],
+    ])('Export answered with %s downloads nothing and shows the failure', async (_name, answer) => {
+        await seed();
+        const {createUrl, click} = download();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(answer());
+        chooseMenuItem('conversation-export');
+        expect(await screen.findByTestId('export-error')).toHaveTextContent('Could not export your conversation.');
+        expect(createUrl).not.toHaveBeenCalled();
+        expect(click).not.toHaveBeenCalled();
+    });
+
+    test('the sign-in link on the pinned /chat/ page is the server-built address, company included', async () => {
+        const given = '/accounts/login/?next=%2Fchat%2F%3Fcompany%3D5';
+        window.history.pushState({}, '', '/chat/?company=5');
+        try {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [userMessage('hello')])));
+            render(<JobSearchChat isAuthenticated signInUrl={given}/>);
+            await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 401));
+            deleteConversation();
+            expect((await screen.findByTestId('confirm-sign-in')).getAttribute('href')).toBe(given);
+        } finally {
+            window.history.pushState({}, '', '/');
+        }
+    });
+
+    test('a Send waiting in its status check disables New and Delete and withdraws an open confirmation', async () => {
+        await renderChat([userMessage('hello')]);
+        const mock = global.fetch as jest.Mock;
+        chooseMenuItem('conversation-delete');
+        expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+        const settleStatus = heldFetch();
+        mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(80, 'Answered.'), preferences_changed: false}, 201));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+        fireEvent.click(screen.getByRole('button', {name: /send/i}));
+        await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+        openMore();
+        expect(screen.getByTestId('conversation-new')).toBeDisabled();
+        expect(screen.getByTestId('conversation-delete')).toBeDisabled();
+        const deleteCalls = () => mock.mock.calls.filter(([, init]) => init?.method === 'DELETE');
+        expect(deleteCalls()).toHaveLength(0);
+        await settleStatus(statusResponse('ready'));
+        await screen.findByText('Answered.');
+        await waitFor(() => expect(screen.getByTestId('conversation-delete')).toBeEnabled());
+        expect(deleteCalls()).toHaveLength(0);
+    });
+
     test('Export answered with JSON downloads the file', async () => {
         await seed();
         const {createUrl, click} = download();

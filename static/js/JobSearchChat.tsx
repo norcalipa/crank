@@ -1438,8 +1438,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/export/`);
             if (sessionEnded(res, signInUrl)) return failed(SESSION_ENDED_COPY);
-            // An ended session answers the login page (200 text/html): never saved as the export.
-            if (!res.ok || /\bhtml\b/i.test(res.headers.get('Content-Type') ?? '')) {
+            // Only a JSON answer is the export: an ended session's login page (200 text/html), a proxy's text/plain or a missing type is never saved.
+            if (!res.ok || !/application\/json/i.test(res.headers.get('Content-Type') ?? '')) {
                 throw new Error('export-failed');
             }
             const blob = await res.blob();
@@ -1810,7 +1810,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     title={<h2 id="job-search-chat-title" className="h6 mb-0" tabIndex={-1} ref={headingRef}>Conversation</h2>}
                     hasConversation={!!conversationId}
                     hasMessages={messages.length > 0}
-                    pending={pending}
+                    pending={pending || submitting}
                     onExport={handleExport}
                     onNewConversation={handleReset}
                     onDeleteConversation={handleDelete}
