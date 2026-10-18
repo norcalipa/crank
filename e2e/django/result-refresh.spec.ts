@@ -616,6 +616,31 @@ test.describe('Updated rankings available (company rankings)', () => {
         }
     }
 
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
+        test(`the company at the top of the screen falling down the list is not followed: the rows around it stay put at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            rankingsFixture('pad');
+            await openRankings(page);
+            const alphaId = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('[data-organization-id]'))
+                .find((row) => row.getBoundingClientRect().height > 0 && /E2E Alpha Corp/.test(row.textContent ?? ''))!.dataset.organizationId!);
+            // Alpha, rank 1, falls below every company on the page.
+            rankingsFixture('set', {ORG: 'E2E Alpha Corp', VALUE: '0.5'});
+            await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+            await expect(notice(page)).toBeVisible();
+            const before = await rowTops(page);
+            await notice(page).getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+            await expect(notice(page)).toHaveCount(0);
+            await expect.poll(async () => (await rowNames(page)).includes('E2E Alpha Corp')).toBe(true);
+            expect((await rowNames(page))[0]).not.toBe('E2E Alpha Corp');
+            const held = await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset?.organizationId ?? null);
+            // The held row is a neighbour that moved one place, never the company that jumped.
+            expect(held).not.toBe(alphaId);
+            if (held) {
+                await expect.poll(async () => Math.abs((await rowTops(page))[held] - before[held])).toBeLessThanOrEqual(2);
+            }
+        });
+    }
+
     test('a hidden tab sends nothing, and a return finds the change', async ({page}) => {
         const seen = countRankingsRequests(page);
         await openRankings(page);

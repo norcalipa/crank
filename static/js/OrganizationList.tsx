@@ -364,23 +364,33 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const partial: RowAnchor[] = [];
         displayedRows().forEach((element, index) => {
             const rect = element.getBoundingClientRect();
-            if (rect.bottom > visibleTop && rect.top < visibleBottom) {
+            // A row counts as read only when a line of it shows (48px), not a
+            // sliver at the edge of the top bar or the Assistant button.
+            if (rect.bottom > visibleTop + 48 && rect.top < visibleBottom - 48) {
                 (rect.top >= visibleTop ? whole : partial).push({id: rowId(element), top: rect.top, index});
             }
         });
         return [...whole, ...partial];
     }
 
-    // A row whose place in the list did not change goes back to its offset
-    // (one that moved would drag the rows around it); when every captured row
-    // moved, the first that is still listed does; when none is, the scroll
+    // The row that moved least in the list goes back to its offset: one that
+    // kept its place first, and never the company that jumped while a
+    // neighbour moved only one place (that would carry the reader down the
+    // list after it); when none is still listed, the scroll
     // position stays as it is. A page too short to scroll that far gets the
     // room it needs below the rows.
     private restoreRows(rows: RowAnchor[]) {
         const now = displayedRows();
         const at = (id: string) => now.findIndex((element) => rowId(element) === id);
-        const row = rows.find((candidate) => at(candidate.id) === candidate.index)
-            ?? rows.find((candidate) => at(candidate.id) >= 0);
+        let row: RowAnchor | undefined;
+        let least = Infinity;
+        for (const candidate of rows) {
+            const index = at(candidate.id);
+            if (index >= 0 && Math.abs(index - candidate.index) < least) {
+                least = Math.abs(index - candidate.index);
+                row = candidate;
+            }
+        }
         this.heldRow = null;
         if (!row) {
             return;

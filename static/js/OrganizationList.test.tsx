@@ -1462,16 +1462,46 @@ describe('OrganizationList', () => {
             expect(scrollBy).toHaveBeenCalledWith({top: -80, left: 0, behavior: 'instant'});
         });
 
-        test('when every row in view moved, the first one that is still listed is held', async () => {
+        test('when every row in view moved, the one that moved least is held', async () => {
             mount();
             await foundNotice();
             scrollBy.mockClear();
-            // Nobody keeps their place.
+            // Nobody keeps their place; Alpha moved two places, Beta and Gamma one.
             serverRows = [org(2, 'Beta Co', 1, 5), org(3, 'Gamma Co', 2, 4.8), org(1, 'Alpha Co', 3, 4.2)];
             await press();
             expect(names()).toEqual(['Beta Co', 'Gamma Co', 'Alpha Co']);
-            // Alpha, first captured, was at 280 under the notice and is third now: 400.
-            expect(scrollBy).toHaveBeenCalledWith({top: 120, left: 0, behavior: 'instant'});
+            // Beta, the first to move one place, was at 380 under the notice and is first now: 200.
+            expect(scrollBy).toHaveBeenCalledWith({top: -180, left: 0, behavior: 'instant'});
+        });
+
+        test('the company at the top of the screen falling down the list does not carry the reader after it', async () => {
+            const many = Array.from({length: 10}, (_, i) => org(i + 1, `Row ${i + 1}`, i + 1, 5 - i / 10));
+            mount({}, many);
+            await foundNotice();
+            scrollBy.mockClear();
+            // Row 1 falls from first to last; every other row moves up one.
+            serverRows = [...many.slice(1), many[0]];
+            await press();
+            // Row 2 (380 under the notice, first now: 200) is held, not Row 1 (280, now 1100).
+            expect(scrollBy).toHaveBeenCalledTimes(1);
+            expect(scrollBy).toHaveBeenCalledWith({top: -180, left: 0, behavior: 'instant'});
+            expect(document.activeElement).toBe(screen.getAllByText('Row 2')[0].closest('tr'));
+        });
+
+        test('a row that shows only a sliver above the phone’s Assistant button is not the one held', async () => {
+            const dock = document.createElement('div');
+            dock.className = 'assistant-dock';
+            document.body.appendChild(dock);
+            const base = rectSpy.getMockImplementation()!;
+            // Alpha (200 to 260) starts 20px above the button: a sliver, not a line.
+            rectSpy.mockImplementation(function (this: Element) {
+                if (this === dock) return {height: 44, top: 220, bottom: 264} as DOMRect;
+                return base.call(this);
+            });
+            mount();
+            await foundNotice();
+            expect(scrollBy).not.toHaveBeenCalled();
+            dock.remove();
         });
 
         test('a page too short to scroll as far as the hold needs gets the room, and gives it back with the notice', async () => {
