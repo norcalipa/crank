@@ -222,10 +222,12 @@ for (const size of SIZES) {
                 await gate;
                 return route.continue();
             });
+            // The text is typed first: under an open confirmation the composer is inert (issue #547), so the turn is
+            // started by a non-pointer trigger, as a late send from elsewhere would be.
+            await page.getByTestId('assistant-composer').fill('Hold this turn.');
             await chooseItem(page, 'conversation-delete');
             await expect(page.getByTestId('confirm-panel')).toBeVisible();
-            await page.getByTestId('assistant-composer').fill('Hold this turn.');
-            await page.getByRole('button', {name: 'Send message'}).click();
+            await page.locator('#job-search-chat form').evaluate((form) => (form as HTMLFormElement).requestSubmit());
             await reached;
             await expect(page.getByTestId('pending-status')).toBeVisible();
             await expect(page.getByTestId('confirm-panel')).toHaveCount(0);
