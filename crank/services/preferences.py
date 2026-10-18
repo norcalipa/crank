@@ -26,12 +26,15 @@ Design rules from the issue:
 * Preference contents are never written to logs; audit rows store metadata only.
 """
 import copy
+import hashlib
 import hmac
+import json
 import logging
 import math
 from datetime import timezone as _dt_tz
 
 from django.conf import settings
+from django.core import signing
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
@@ -999,9 +1002,10 @@ def diff_patch(document, patch):
 def token_owner(user):
     """Return the opaque owner tag that binds client-held tokens to ``user``.
 
-    This is a per-user tag, not a signature over the token body and it does not
-    expire: replay is blocked by the revision check, and the token holder is
-    the owner of the data it carries.
+    This is a per-user tag only: it covers no field of the token body and does
+    not expire. :func:`sign_token` / :func:`verify_token` add the signature
+    over the body and the lifetime; the tag is kept so a token reaching a pod
+    that predates the signature (rolling deploy) still passes its check.
     """
     return salted_hmac(
         "crank.pref-token", str(user.pk), algorithm="sha256"
@@ -1014,6 +1018,115 @@ def token_owner_matches(user, token):
     if not isinstance(owner, str) or not owner.isascii():
         return False
     return hmac.compare_digest(owner, token_owner(user))
+
+
+_TOKEN_SALT = "crank.pref-token.v1"
+
+
+def _normalise_numbers(value):
+    """Copy ``value`` with every integral float written as an int.
+
+    Documents store floats (``1.0``) but a JavaScript round trip returns
+    ``1``; the digest must not tell them apart. Non-finite floats raise
+    ``ValueError``.
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite number")
+        return int(value) if value == int(value) else value
+    if isinstance(value, dict):
+        return {key: _normalise_numbers(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalise_numbers(item) for item in value]
+    return value
+
+
+def _canonical_json(value):
+    """Sorted-key, compact JSON of ``value`` with integral floats as ints."""
+    return json.dumps(
+        _normalise_numbers(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _token_digest(value):
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _token_claims(kind, token, user):
+    """The values a signature binds, read from ``token``.
+
+    ``user`` is the opaque :func:`token_owner` tag, not the primary key: the
+    signature is readable in the browser and must not expose the raw id.
+    ``scope`` defaults to ``account`` for proposals, as the apply view does;
+    undo tokens carry none. ``origin`` is whatever the token says (absent for
+    chat proposals).
+    """
+    if kind == "proposal":
+        return {
+            "kind": kind,
+            "user": token_owner(user),
+            "scope": token.get("scope", "account"),
+            "revision": token.get("base_revision"),
+            "origin": token.get("origin"),
+            "digest": _token_digest(token.get("patch")),
+        }
+    return {
+        "kind": kind,
+        "user": token_owner(user),
+        "scope": None,
+        "revision": token.get("expected_revision"),
+        "origin": token.get("origin"),
+        "digest": _token_digest(token.get("document")),
+    }
+
+
+def sign_token(kind, token, user):
+    """Return a copy of ``token`` (``proposal`` or ``undo``) with ``sig`` set.
+
+    The signature binds the kind, the user, the scope, the revision, the
+    origin and a digest of the canonical body (``patch`` or ``document``)
+    under a dedicated salt, with a timestamp so :func:`verify_token` can
+    enforce ``PREFERENCE_TOKEN_MAX_AGE_SECONDS``. Call it last, after every
+    other field (``owner``, ``origin``) is set.
+    """
+    signed = dict(token)
+    signed.pop("sig", None)
+    signed["sig"] = signing.dumps(
+        _token_claims(kind, signed, user), salt=_TOKEN_SALT, compress=True
+    )
+    return signed
+
+
+def verify_token(kind, token, user, *, allow_scope_narrowing=False):
+    """True when ``token`` was issued by :func:`sign_token` for this exact body.
+
+    Requires an unexpired signature whose claims equal those read from the
+    posted token. With ``allow_scope_narrowing`` a signed ``account`` scope
+    accepts a posted ``search`` (This search only); the reverse is refused.
+    Any malformed input is simply False.
+    """
+    sig = token.get("sig") if isinstance(token, dict) else None
+    if not isinstance(sig, str):
+        return False
+    try:
+        signed = signing.loads(
+            sig,
+            salt=_TOKEN_SALT,
+            max_age=settings.PREFERENCE_TOKEN_MAX_AGE_SECONDS,
+        )
+        posted = _token_claims(kind, token, user)
+        if allow_scope_narrowing and (
+            signed.get("scope") == "account" and posted["scope"] == "search"
+        ):
+            posted["scope"] = "account"
+        return _canonical_json(signed) == _canonical_json(posted)
+    except (
+        signing.BadSignature, ValueError, TypeError, AttributeError, RecursionError
+    ):
+        return False
 
 
 def build_undo_token(expected_revision, prior_document, user):

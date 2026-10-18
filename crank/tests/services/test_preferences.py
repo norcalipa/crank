@@ -3,6 +3,7 @@
 import copy
 
 import pytest
+from django.core import signing
 from django.contrib.auth import get_user_model
 
 from crank.models.preference import SCHEMA_VERSION, UserPreference, UserPreferenceAudit
@@ -1479,6 +1480,46 @@ class TestUndo:
         assert not prefs.token_owner_matches(user, {"owner": 5})
         assert not prefs.token_owner_matches(user, {})
         assert not prefs.token_owner_matches(user, None)
+
+    def test_canonical_digest_ignores_integral_float_spelling(self):
+        a = {"b": [1.0, {"c": 12.0, "d": 0.5}], "a": -0.0, "big": 1e20}
+        b = {"a": 0, "big": 10**20, "b": [1, {"d": 0.5, "c": 12}]}
+        assert prefs._token_digest(a) == prefs._token_digest(b)
+        assert prefs._token_digest({"a": 0.5}) != prefs._token_digest({"a": 1})
+        assert prefs._token_digest({"a": True}) != prefs._token_digest({"a": 1})
+        assert prefs._token_digest((1.0, 2)) == prefs._token_digest([1, 2])
+        for bad in (float("nan"), float("inf"), {"x": [float("-inf")]}):
+            with pytest.raises(ValueError):
+                prefs._token_digest(bad)
+
+    def test_sign_and_verify_round_trip(self, user, django_user_model):
+        other = django_user_model.objects.create_user("sign-other", password="pw")
+        proposal = {"patch": {"set": {"notes": "x"}}, "scope": "account", "base_revision": 3}
+        signed_proposal = prefs.sign_token("proposal", proposal, user)
+        assert "sig" not in proposal
+        assert prefs.verify_token("proposal", signed_proposal, user)
+        assert not prefs.verify_token("proposal", signed_proposal, other)
+        assert not prefs.verify_token("undo", signed_proposal, user)
+        assert prefs.sign_token("proposal", signed_proposal, user)["sig"]
+        narrowed = {**signed_proposal, "scope": "search"}
+        assert not prefs.verify_token("proposal", narrowed, user)
+        assert prefs.verify_token("proposal", narrowed, user, allow_scope_narrowing=True)
+        search = prefs.sign_token("proposal", {**proposal, "scope": "search"}, user)
+        widened = {**search, "scope": "account"}
+        assert not prefs.verify_token("proposal", widened, user, allow_scope_narrowing=True)
+        undo = prefs.sign_token("undo", {"expected_revision": 2, "document": {"a": 1.0}}, user)
+        assert prefs.verify_token("undo", {**undo, "document": {"a": 1}}, user)
+        assert not prefs.verify_token("undo", {**undo, "expected_revision": True}, user)
+
+    def test_verify_refuses_malformed_input(self, user):
+        assert not prefs.verify_token("proposal", None, user)
+        assert not prefs.verify_token("proposal", {}, user)
+        assert not prefs.verify_token("proposal", {"sig": 5}, user)
+        good = prefs.sign_token("proposal", {"patch": {}, "scope": "account", "base_revision": 0}, user)
+        assert not prefs.verify_token("proposal", {**good, "patch": float("nan")}, user)
+        assert not prefs.verify_token("undo", {**good, "document": object()}, user)
+        forged = signing.dumps("not a dict", salt="crank.pref-token.v1")
+        assert not prefs.verify_token("proposal", {**good, "sig": forged}, user)
 
     def test_validate_value_rejects_non_finite_and_out_of_range_floats(self):
         for bad in (float("nan"), float("inf"), float("-inf"), 1e999):

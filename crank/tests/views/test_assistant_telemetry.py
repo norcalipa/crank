@@ -25,6 +25,7 @@ from crank.agents.job_search.demo import (
 from crank.agents.job_search.types import JobResult, StructuredResults
 from crank.models import JobSearchConversation, JobSearchTurn
 from crank.services.preferences import apply_patch_to_user, token_owner
+from crank.tests.pref_token_helpers import signed
 
 RECORD = "crank.views.job_search.monitoring.record_event"
 SECRET_PROMPT = "remote jobs in sf for user@example.com https://evil.example/x"
@@ -464,18 +465,21 @@ class PreferenceDecisionEventTests(_Base):
 
     @patch(RECORD)
     def test_dismiss_apply_stale_invalid_and_undo(self, record):
-        token = {
+        token = signed({
             "patch": {"set": {"notes": "n1"}}, "scope": "account",
             "base_revision": 0, "owner": token_owner(self.user),
-        }
+        }, self.user)
         self.assertEqual(self.post("agent-preference-apply", {"decision": "dismiss"}).status_code, 200)
         self.assertEqual(self.post("agent-preference-apply", {"proposal": token, "decision": "apply"}).status_code, 200)
         self.assertEqual(self.post("agent-preference-apply", {"proposal": token, "decision": "apply"}).status_code, 409)
-        self.assertEqual(self.post("agent-preference-apply", {"proposal": dict(token, base_revision="x"), "decision": "apply"}).status_code, 400)
-        search = dict(token, scope="search", base_revision=1)
+        self.assertEqual(self.post("agent-preference-apply", {"proposal": signed(dict(token, base_revision="x"), self.user), "decision": "apply"}).status_code, 400)
+        search = signed(dict(token, scope="search", base_revision=1), self.user)
         self.assertEqual(self.post("agent-preference-apply", {"proposal": search, "decision": "apply"}).status_code, 200)
         applied = apply_patch_to_user(self.user, {"set": {"notes": "n2"}})
-        self.assertEqual(self.post("agent-preference-undo", {"undo": applied["undo"]}).status_code, 200)
+        self.assertEqual(
+            self.post("agent-preference-undo", {"undo": signed(applied["undo"], self.user, "undo")}).status_code,
+            200,
+        )
         self.assertEqual(self.post("agent-preference-undo", {"undo": None}).status_code, 400)
         got = [(e["decision"], e["scope"], e["status"], e["origin"]) for e in _events(record, "preference_decision")]
         self.assertEqual(
@@ -509,10 +513,10 @@ class PreferenceDecisionEventTests(_Base):
 
     @patch(RECORD)
     def test_chat_proposal_flow_reports_proposal_origin_through_undo(self, record):
-        token = {
+        token = signed({
             "patch": {"set": {"notes": "c1"}}, "scope": "account",
             "base_revision": 0, "owner": token_owner(self.user),
-        }
+        }, self.user)
         applied = self.post(
             "agent-preference-apply", {"proposal": token, "decision": "apply"}
         ).json()
@@ -561,15 +565,15 @@ class PreferenceDecisionEventTests(_Base):
 
     @patch(RECORD)
     def test_origin_is_allowlisted_not_trusted(self, record):
-        token = {
+        token = signed({
             "patch": {"set": {"notes": "h1"}}, "scope": "account", "base_revision": 0,
             "owner": token_owner(self.user), "origin": "https://evil.example/x",
-        }
+        }, self.user)
         applied = self.post(
             "agent-preference-apply", {"proposal": token, "decision": "apply"}
         ).json()
         self.assertEqual(applied["undo"]["origin"], "proposal")
-        self.post("agent-preference-undo", {"undo": dict(applied["undo"], origin="reset; DROP")})
+        self.post("agent-preference-undo", {"undo": signed(dict(applied["undo"], origin="reset; DROP"), self.user, "undo")})
         self.post("agent-preference-apply", {"proposal": dict(token, origin="reset"), "decision": "dismiss"})
         origins = {e["origin"] for e in _events(record, "preference_decision")}
         self.assertEqual(origins, {"proposal"})
