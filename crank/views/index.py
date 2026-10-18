@@ -75,11 +75,11 @@ def _fetch_ranking_rows(algorithm_id):
     query = '''
     SELECT id, name, type, rto_policy, funding_round, accelerated_vesting, avg_score, profile_completeness, RANK() OVER (ORDER BY avg_score desc) as ranking
     FROM (
-        SELECT orgs.id, orgs.name, orgs.type, orgs.rto_policy, orgs.funding_round, orgs.accelerated_vesting, 
+        SELECT orgs.id, orgs.name, orgs.type, orgs.rto_policy, orgs.funding_round, orgs.accelerated_vesting,
                SUM(orgs.avg_type_score * orgs.weight) / SUM(orgs.weight) AS avg_score,
                (CAST(score_types.score_type_count AS REAL) / (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
         FROM (
-            SELECT co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, 
+            SELECT co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting,
                    AVG(cs.score) AS avg_type_score, cw.weight, ct.name AS score_type
             FROM crank_organization AS co
             JOIN crank_score AS cs ON co.id = cs.target_id
