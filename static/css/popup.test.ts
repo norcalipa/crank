@@ -963,6 +963,15 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         expect(section).toMatch(/\.rankings-updated-refresh\[aria-disabled="true"\] \{\s*cursor: progress;/);
     });
 
+    it('keeps the heading ring around the title and the "Updated" mark in its reserved line under 375px (485c)', () => {
+        const start = popupCss.indexOf('/* issue #485 result refresh */');
+        const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
+        const section = popupCss.slice(start, next);
+        expect(section).toMatch(/#rankings-heading \{\s*width: fit-content;\s*\}/);
+        expect(section).toMatch(/\.rankings-toolbar-count \{\s*position: relative;\s*\}/);
+        expect(section).toMatch(/@media \(max-width: 374\.98px\) \{\s*\.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*top: 1\.75rem;\s*margin-left: 0 !important;/);
+    });
+
     it('scopes the heading scroll margin to the widths that show the sticky top bar', () => {
         expect(popupCss).toMatch(/@media \(max-width: 767\.98px\) \{\s*#job-match-panel \.job-match-panel-title \{ scroll-margin-top: 4\.5rem; \}\s*\}/);
         expect(popupCss).not.toMatch(/^#job-match-panel \.job-match-panel-title \{ scroll-margin-top/m);
