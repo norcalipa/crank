@@ -899,6 +899,8 @@ test.describe('one transcript scroller (issue #483)', () => {
             test(`the ${label} confirm opens on its heading and consequence and its action and Cancel are reachable, ${size.width}x${size.height}`, async ({page}) => {
                 await page.setViewportSize(size);
                 await loadPanel(page, 'priorities=57');
+                // CI's fallback font is wider than most hosts': the sentence wraps to more lines there.
+                await page.addStyleTag({content: "body, button, input, textarea, select { font-family: 'DejaVu Sans', sans-serif !important; }"});
                 await settledPanel(page);
                 await page.getByTestId('conversation-more').click();
                 await page.getByTestId(trigger).click();

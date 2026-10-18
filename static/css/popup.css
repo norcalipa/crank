@@ -3333,6 +3333,26 @@ body.assistant-open .app-content .table-responsive,
     color: #cbd5e1;
 }
 
+/* Where the stack is capped to a few lines (a phone on its side or a short window), the heading and the whole
+   consequence sentence must fit above the action row even in a wide font (issue #547). */
+@media (max-height: 30rem) {
+    .chat-confirm-panel {
+        padding-top: .5rem;
+    }
+
+    .chat-confirm-heading {
+        font-size: .9375rem;
+        line-height: 1.2;
+        margin-bottom: .125rem;
+    }
+
+    .chat-confirm-copy {
+        font-size: .8125rem;
+        line-height: 1.3;
+        margin-bottom: .375rem;
+    }
+}
+
 .chat-confirm-error {
     display: flex;
     gap: .375rem;
