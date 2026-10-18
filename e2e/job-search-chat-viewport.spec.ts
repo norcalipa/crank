@@ -973,7 +973,7 @@ test.describe('one transcript scroller (issue #483)', () => {
 // delay still confirms. The fixture carries the real panel header and the real
 // collapsed row (issue #483), so its menu sits where the real page's does and the
 // confirm button opens under the item at the listed sizes: on the real page the
-// centre of the item is on the button at 375x540 and 430x520, and not at 320x480,
+// centre of the item is on the button at 375x540 and 360x520, and not at 320x480,
 // 375x380, 320x420, 375x440 or 412x460, which are therefore not cases here (since
 // issue #547 the action row follows the consequence in normal flow instead of
 // pinning to the bottom of a capped stack, so it no longer opens under the item
@@ -988,7 +988,7 @@ test.describe('a double press on Delete conversation does not delete (issue #568
 
     const SIZES = [
         {width: 375, height: 667}, {width: 390, height: 844}, {width: 1024, height: 800}, {width: 1280, height: 800},
-        {width: 375, height: 540}, {width: 430, height: 520},
+        {width: 375, height: 540}, {width: 360, height: 520},
     ];
 
     type Press = (page: Page, x: number, y: number) => Promise<void>;
