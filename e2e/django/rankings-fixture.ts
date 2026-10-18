@@ -90,6 +90,12 @@ export const orgTop = (page: Page, id: string) => page.evaluate((organizationId)
     return row ? row.getBoundingClientRect().top : null;
 }, id);
 
+/** Where every displayed row sits in the viewport, by organization id. */
+export const rowTops = (page: Page) => page.evaluate(() => Object.fromEntries(Array.from(document.querySelectorAll<HTMLElement>(
+    '.organization-row[data-organization-id], .organization-card[data-organization-id]'))
+    .filter((row) => row.getBoundingClientRect().height > 0)
+    .map((row) => [row.dataset.organizationId!, row.getBoundingClientRect().top])) as Record<string, number>);
+
 export type ReaderPosition = 'top' | 'heading-at-top' | 'mid-list';
 
 /** Scrolls so the reader is at the top, with the page heading at the top of

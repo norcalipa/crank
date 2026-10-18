@@ -23,6 +23,7 @@ import {
     readingOrg,
     rankingsFixture,
     rowNames,
+    rowTops,
     setTabVisibility,
 } from './rankings-fixture';
 import {E2E_PASSWORD, expectNoHorizontalOverflow, login, requireDjangoTier} from './support';
@@ -573,17 +574,42 @@ test.describe('Updated rankings available (company rankings)', () => {
                     await placeRankingsReader(page, position);
                     const reading = (await readingOrg(page))!;
                     expect(reading).not.toBeNull();
+                    // A row that starts under the phone's Assistant button is not being read:
+                    // nothing is held for it, and the page must not move for it either.
+                    const underDock = await page.evaluate((top) => {
+                        const dock = document.querySelector<HTMLElement>('.assistant-dock');
+                        const rect = dock?.getBoundingClientRect();
+                        return !!rect && rect.height > 0 && top >= rect.top;
+                    }, reading.top);
+                    const scrolled = await page.evaluate(() => window.scrollY);
 
                     raiseGamma();
                     await page.clock.runFor(POLL_INTERVAL_MS + 1000);
                     await expect(notice(page)).toBeVisible();
-                    await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+                    if (underDock) {
+                        expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
+                    } else {
+                        await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+                    }
 
                     // Pressed from off screen (browse-mode activation): the page does not jump to the heading.
+                    const before = await rowTops(page);
                     await notice(page).getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
                     await expect(notice(page)).toHaveCount(0);
                     await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
-                    await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+                    // The row held is a row that kept its place in the list, not the first row in
+                    // view (which moved up the list): it is the one that has focus, and it stays put.
+                    const held = await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset?.organizationId ?? null);
+                    if (held) {
+                        await expect.poll(async () => Math.abs((await rowTops(page))[held] - before[held])).toBeLessThanOrEqual(2);
+                    } else {
+                        // Nothing was in view to hold: the heading has focus, on screen.
+                        await expect(page.locator('#rankings-heading')).toBeFocused();
+                        expect(await page.evaluate(() => {
+                            const rect = document.getElementById('rankings-heading')!.getBoundingClientRect();
+                            return rect.bottom > 0 && rect.top < window.innerHeight;
+                        })).toBe(true);
+                    }
                     await expectNoHorizontalOverflow(page);
                 });
             }
