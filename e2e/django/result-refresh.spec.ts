@@ -579,7 +579,7 @@ test.describe('Updated rankings available (company rankings)', () => {
                     const underDock = await page.evaluate((top) => {
                         const dock = document.querySelector<HTMLElement>('.assistant-dock');
                         const rect = dock?.getBoundingClientRect();
-                        return !!rect && rect.height > 0 && top >= rect.top;
+                        return !!rect && rect.height > 0 && top >= rect.top - 48;
                     }, reading.top);
                     const scrolled = await page.evaluate(() => window.scrollY);
 
@@ -623,20 +623,26 @@ test.describe('Updated rankings available (company rankings)', () => {
             await openRankings(page);
             const alphaId = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('[data-organization-id]'))
                 .find((row) => row.getBoundingClientRect().height > 0 && /E2E Alpha Corp/.test(row.textContent ?? ''))!.dataset.organizationId!);
-            // Alpha, rank 1, falls below every company on the page.
-            rankingsFixture('set', {ORG: 'E2E Alpha Corp', VALUE: '0.5'});
+            // Alpha, rank 1, falls below the other seeded companies (the padding rows score lower
+            // but the fall must stay on page 1).
+            rankingsFixture('set', {ORG: 'E2E Alpha Corp', VALUE: '2.0'});
             await page.clock.runFor(POLL_INTERVAL_MS + 1000);
             await expect(notice(page)).toBeVisible();
             const before = await rowTops(page);
+            const scrolledBefore = await page.evaluate(() => window.scrollY);
             await notice(page).getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
             await expect(notice(page)).toHaveCount(0);
-            await expect.poll(async () => (await rowNames(page)).includes('E2E Alpha Corp')).toBe(true);
-            expect((await rowNames(page))[0]).not.toBe('E2E Alpha Corp');
+            await expect.poll(async () => (await rowNames(page))[0]).not.toBe('E2E Alpha Corp');
+            // The page never carries the reader down the list after the company that fell.
+            expect(await page.evaluate(() => window.scrollY)).toBeLessThanOrEqual(scrolledBefore);
+            expect(await rowNames(page)).toContain('E2E Alpha Corp');
             const held = await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset?.organizationId ?? null);
             // The held row is a neighbour that moved one place, never the company that jumped.
             expect(held).not.toBe(alphaId);
             if (held) {
-                await expect.poll(async () => Math.abs((await rowTops(page))[held] - before[held])).toBeLessThanOrEqual(2);
+                // The row holds still, unless the page is already at its top and cannot scroll further up.
+                await expect.poll(async () => (await page.evaluate(() => window.scrollY)) === 0
+                    || Math.abs((await rowTops(page))[held] - before[held]) <= 2).toBe(true);
             }
         });
     }
@@ -677,13 +683,25 @@ test.describe('Updated rankings available (company rankings)', () => {
             expect(await rowNames(page)).toEqual(['E2E Gamma Works']);
             const reading = (await readingOrg(page))!;
             expect(reading).not.toBeNull();
+            // A card that shows less than a line above the phone's Assistant button is not being read.
+            const sliver = await page.evaluate((top) => {
+                const rect = document.querySelector<HTMLElement>('.assistant-dock')?.getBoundingClientRect();
+                return !!rect && rect.height > 0 && top >= rect.top - 48;
+            }, reading.top);
+            const scrolled = await page.evaluate(() => window.scrollY);
             raiseGamma();
             await page.clock.runFor(POLL_INTERVAL_MS + 1000);
             await expect(notice(page)).toBeVisible();
-            await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            if (sliver) {
+                expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
+            } else {
+                await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            }
             await notice(page).getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
             await expect(notice(page)).toHaveCount(0);
-            await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            if (!sliver) {
+                await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            }
             await expectNoHorizontalOverflow(page);
         });
     }
