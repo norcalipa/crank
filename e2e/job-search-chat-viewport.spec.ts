@@ -458,7 +458,7 @@ const readPanel = (page: Page) => page.evaluate(() => {
         composerInViewport: formRect.top >= -0.5 && formRect.bottom <= window.innerHeight + 0.5,
         composerHit: !!hit && form.contains(hit),
         // An inert footer (an open confirmation, issue #547) is skipped by hit testing: the panel stack is then
-        // checked against the composer by geometry.
+        // checked against the composer band by geometry.
         footerInert: footer.hasAttribute('inert'),
         stackBottom: (card.querySelector('.chat-panel-stack') as HTMLElement | null)?.getBoundingClientRect().bottom ?? null,
         positions: [header, footer, log].map((el) => getComputedStyle(el).position),
@@ -489,7 +489,8 @@ const expectOneScroller = (reading: Awaited<ReturnType<typeof readPanel>>, label
     expect(reading.logOverflowY, `${label}: the transcript scrolls`).toBe('auto');
     expect(reading.composerInViewport, `${label}: the composer is inside the viewport`).toBe(true);
     if (reading.footerInert) {
-        expect(reading.stackBottom ?? 0, `${label}: the panel stack ends above the composer`).toBeLessThanOrEqual(reading.formTop + 0.5);
+        // The confirmation may cover the composer band it has made inert (visual review round 1), never more than the card.
+        expect(reading.stackBottom ?? 0, `${label}: the panel stack ends within the composer band`).toBeLessThanOrEqual(reading.formBottom + 0.5);
     } else {
         expect(reading.composerHit, `${label}: nothing covers the composer`).toBe(true);
     }
@@ -945,6 +946,16 @@ test.describe('one transcript scroller (issue #483)', () => {
         await expect(retry).toBeFocused();
         const reading = await settledPanel(page);
         expectOneScroller(reading, 'after the failed delete');
+        // The failure text, the whole consequence and the retry are on screen together (visual review round 1, P1-1 / P1-2).
+        const together = await page.getByTestId('confirm-panel').evaluate((panel) => {
+            const stack = panel.closest('.chat-panel-stack')!.getBoundingClientRect();
+            const inside = (sel: string) => {
+                const r = panel.querySelector(sel)!.getBoundingClientRect();
+                return r.top >= stack.top - 0.5 && r.bottom <= stack.bottom + 0.5;
+            };
+            return {error: inside('.chat-confirm-error'), copy: inside('.chat-confirm-copy'), retry: inside('[data-testid="confirm-action"]'), cancel: inside('[data-testid="confirm-cancel"]')};
+        });
+        expect(together).toEqual({error: true, copy: true, retry: true, cancel: true});
         const topmost = await retry.evaluate((el) => {
             const r = el.getBoundingClientRect();
             return [r.top + 2, r.top + r.height / 2, r.bottom - 2].map((y) => {
