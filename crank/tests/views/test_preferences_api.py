@@ -800,13 +800,14 @@ class TestSignedTokens:
         quiet.force_login(alice)
         token = self._proposal(quiet)
         undo = post(quiet, "agent-preference-apply", {"decision": "apply", "proposal": token}).json()["undo"]
+        depth = 3000
         deep = []
-        for _ in range(3000):
+        for _ in range(depth):
             deep = [deep]
         assert not prefs.verify_token("undo", {**undo, "document": deep}, alice)
         before = self._state(alice)
         body = json.dumps({"undo": {**undo, "document": {"x_future": 1}}}).replace(
-            '{"x_future": 1}', "[" * 400 + "]" * 400
+            '{"x_future": 1}', "[" * depth + "]" * depth
         )
         response = quiet.post(reverse("agent-preference-undo"), data=body, content_type="application/json")
         assert response.status_code == 403
