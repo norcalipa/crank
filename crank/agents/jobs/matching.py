@@ -593,31 +593,112 @@ def _evidence_in_scope(evidence_row: Any, listing: Any) -> bool:
     return True
 
 
+_EXACT = {
+    "r": 0, "remote": 0,
+    "h": 3, "hybrid": 3,
+    "o": 5, "in-office": 5, "in office": 5, "onsite": 5, "on-site": 5, "on site": 5,
+}
+
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+_NUMBER = r"(?:one|two|three|four|five|[1-5])"
+_OFFICE_WORD = re.compile(r"office|on-?site|on site|in-?person|\brto\b|hybrid|return")
+_RANGE = re.compile(rf"\b{_NUMBER}\s*(?:-|to|or)\s*{_NUMBER}\s*(?:days?|x)\b")
+_COUNT = re.compile(rf"\b({_NUMBER})[ -]?(?:days?|x)\b")
+_REMOTE_DAYS = re.compile(
+    r"\s*(?:(?:a|per|each) week |/?wk |week )?(?:remote(?! (?:mon|tue|wed|thu|fri|not|never|by|on|only|is|allowed|permitted|except))|from home|at home|wfh)"
+)
+_FULL_WEEK = re.compile(
+    r"\bmon(?:day)?\s*(?:-|to|through|thru)?\s*fri(?:day)?\b|\bfull[ -]time (?:in|at|on)\b|\bevery day\b|\ball week\b"
+)
+_MIXED = re.compile(
+    r"\bflexib|\bdepends\b|\bvaries\b|\bvary\b|\bcase by case\b|\bby team\b|\bper team\b|\bup to the team\b|"
+    r"\b(?:remote|hybrid) (?:or|and) (?:remote|hybrid)\b|\bhybrid remote\b|\bremote hybrid\b|"
+    r"\b(?:remote|hybrid) (?:or|and) (?:in[ -])?office\b|\b(?:in[ -])?office (?:or|and) (?:remote|hybrid)\b"
+)
+_OFFICE = r"(?:in[ -]?office|office|on-?site|on site)"
+_OPTIONAL_OFFICE = re.compile(
+    rf"\boptional {_OFFICE}\b|\b{_OFFICE}(?: \w+)? (?:is |are )?(?:optional|voluntary|not (?:required|needed|mandatory))\b|"
+    rf"\bno {_OFFICE}(?: (?:is |are )?(?:required|needed|mandatory|requirement|attendance|mandate|expected|obligation|policy|days)|$)"
+)
+_OCCASIONAL = re.compile(
+    r"\bquarterly\b|\boccasional|\bmonthly\b|\bannual|\boffsites?\b|\boff-sites?\b|\bonboarding\b|\bkick-?off\b|"
+    r"\bretreats?\b|\bfew times a year\b|\btwice a year\b|\bonce a (?:month|quarter|year)\b"
+)
+_IN_OFFICE = re.compile(
+    r"\boffice[ -]first\b|\bin[ -]office\b|\bon-?site\b|\bon site\b|\breturn[ -]to[ -](?:the[ -])?office\b|\brto\b|"
+    r"\boffice[ -]based\b|\boffice attendance\b|\bin[ -]person\b|\bat the office\b|^(?:the )?office$"
+)
+_NEGATED_REMOTE = re.compile(
+    r"\b(?:not|no|non)[ -]remote\b|\bremote (?:work )?(?:is |are )?(?:not|never) (?:permitted|allowed|available|offered|an option)\b|"
+    r"\bremote (?:work )?unavailable\b"
+)
+_NEGATED_HYBRID = re.compile(r"\b(?:not|no|non)[ -]hybrid\b")
+_WEEKDAYS = re.compile(r"\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|monday|tuesday|wednesday|thursday|friday)\b")
+
+
 def _rto_days(value: Any) -> int | None:
-    """Map an RTO policy (code, label, or producer prose) to in-office days."""
-    normalized = _normalized(value).replace("_", " ")
-    mapping = {
-        "r": 0, "remote": 0,
-        "h": 3, "hybrid": 3,
-        "o": 5, "in-office": 5, "in office": 5, "onsite": 5,
-    }
-    if normalized in mapping:
-        return mapping[normalized]
-    # CompanyFieldEvidence stores prose (e.g. "Remote first", "Hybrid 3 days",
-    # "Five days in office, no exceptions"). Match the strongest explicit
-    # signal; an explicit office term wins, then hybrid, then remote.
-    if any(token in normalized for token in ("in-office", "in office", "onsite", "office")):
+    """Map an RTO policy (code, label, or producer prose) to in-office days.
+
+    An ordered rule list over the normalized text; the first rule that fires
+    wins. ``None`` means unknown: never a guess. ``rto_policy_corpus.py`` is
+    the contract (issue #537).
+    """
+    text = _normalized(value).replace("_", " ")
+    if text in _EXACT:
+        return _EXACT[text]
+    # 1. Mixed or conditional wording is unknown.
+    if _MIXED.search(text):
+        return None
+    # 2. Negated or optional office, with no attendance count, is remote.
+    if _OPTIONAL_OFFICE.search(text):
+        return 0
+    # 3. Occasional attendance (offsites, onboarding, quarterly) is unknown.
+    if _OCCASIONAL.search(text):
+        return None
+    has_office_word = _OFFICE_WORD.search(text) is not None
+    # 4. An explicit day count next to an office word is that count.
+    if has_office_word:
+        if _RANGE.search(text):
+            return None
+        counts = list(_COUNT.finditer(text))
+        if counts:
+            match = counts[0]
+            if _REMOTE_DAYS.match(text, match.end()):
+                return None  # the count is of remote days
+            word = match.group(1)
+            return _NUMBER_WORDS.get(word) or int(word)
+        if _FULL_WEEK.search(text):
+            return 5
+    # 5. Hybrid on named weekdays is unknown (matching does not count them).
+    if "hybrid" in text and _WEEKDAYS.search(text):
+        return None
+    # 6. Office-first / return-to-office / in-office wording is five days.
+    if _IN_OFFICE.search(text):
         return 5
-    if "hybrid" in normalized:
+    # 7. Negated remote says nothing about hybrid or in-office; negated hybrid
+    # says nothing either unless the text goes on to say remote.
+    negated_hybrid = _NEGATED_HYBRID.search(text) is not None
+    if _NEGATED_REMOTE.search(text) or (negated_hybrid and "remote" not in text):
+        return None
+    # 8. Plain hybrid keeps today's three days.
+    if "hybrid" in text and not negated_hybrid:
         return 3
-    if "remote" in normalized:
+    # 9. Remote wording, including an incidental office mention, is remote.
+    if "remote" in text:
         return 0
     return None
 
 
+def _mode_for_days(days: int | None) -> str | None:
+    """remote (0), hybrid (1-4), in-office (5); unknown stays unknown."""
+    if days is None:
+        return None
+    return "remote" if days == 0 else "in-office" if days == 5 else "hybrid"
+
+
 def _mode_from_rto(value: Any) -> str | None:
     """Map a normalized RTO value to a work mode."""
-    return {0: "remote", 3: "hybrid", 5: "in-office"}.get(_rto_days(value))
+    return _mode_for_days(_rto_days(value))
 
 
 def _public_status(value: Any) -> bool | None:
