@@ -1477,7 +1477,7 @@ describe('OrganizationList', () => {
         test('a page too short to scroll as far as the hold needs gets the room, and gives it back with the notice', async () => {
             const height = jest.spyOn(document.documentElement, 'scrollHeight', 'get');
             // 30px of room below the reader; the notice pushes the rows 80px.
-            height.mockReturnValue(window.innerHeight + 30);
+            height.mockImplementation(() => window.innerHeight + 30 + (parseFloat(screen.getByTestId('organization-results-region').style.paddingBottom) || 0));
             mount();
             await foundNotice();
             expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
@@ -1485,6 +1485,19 @@ describe('OrganizationList', () => {
             serverRevision = SHOWN;
             await tick(60_000);
             expect(screen.getByTestId('organization-results-region').style.paddingBottom).toBe('');
+            height.mockRestore();
+        });
+
+        test('a short page, which is never shorter than the window, gets the slack on top of the room', async () => {
+            const region = () => screen.getByTestId('organization-results-region');
+            const height = jest.spyOn(document.documentElement, 'scrollHeight', 'get');
+            // The content ends 40px above the bottom of the window until padding is added.
+            height.mockImplementation(() => Math.max(window.innerHeight, window.innerHeight - 40 + (parseFloat(region().style.paddingBottom) || 0)));
+            mount();
+            await foundNotice();
+            expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
+            // 80px to hold plus the 40px the window already had.
+            expect(region().style.paddingBottom).toBe('120px');
             height.mockRestore();
         });
 
@@ -1539,6 +1552,45 @@ describe('OrganizationList', () => {
             serverRows = [org(9, 'Omega Co', 1, 5)];
             await press();
             expect(document.activeElement).toBe(heading);
+        });
+
+        test('the heading takes focus without moving the page when it is on screen, and brings the page to it when it is not', async () => {
+            const focusSpy = jest.spyOn(heading, 'focus');
+            const base = rectSpy.getMockImplementation()!;
+            let headingTop = 40;
+            rectSpy.mockImplementation(function (this: Element) {
+                if (this === heading) return {height: 30, top: headingTop, bottom: headingTop + 30} as DOMRect;
+                return base.call(this);
+            });
+            mount();
+            await foundNotice();
+            serverRows = [org(9, 'Omega Co', 1, 5)];
+            await press();
+            expect(focusSpy).toHaveBeenLastCalledWith({preventScroll: true});
+            // Off screen (above the viewport): nothing was being read, so the page goes to the heading.
+            headingTop = -200;
+            serverRevision = SHOWN;
+            await tick(60_000);
+            serverRevision = 'cccccccccccccccc';
+            serverRows = newerRows;
+            await tick(60_000);
+            await press();
+            expect(focusSpy).toHaveBeenLastCalledWith({preventScroll: false});
+        });
+
+        test('a refreshed list with nothing in it does not blame a search that is not there', async () => {
+            mount();
+            await foundNotice();
+            serverRows = [];
+            await press();
+            expect(screen.getByText('No companies are ranked with this preset right now.')).toBeInTheDocument();
+            expect(screen.queryByText(/match your search or filters/)).not.toBeInTheDocument();
+        });
+
+        test('an empty list under a search still says nothing matches the search', async () => {
+            mount();
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Zzz'}});
+            expect(screen.getByText('There are no organizations that match your search or filters.')).toBeInTheDocument();
         });
 
         test('focus falls back to the results region when the page has no heading', async () => {
@@ -1706,6 +1758,14 @@ describe('OrganizationList', () => {
                 expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Showing updated rankings.');
                 expect(document.activeElement).not.toBe(heading);
                 // At the top of the page nothing is held, so the page does not move.
+                expect(scrollBy).not.toHaveBeenCalled();
+            });
+
+            test('when every row in view moved, the idle apply still holds nothing and the page stays at the top', async () => {
+                mount();
+                serverRows = [org(2, 'Beta Co', 1, 5), org(3, 'Gamma Co', 2, 4.8), org(1, 'Alpha Co', 3, 4.2)];
+                await returnToNewer();
+                expect(names()).toEqual(['Beta Co', 'Gamma Co', 'Alpha Co']);
                 expect(scrollBy).not.toHaveBeenCalled();
             });
 

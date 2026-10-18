@@ -388,9 +388,17 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const element = now[at(row.id)];
         const delta = element.getBoundingClientRect().top - row.top;
         if (delta !== 0) {
-            const room = Math.max(0, document.documentElement.scrollHeight - window.innerHeight - window.scrollY);
-            if (delta > room && this.resultsRef.current) {
-                this.resultsRef.current.style.paddingBottom = `${delta - room}px`;
+            const room = () => Math.max(0, document.documentElement.scrollHeight - window.innerHeight - window.scrollY);
+            const region = this.resultsRef.current;
+            if (region) {
+                // A document is never shorter than the window, so padding is
+                // absorbed by slack until the content passes the window's
+                // bottom: add the shortfall again until the room is there.
+                let padding = 0;
+                for (let pass = 0; pass < 4 && delta > room(); pass += 1) {
+                    padding += delta - room();
+                    region.style.paddingBottom = `${padding}px`;
+                }
             }
             window.scrollBy({top: delta, left: 0, behavior: INSTANT});
         }
@@ -409,8 +417,15 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
         if (this.pendingFocus) {
             this.pendingFocus = false;
-            // The held row is on screen by construction; the heading may not be.
-            (this.heldRow ?? document.getElementById('rankings-heading') ?? this.resultsRef.current)?.focus({preventScroll: true});
+            // The held row is on screen by construction. With none held the
+            // heading takes focus, and the page goes to it only when it is
+            // off screen: focus must be visible, and nothing is being read.
+            const target = this.heldRow ?? document.getElementById('rankings-heading') ?? this.resultsRef.current;
+            if (target) {
+                const rect = target.getBoundingClientRect();
+                const onScreen = rect.bottom > 0 && rect.top < window.innerHeight;
+                target.focus({preventScroll: target === this.heldRow || onScreen});
+            }
         }
         if (this.state.updatedMark !== prevState.updatedMark) {
             this.stopMarkListeners?.();
