@@ -1439,6 +1439,21 @@ describe('history actions: ended session, server word, busy composer, inert (iss
         });
     });
 
+    test.each([
+        ['New conversation', startNewConversation, 'reset'],
+        ['Delete', deleteConversation, 'delete'],
+        ['Export', () => chooseMenuItem('conversation-export'), 'export'],
+    ])('%s answered with an ended session after an account switch shows nothing', async (_label, act_, path) => {
+        await seed();
+        const settle = heldFetch();
+        act_();
+        await waitFor(() => expect((global.fetch as jest.Mock).mock.calls.some(([url]) => String(url).includes(`/${path}/`))).toBe(true));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await settle(jsonResponse({}, 401));
+        expect(screen.queryByText(SESSION_ENDED)).not.toBeInTheDocument();
+        expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+    });
+
     test('a redirect to some other page is not an ended session', async () => {
         await seed();
         const res = jsonResponse({}, 500);

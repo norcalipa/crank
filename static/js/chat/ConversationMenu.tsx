@@ -135,9 +135,9 @@ export function ConversationMenu({
     React.useEffect(() => {
         if (!confirming) return;
         // The heading and the whole consequence sentence are what the reader sees first.
-        confirmHeadingRef.current?.focus({preventScroll: true});
-        const stack = confirmHeadingRef.current?.closest<HTMLElement>('.chat-panel-stack');
-        if (stack) stack.scrollTop = 0;
+        const heading = confirmHeadingRef.current as HTMLHeadingElement;
+        heading.focus({preventScroll: true});
+        (heading.closest('.chat-panel-stack') as HTMLElement).scrollTop = 0;
     }, [confirming]);
     React.useEffect(() => {
         onConfirmationChange?.(confirming !== null);

@@ -14,7 +14,7 @@ const NEW_COPY = 'Your current history will be archived. Your saved priorities a
 const DELETE_COPY = 'Its messages are removed and can’t be recovered. Your saved priorities and job matches are not changed.';
 const TURN_URL = /\/api\/agent\/conversations\/\d+\/$/;
 
-async function openAssistant(page: Page): Promise<void> {
+async function openAssistant(page: Page, settle = true): Promise<void> {
     await page.goto('/');
     const panel = page.getByTestId('assistant-panel');
     const opener = page.locator('[data-testid="assistant-launcher"], [data-testid="assistant-restore"]');
@@ -22,7 +22,7 @@ async function openAssistant(page: Page): Promise<void> {
     if (!(await panel.isVisible())) await opener.click({timeout: 3000}).catch(async () => { await expect(panel).toBeVisible(); });
     await expect(page.getByTestId('assistant-composer')).toBeVisible();
     await expect(page.getByTestId('chat-loading')).toHaveCount(0);
-    await page.waitForLoadState('networkidle');
+    if (settle) await page.waitForLoadState('networkidle');
 }
 
 /** The test's own turns: the seeded demo provider answers each. */
@@ -263,3 +263,246 @@ for (const size of SIZES) {
         }
     });
 }
+
+// Issue #547: the consequence comes before the destructive button at every supported size, an ended session is
+// reported as one, an export in flight holds Delete back, and nothing beneath an open confirmation can be pressed.
+const CONFIRM_SIZES = [
+    {name: 'short sheet', width: 320, height: 420},
+    {name: 'sheet', width: 320, height: 640},
+    {name: 'sheet', width: 375, height: 667},
+    {name: 'drawer', width: 1024, height: 800},
+    {name: 'docked', width: 1280, height: 900},
+];
+const SESSION_ENDED = 'Your session has ended. Sign in again, then try again.';
+const DELETE_URL = /\/api\/agent\/conversations\/\d+\/delete\/$/;
+const EXPORT_URL = /\/api\/agent\/conversations\/\d+\/export\/$/;
+// What the priorities row reads with six saved priorities: the long first requirement wraps to two lines on a phone.
+const SUMMARY_CHIPS = [
+    {path: 'compensation.minimum_salary', label: 'Minimum base salary', display: '150000', hard: true, supported: true},
+    {path: 'compensation.minimum_total_compensation', label: 'Minimum total compensation', display: '250000', hard: false, supported: true},
+    {path: 'compensation.equity_minimum_percent', label: 'Minimum equity (%)', display: '0.5', hard: false, supported: true},
+    {path: 'work_location.modes', label: 'Work arrangement', display: 'Remote, Hybrid', hard: true, supported: true},
+    {path: 'industry', label: 'Industry', display: 'Fintech', hard: false, supported: true},
+    {path: 'roles.titles', label: 'Role titles', display: 'Staff Engineer', hard: false, supported: true},
+];
+
+interface ConfirmationMeasure {
+    stack: {top: number; bottom: number};
+    heading: {top: number; bottom: number};
+    copy: {top: number; bottom: number};
+    action: {top: number; bottom: number};
+    controls: {id: string; left: number; right: number; top: number; bottom: number}[];
+}
+
+/** Every element of the open confirmation, measured in one pass with getBoundingClientRect. */
+async function measureConfirmation(page: Page): Promise<ConfirmationMeasure> {
+    return page.evaluate(() => {
+        const box = (el: Element | null) => {
+            const r = el!.getBoundingClientRect();
+            return {top: r.top, bottom: r.bottom};
+        };
+        const panel = document.querySelector('[data-testid="confirm-panel"]')!;
+        const stack = panel.closest('.chat-panel-stack')!;
+        return {
+            stack: box(stack),
+            heading: box(panel.querySelector('.chat-confirm-heading')),
+            copy: box(panel.querySelector('.chat-confirm-copy')),
+            action: box(panel.querySelector('[data-testid="confirm-action"]')),
+            // The buttons and the text blocks they must never cover.
+            controls: Array.from(panel.querySelectorAll('button, .chat-confirm-heading, .chat-confirm-copy, .chat-confirm-error')).map((b) => {
+                const r = b.getBoundingClientRect();
+                return {id: (b as HTMLElement).dataset.testid ?? b.className, left: r.left, right: r.right, top: r.top, bottom: r.bottom};
+            }),
+        };
+    });
+}
+
+/** The three rules of the confirmation's layout; `opened` adds the rule that holds when it has just opened. */
+function checkConfirmation(m: ConfirmationMeasure, opened: boolean): string[] {
+    const problems: string[] = [];
+    const slack = 0.5;
+    if (opened) {
+        if (m.heading.top < m.stack.top - slack) problems.push('the heading starts above the stack');
+        if (m.copy.bottom > m.stack.bottom + slack) problems.push('the consequence sentence is clipped by the stack');
+    }
+    if (m.copy.bottom > m.stack.bottom + slack && m.action.top < m.copy.bottom - slack) {
+        problems.push('the destructive button is above the clipped end of the sentence');
+    }
+    for (let i = 0; i < m.controls.length; i += 1) {
+        for (let j = i + 1; j < m.controls.length; j += 1) {
+            const a = m.controls[i];
+            const b = m.controls[j];
+            const overlap = a.left < b.right - slack && b.left < a.right - slack && a.top < b.bottom - slack && b.top < a.bottom - slack;
+            if (overlap) problems.push(`${a.id} overlaps ${b.id}`);
+        }
+    }
+    return problems;
+}
+
+test.describe('conversation controls follow-ups (issue #547)', () => {
+    test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE === '1', 'needs assistant replies: not part of the provider-outage pass');
+
+    let startPriorities: Awaited<ReturnType<typeof savedPriorities>>;
+    test.beforeEach(async ({page}) => {
+        requireDjangoTier();
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page, E2E_USERNAME, E2E_PASSWORD);
+        await openAssistant(page);
+        await ensureTurns(page, 2);
+        startPriorities = await savedPriorities(page);
+    });
+
+    test.afterEach(async ({page}, testInfo) => {
+        if (testInfo.status === 'skipped') return;
+        await page.unrouteAll({behavior: 'ignoreErrors'});
+        await page.goto('/');
+        expect(await savedPriorities(page), 'saved priorities are unchanged').toEqual(startPriorities);
+    });
+
+    const expectLayout = async (page: Page, opened: boolean) => {
+        await expect.poll(async () => checkConfirmation(await measureConfirmation(page), opened), {timeout: 5000}).toEqual([]);
+    };
+    const failDelete = async (page: Page) => {
+        await page.route(DELETE_URL, (route) => route.fulfill({status: 500, contentType: 'application/json', body: '{}'}));
+        await waitForConfirmArmed(page);
+        await page.getByTestId('confirm-action').click();
+        await expect(page.getByRole('alert').filter({hasText: 'Could not delete the conversation.'})).toBeVisible();
+    };
+
+    for (const size of CONFIRM_SIZES) {
+        test.describe(`${size.name} ${size.width}x${size.height}`, () => {
+            test.beforeEach(async ({page}) => {
+                await page.setViewportSize({width: size.width, height: size.height});
+                await openAssistant(page);
+            });
+
+            test('the Delete confirmation opens on its heading and the whole consequence, the button after it', async ({page}) => {
+                await chooseItem(page, 'conversation-delete');
+                await expect(page.getByTestId('confirm-panel')).toContainText(DELETE_COPY);
+                await expectLayout(page, true);
+            });
+
+            test('the New confirmation opens on its heading and the whole consequence', async ({page}) => {
+                await chooseItem(page, 'conversation-new');
+                await expect(page.getByTestId('confirm-panel')).toContainText(NEW_COPY);
+                await expectLayout(page, true);
+            });
+
+            test('a Delete failure keeps the consequence before the button and no controls overlap', async ({page}) => {
+                await chooseItem(page, 'conversation-delete');
+                await failDelete(page);
+                await expectLayout(page, false);
+            });
+
+            test('a Delete failure under a two-line priorities summary', async ({page}) => {
+                // The browser resolves the test host, the route's own fetch cannot: the real answer is read in the page.
+                await page.route('**/api/agent/preferences/', async (route) => {
+                    if (route.request().method() !== 'GET' || route.request().headers()['x-spec-real']) return route.fallback();
+                    const real = await page.evaluate(async () => (await fetch('/api/agent/preferences/', {headers: {'x-spec-real': '1'}})).json());
+                    return route.fulfill({
+                        status: 200,
+                        contentType: 'application/json',
+                        body: JSON.stringify({...real, chips: SUMMARY_CHIPS}),
+                    });
+                });
+                await openAssistant(page, false);
+                await expect(page.getByTestId('priorities-summary')).toBeVisible();
+                await chooseItem(page, 'conversation-delete');
+                await expectLayout(page, true);
+                await failDelete(page);
+                await expectLayout(page, false);
+            });
+
+            test('Export first in flight: Exporting…, Delete disabled, no controls overlap', async ({page}) => {
+                let release: () => void = () => undefined;
+                const gate = new Promise<void>((resolve) => { release = resolve; });
+                await page.route(EXPORT_URL, async (route) => { await gate; return route.continue(); });
+                await chooseItem(page, 'conversation-delete');
+                await page.getByTestId('confirm-export-first').click();
+                await expect(page.getByTestId('confirm-export-first')).toHaveText('Exporting…');
+                await expectLayout(page, false);
+                release();
+                await expect(page.getByTestId('confirm-export-first')).toHaveText('Export first');
+            });
+        });
+    }
+
+    test('an ended session on Delete and on New is reported and nothing is removed', async ({page, context}) => {
+        const replies = page.locator('article[aria-label="Assistant message"]');
+        const before = await replies.count();
+        await chooseItem(page, 'conversation-delete');
+        await waitForConfirmArmed(page);
+        await context.clearCookies({name: 'sessionid'});
+        await page.getByTestId('confirm-action').click();
+        await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
+        await expect(page.getByTestId('confirm-action')).toHaveText('Try deleting again');
+        expect(await replies.count(), 'the transcript is as it was').toBe(before);
+        await page.getByTestId('confirm-cancel').click();
+        await chooseItem(page, 'conversation-new');
+        await waitForConfirmArmed(page);
+        await page.getByTestId('confirm-action').click();
+        await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
+        expect(await replies.count()).toBe(before);
+        await login(page);
+    });
+
+    test('an ended session on Export is reported in the export-error panel and nothing downloads', async ({page, context}) => {
+        const downloads: string[] = [];
+        page.on('download', (download) => downloads.push(download.suggestedFilename()));
+        await context.clearCookies({name: 'sessionid'});
+        await chooseItem(page, 'conversation-export');
+        await expect(page.getByTestId('export-error')).toContainText(SESSION_ENDED);
+        await expect(page.getByTestId('conversation-status')).toHaveText('');
+        expect(downloads).toEqual([]);
+        await login(page);
+    });
+
+    test('Delete waits for an export in flight, and a second press starts no second request', async ({page}) => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let exports = 0;
+        await page.route(EXPORT_URL, async (route) => { exports += 1; await gate; return route.continue(); });
+        await chooseItem(page, 'conversation-delete');
+        const exportFirst = page.getByTestId('confirm-export-first');
+        await exportFirst.click();
+        await expect(exportFirst).toBeDisabled();
+        await expect(page.getByTestId('confirm-action')).toBeDisabled();
+        await expect(page.getByTestId('confirm-cancel')).toBeEnabled();
+        await expect(page.getByTestId('conversation-status')).toHaveText('Exporting conversation…');
+        await more(page).click();
+        await expect(page.getByTestId('conversation-export')).toBeDisabled();
+        await more(page).click();
+        release();
+        await expect(page.getByTestId('confirm-action')).toBeEnabled();
+        expect(exports).toBe(1);
+        await page.getByTestId('confirm-cancel').click();
+    });
+
+    test('nothing beneath an open confirmation can be reached; the composer is off while a Delete is in flight', async ({page}) => {
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        await page.route(DELETE_URL, async (route) => {
+            await gate;
+            return route.fulfill({status: 500, contentType: 'application/json', body: '{}'});
+        });
+        await chooseItem(page, 'conversation-delete');
+        const inertOf = (selector: string) => page.locator(selector).evaluate((el) => el.hasAttribute('inert'));
+        expect(await inertOf('.chat-transcript-wrap')).toBe(true);
+        expect(await inertOf('.chat-footer')).toBe(true);
+        await page.getByTestId('confirm-cancel').focus();
+        for (let step = 0; step < 6; step += 1) {
+            await page.keyboard.press('Tab');
+            const reached = await page.evaluate(() => !!document.activeElement?.closest('.chat-transcript-wrap, .chat-footer'));
+            expect(reached, 'Tab never lands in the transcript or the footer').toBe(false);
+        }
+        await waitForConfirmArmed(page);
+        await page.getByTestId('confirm-action').click();
+        await expect(page.getByTestId('assistant-composer')).toBeDisabled();
+        release();
+        await expect(page.getByRole('alert').filter({hasText: 'Could not delete the conversation.'})).toBeVisible();
+        await page.getByTestId('confirm-cancel').click();
+        await expect.poll(() => inertOf('.chat-transcript-wrap')).toBe(false);
+        await expect.poll(() => inertOf('.chat-footer')).toBe(false);
+        await expect(page.getByTestId('assistant-composer')).toBeEnabled();
+    });
+});
