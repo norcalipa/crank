@@ -252,6 +252,45 @@ lands — implemented-before-documented rule, per #463's registry).
   depends on schema policy, not on this check; owner: preference/agent
   maintainers.
 
+### Client-held preference tokens (#539)
+
+- **Status: implemented.**
+- **Asset:** the user's `UserPreference` document, written by Apply (account
+  scope) and Undo.
+- **Boundary:** a proposal token (chat turn, priorities editor) and an undo
+  token (apply, reset) are readable JSON the client passes back. Each carries
+  `owner` (a per-user tag) and `sig`, a `django.core.signing` signature under
+  the salt `crank.pref-token.v1` over the token kind, the user (the opaque owner
+  tag, since a signature is signed, not encrypted, and must not expose the raw
+  user id), the scope,
+  the revision (`base_revision` / `expected_revision`), the origin and a
+  SHA-256 digest of the canonical `patch` or `document`. Apply and Undo accept
+  a token only when the owner tag matches, the signature verifies within
+  `PREFERENCE_TOKEN_MAX_AGE_SECONDS` (default 3600) and every signed value
+  equals the posted one. A signed `account` scope may be narrowed to `search`
+  (This search only), never widened. Anything else is a 403 `forbidden` that
+  writes nothing; the clients already show "This change expired. Reload to
+  review it again." for that status and telemetry records it as `invalid`.
+- **Why:** before this change the owner tag covered no body field, so a user
+  could attach their own tag to a self-made undo token and replace their whole
+  document (unknown keys included) up to the request cap, bypassing the
+  strict-patch rule. Only the user's own data was ever reachable.
+- **Canonical digest:** sorted-key compact JSON, no NaN/Infinity, every
+  integral float written as an integer, so a JavaScript round trip
+  (`1.0` → `1`) still verifies.
+- **Operations:** a `SECRET_KEY` rotation invalidates outstanding tokens; if
+  `SECRET_KEY_FALLBACKS` is ever set, signatures from the old key keep
+  verifying until it is removed. Tokens are never stored server-side. Tokens
+  open in a tab across the deploy that introduced signing fail once into the
+  review-again path.
+- **Tests:** `crank/tests/views/test_preferences_api.py` (`TestSignedTokens`),
+  `crank/tests/services/test_preferences.py` (digest, `sign_token`,
+  `verify_token`), `crank/tests/views/test_job_search.py`
+  (`PreferenceChangesUndoSurfaceTests`, chat-issued token under another
+  account), `crank/tests/test_preference_token_settings.py`.
+- **Residual risk:** a token is replayable inside its lifetime until the
+  revision check refuses it; the signature adds no server-side revocation.
+
 ### Cached account state
 
 - **Status: implemented (tests pinned by #487; caching semantics owned by #470).**

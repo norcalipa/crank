@@ -3,10 +3,15 @@
 """Direct priorities endpoints (issue #480)."""
 import copy
 import json
+import time
+import zlib
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core import signing
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -18,6 +23,7 @@ from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.services import job_matching
 from crank.services import preferences as prefs
 from crank.tests.agents.test_golden_conversations import ScriptedGateway, make_orchestrator
+from crank.tests.pref_token_helpers import signed
 
 pytestmark = pytest.mark.django_db
 
@@ -150,11 +156,15 @@ class TestPropose:
         }
         assert body["currency"] == "USD"
         assert body["scope"] == "account" and body["change_count"] == 2
-        assert body["token"] == {
+        token = dict(body["token"])
+        sig = token.pop("sig")
+        assert token == {
             "patch": EDIT_PATCH, "scope": "account",
             "base_revision": before[0], "origin": "direct",
             "owner": prefs.token_owner(alice),
         }
+        assert prefs.verify_token("proposal", body["token"], alice)
+        assert sig == body["token"]["sig"]
         assert self.snapshot(alice) == before
 
     def test_search_scope_proposal(self, alice, client_a):
@@ -400,7 +410,9 @@ class TestApplyUndoIdempotencyAndConcurrency:
             % (revision, prefs.token_owner(alice), literal)
         )
         response = client_a.post(reverse("agent-preference-undo"), data=body, content_type="application/json")
-        assert response.status_code == 400
+        # "1e999" parses to an infinity no server-issued token can carry, so it
+        # is refused as unsigned (403) before the service's own 400.
+        assert response.status_code == (403 if literal == "1e999" else 400)
         assert prefs.read(alice) == before
         assert UserPreference.objects.get(user=alice).revision == revision
 
@@ -486,7 +498,9 @@ class TestChatAndEditorPathsYieldIdenticalDocuments:
         ):
             response = post(client, "agent-preference-apply", {
                 "decision": "apply",
-                "proposal": {**proposal["token"], "owner": prefs.token_owner(user)},
+                "proposal": signed(
+                    {**proposal["token"], "owner": prefs.token_owner(user)}, user
+                ),
             })
             assert response.status_code == 200
 
@@ -578,3 +592,264 @@ class TestClearingListsEndToEnd:
         assert stored() == []
         assert post(client_a, "agent-preference-undo", {"undo": applied.json()["undo"]}).status_code == 200
         assert stored() == saved
+
+
+def _tamper_cases(kind, token):
+    """Yield (label, tampered token): one field changed at a time."""
+    if kind == "proposal":
+        yield "patch value", {**token, "patch": {"set": {"notes": "evil"}}}
+        yield "patch key", {**token, "patch": {"set": {**token["patch"]["set"], "culture": ["x"]}}}
+        yield "base_revision", {**token, "base_revision": token["base_revision"] + 1}
+    else:
+        yield "document key", {**token, "document": {**token["document"], "x_future": 1}}
+        yield "document value", {**token, "document": {**token["document"], "notes": "evil"}}
+        yield "expected_revision", {**token, "expected_revision": token["expected_revision"] + 1}
+    yield "origin", {**token, "origin": "reset" if token.get("origin") != "reset" else "direct"}
+    yield "owner", {**token, "owner": "0" * 32}
+    yield "sig truncated", {**token, "sig": token["sig"][:-3]}
+    yield "sig empty", {**token, "sig": ""}
+    yield "sig not a string", {**token, "sig": 5}
+    yield "sig missing", {k: v for k, v in token.items() if k != "sig"}
+    yield "sig wrong salt", {**token, "sig": signing.dumps({"kind": kind}, salt="other.salt")}
+
+
+class TestSignedTokens:
+    """Issue #539: a token is accepted only for the exact body the server issued."""
+
+    def _proposal(self, client, patch=None, scope="account"):
+        return post(
+            client, "agent-preference-propose", {"patch": patch or EDIT_PATCH, "scope": scope}
+        ).json()["token"]
+
+    def _undo(self, alice, client):
+        token = self._proposal(client)
+        return post(
+            client, "agent-preference-apply", {"decision": "apply", "proposal": token}
+        ).json()["undo"]
+
+    def _state(self, user):
+        row = UserPreference.objects.get(user=user)
+        return row.revision, row.preferences, UserPreferenceAudit.objects.count()
+
+    def test_issued_tokens_carry_a_verifying_sig(self, alice, client_a):
+        seed(alice)
+        token = self._proposal(client_a)
+        assert prefs.verify_token("proposal", token, alice)
+        undo = self._undo(alice, client_a)
+        assert prefs.verify_token("undo", undo, alice)
+        revision = UserPreference.objects.get(user=alice).revision
+        reset = post(client_a, "agent-preference-reset", {"expected_revision": revision}).json()
+        assert reset["undo"]["origin"] == "reset"
+        assert prefs.verify_token("undo", reset["undo"], alice)
+
+    @pytest.mark.parametrize("label", [
+        "patch value", "patch key", "base_revision", "origin", "owner", "sig truncated",
+        "sig empty", "sig not a string", "sig missing", "sig wrong salt",
+    ])
+    def test_tampered_proposal_is_403_and_writes_nothing(self, alice, client_a, label):
+        seed(alice)
+        token = self._proposal(client_a)
+        tampered = dict(_tamper_cases("proposal", token))[label]
+        before = self._state(alice)
+        response = post(client_a, "agent-preference-apply", {"decision": "apply", "proposal": tampered})
+        assert response.status_code == 403
+        assert response.json()["error"]["message"] == "This change expired. Reload to review it again."
+        assert self._state(alice) == before
+
+    @pytest.mark.parametrize("label", [
+        "document key", "document value", "expected_revision", "origin", "owner",
+        "sig truncated", "sig empty", "sig not a string", "sig missing", "sig wrong salt",
+    ])
+    def test_tampered_undo_is_403_and_writes_nothing(self, alice, client_a, label):
+        seed(alice)
+        undo = self._undo(alice, client_a)
+        tampered = dict(_tamper_cases("undo", undo))[label]
+        before = self._state(alice)
+        response = post(client_a, "agent-preference-undo", {"undo": tampered})
+        assert response.status_code == 403
+        assert self._state(alice) == before
+
+    def test_self_made_undo_with_own_owner_tag_cannot_replace_the_document(self, alice, client_a):
+        seed(alice)
+        revision = UserPreference.objects.get(user=alice).revision
+        forged = {
+            "expected_revision": revision,
+            "document": {"x_future": {"anything": 1}},
+            "owner": prefs.token_owner(alice),
+        }
+        before = self._state(alice)
+        assert post(client_a, "agent-preference-undo", {"undo": forged}).status_code == 403
+        assert self._state(alice) == before
+
+    def test_widening_search_to_account_is_refused(self, alice, client_a):
+        seed(alice)
+        token = self._proposal(client_a, scope="search")
+        before = self._state(alice)
+        response = post(
+            client_a, "agent-preference-apply",
+            {"decision": "apply", "proposal": {**token, "scope": "account"}},
+        )
+        assert response.status_code == 403
+        assert self._state(alice) == before
+        missing = {k: v for k, v in token.items() if k != "scope"}
+        assert post(
+            client_a, "agent-preference-apply", {"decision": "apply", "proposal": missing}
+        ).status_code == 403
+        assert self._state(alice) == before
+
+    def test_narrowing_account_to_search_is_accepted_and_persists_nothing(self, alice, client_a):
+        seed(alice)
+        token = self._proposal(client_a)
+        before = self._state(alice)
+        response = post(
+            client_a, "agent-preference-apply",
+            {"decision": "apply", "proposal": {**token, "scope": "search"}},
+        )
+        assert response.status_code == 200
+        assert response.json()["scope"] == "search"
+        assert self._state(alice) == before
+
+    def test_undo_never_accepts_a_scope_edit(self, alice, client_a):
+        seed(alice)
+        undo = self._undo(alice, client_a)
+        assert post(
+            client_a, "agent-preference-undo", {"undo": {**undo, "scope": "search"}}
+        ).status_code == 200
+
+    def test_javascript_normalised_numbers_verify(self, alice, client_a):
+        seed(alice)
+        edit = {"set": {"compensation.minimum_salary": 150000, "compensation.equity_minimum_percent": 12.0}}
+        token = self._proposal(client_a, patch=edit)
+        raw = json.dumps({"decision": "apply", "proposal": token}).replace("12.0", "12")
+        assert "12.0" not in raw
+        response = client_a.post(reverse("agent-preference-apply"), data=raw, content_type="application/json")
+        assert response.status_code == 200
+        undo = response.json()["undo"]
+        raw = json.dumps({"undo": undo})
+        for before, after in (("1.0", "1"), ("12.0", "12"), ("0.0", "0")):
+            raw = raw.replace(before, after)
+        assert client_a.post(
+            reverse("agent-preference-undo"), data=raw, content_type="application/json"
+        ).status_code == 200
+
+    def test_unsigned_token_in_todays_shape_is_refused(self, alice, client_a):
+        seed(alice)
+        revision = UserPreference.objects.get(user=alice).revision
+        proposal = {
+            "patch": EDIT_PATCH, "scope": "account", "base_revision": revision,
+            "origin": "direct", "owner": prefs.token_owner(alice),
+        }
+        undo = {"expected_revision": revision, "document": {}, "owner": prefs.token_owner(alice)}
+        before = self._state(alice)
+        assert post(client_a, "agent-preference-apply", {"decision": "apply", "proposal": proposal}).status_code == 403
+        assert post(client_a, "agent-preference-undo", {"undo": undo}).status_code == 403
+        assert self._state(alice) == before
+
+    def test_other_users_signature_is_refused(self, alice, bob, client_a):
+        seed(alice)
+        seed(bob)
+        client_b = Client()
+        client_b.force_login(bob)
+        token = self._proposal(client_a)
+        theirs = {**token, "owner": prefs.token_owner(bob)}
+        undo = self._undo(alice, client_a)
+        before = self._state(bob)
+        assert post(client_b, "agent-preference-apply", {"decision": "apply", "proposal": theirs}).status_code == 403
+        assert self._state(bob) == before
+        # Move bob to the revision alice's undo targets, then change only the owner:
+        # the "user" claim alone must refuse it.
+        UserPreference.objects.filter(user=bob).update(revision=undo["expected_revision"])
+        before = self._state(bob)
+        theirs = {**undo, "owner": prefs.token_owner(bob)}
+        assert post(client_b, "agent-preference-undo", {"undo": theirs}).status_code == 403
+        assert self._state(bob) == before
+
+    @pytest.mark.parametrize("salt", ["other.salt", None])
+    @pytest.mark.parametrize("kind", ["proposal", "undo"])
+    def test_real_claims_under_another_salt_are_refused(self, alice, client_a, kind, salt):
+        seed(alice)
+        token = self._proposal(client_a) if kind == "proposal" else self._undo(alice, client_a)
+        claims = prefs._token_claims(kind, token, alice)
+        kwargs = {} if salt is None else {"salt": salt}
+        forged = {**token, "sig": signing.dumps(claims, compress=True, **kwargs)}
+        assert not prefs.verify_token(kind, forged, alice)
+        before = self._state(alice)
+        if kind == "proposal":
+            response = post(client_a, "agent-preference-apply", {"decision": "apply", "proposal": forged})
+        else:
+            response = post(client_a, "agent-preference-undo", {"undo": forged})
+        assert response.status_code == 403
+        assert self._state(alice) == before
+
+    def test_sig_does_not_expose_the_user_pk(self, db):
+        user = get_user_model().objects.create_user("carol", password="pw", id=7654321)
+        client = Client()
+        client.force_login(user)
+        seed(user)
+        for token in (self._proposal(client), self._undo(user, client)):
+            payload = token["sig"].split(":")[0]
+            raw = signing.b64_decode(payload.lstrip(".").encode())
+            decoded = zlib.decompress(raw) if payload.startswith(".") else raw
+            assert json.loads(decoded)["user"] == prefs.token_owner(user)
+            assert str(user.pk) not in decoded.decode()
+            assert str(user.pk) not in json.dumps(token)
+
+    def test_pathologically_deep_document_is_403_not_500(self, alice):
+        seed(alice)
+        quiet = Client(raise_request_exception=False)
+        quiet.force_login(alice)
+        token = self._proposal(quiet)
+        undo = post(quiet, "agent-preference-apply", {"decision": "apply", "proposal": token}).json()["undo"]
+        depth = 3000
+        deep = []
+        for _ in range(depth):
+            deep = [deep]
+        assert not prefs.verify_token("undo", {**undo, "document": deep}, alice)
+        before = self._state(alice)
+        body = json.dumps({"undo": {**undo, "document": {"x_future": 1}}}).replace(
+            '{"x_future": 1}', "[" * depth + "]" * depth
+        )
+        response = quiet.post(reverse("agent-preference-undo"), data=body, content_type="application/json")
+        assert response.status_code == 403
+        assert self._state(alice) == before
+
+    def test_expired_token_is_refused(self, alice, client_a):
+        seed(alice)
+        token = self._proposal(client_a)
+        before = self._state(alice)
+        now = time.time()
+        with patch("django.core.signing.time.time", return_value=now + settings.PREFERENCE_TOKEN_MAX_AGE_SECONDS + 5):
+            assert not prefs.verify_token("proposal", token, alice)
+            response = post(client_a, "agent-preference-apply", {"decision": "apply", "proposal": token})
+        assert response.status_code == 403
+        assert self._state(alice) == before
+        with patch("django.core.signing.time.time", return_value=now + settings.PREFERENCE_TOKEN_MAX_AGE_SECONDS - 5):
+            assert prefs.verify_token("proposal", token, alice)
+
+    def test_max_age_setting_is_honoured(self, alice, client_a):
+        seed(alice)
+        token = self._proposal(client_a)
+        with override_settings(PREFERENCE_TOKEN_MAX_AGE_SECONDS=1), patch(
+            "django.core.signing.time.time", return_value=time.time() + 10
+        ):
+            assert not prefs.verify_token("proposal", token, alice)
+
+    def test_dismiss_is_unchecked(self, alice, client_a):
+        assert post(client_a, "agent-preference-apply", {"decision": "dismiss", "proposal": {}}).status_code == 200
+
+    def test_malformed_tokens_are_400_before_the_signature(self, alice, client_a):
+        seed(alice)
+        token = self._proposal(client_a)
+        response = post(
+            client_a, "agent-preference-apply",
+            {"decision": "apply", "proposal": {**token, "patch": {"set": {"nope.nope": 1}}}},
+        )
+        assert response.status_code == 400
+
+    def test_refusal_is_telemetered_as_invalid(self, alice, client_a):
+        seed(alice)
+        token = self._proposal(client_a)
+        with patch("crank.views.job_search.monitoring.record_event") as record:
+            post(client_a, "agent-preference-apply", {"decision": "apply", "proposal": {**token, "sig": ""}})
+        events = [c.args for c in record.call_args_list if c.args and c.args[0] == "preference_decision"]
+        assert events and events[-1][1]["status"] == "invalid"

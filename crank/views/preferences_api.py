@@ -93,13 +93,17 @@ def agent_preference_propose(request):
             "base_revision": proposal["base_revision"],
             "unsupported_criteria": proposal["unsupported_criteria"],
             "currency": proposal["currency"],
-            "token": {
-                "patch": patch,
-                "scope": scope,
-                "base_revision": proposal["base_revision"],
-                "origin": "direct",
-                "owner": pref_services.token_owner(request.user),
-            },
+            "token": pref_services.sign_token(
+                "proposal",
+                {
+                    "patch": patch,
+                    "scope": scope,
+                    "base_revision": proposal["base_revision"],
+                    "origin": "direct",
+                    "owner": pref_services.token_owner(request.user),
+                },
+                request.user,
+            ),
         },
         headers={**_NO_STORE, "X-Request-ID": request_id},
     )
@@ -163,7 +167,9 @@ def _agent_preference_reset(request):
             "revision": result["revision"],
             "changes": result["changes"],
             "undo": (
-                {**result["undo"], "origin": "reset"}
+                pref_services.sign_token(
+                    "undo", {**result["undo"], "origin": "reset"}, request.user
+                )
                 if isinstance(result["undo"], dict)
                 else result["undo"]
             ),

@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
+import logging
 import multiprocessing
 import os
 from pathlib import Path
@@ -181,6 +182,30 @@ JOB_SEARCH_TURN_MAX_ATTEMPTS = int(os.environ.get("JOB_SEARCH_TURN_MAX_ATTEMPTS"
 # legitimate provider run; an expired lease lets the next read/retry recover
 # a turn whose worker was interrupted (crash/kill).
 JOB_SEARCH_TURN_LEASE_SECONDS = int(os.environ.get("JOB_SEARCH_TURN_LEASE_SECONDS", "300"))
+
+
+def _env_positive_seconds(name, default):
+    """Parse a positive-integer seconds variable; log and use ``default`` on a bad value."""
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        logging.getLogger(__name__).warning(
+            "Ignoring invalid %s=%r (expected a positive integer); using %s",
+            name, raw, default,
+        )
+        return default
+    return value
+
+
+# Lifetime of a client-held preference proposal / undo token (issue #539). A
+# token older than this is refused with 403 and the client offers a fresh
+# review. A bad or non-positive value falls back to one hour.
+PREFERENCE_TOKEN_MAX_AGE_SECONDS = _env_positive_seconds("PREFERENCE_TOKEN_MAX_AGE_SECONDS", 3600)
 COMPANY_REQUEST_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_REQUEST_RATE_LIMIT_PER_HOUR", "5"))
 COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", "10"))
 COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", "60"))
