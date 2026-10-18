@@ -298,10 +298,10 @@ describe('ConversationMenu', () => {
             expect(screen.getByTestId('confirm-action')).toHaveFocus();
         });
 
-        test('a failure above the stack comes down only as far as the retry stays visible', async () => {
-            layOut(230, 20, '#chat-confirm-failure');
+        test('a sentence above the stack comes down only as far as the retry stays visible', async () => {
+            layOut(230, 20, '#chat-confirm-copy');
             const stack = await failDelete();
-            // After the retry is revealed (64) the failure is 44px above the top, with 4px of room.
+            // After the retry is revealed (64) the sentence (at 20) is 44px above the top, with 4px of room.
             await waitFor(() => expect(stack.scrollTop).toBe(60));
         });
 
@@ -309,6 +309,18 @@ describe('ConversationMenu', () => {
             layOut(100, 20, '#chat-confirm-failure');
             const stack = await failDelete();
             expect(stack.scrollTop).toBe(0);
+        });
+
+        test('after a failed Export first the export error sits above the confirmation, so revealing its retry never scrolls the sentence away', async () => {
+            setup({onExport: jest.fn().mockResolvedValue('Could not export your conversation.')});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-delete'));
+            armConfirm();
+            fireEvent.click(screen.getByText('Export first'));
+            const panel = await screen.findByTestId('export-error');
+            const confirm = document.getElementById('chat-confirm-copy')!.closest('.chat-confirm-panel') as HTMLElement;
+            expect(panel.compareDocumentPosition(confirm) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+            expect(panel.parentElement).toBe(confirm.parentElement);
         });
 
         test('an export error retry is revealed the same way', async () => {

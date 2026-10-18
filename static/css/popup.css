@@ -3332,6 +3332,24 @@ body.assistant-open .app-content .table-responsive,
 .chat-confirm-signin {
     color: inherit;
     text-decoration: underline;
+    white-space: nowrap;
+}
+
+/* On a phone the only way forward is this link: give it a full-height tap target without growing the alert. */
+@media (max-width: 575.98px), (max-height: 30rem) {
+    .chat-confirm-signin {
+        display: inline-block;
+        padding-block: .75rem;
+        margin-block: -.75rem;
+    }
+}
+
+/* The compact failure text is a shorter line (13px over 16.9px): more padding keeps the link at 44px. */
+@media (max-height: 30rem) {
+    .chat-confirm-signin {
+        padding-block: .875rem;
+        margin-block: -.875rem;
+    }
 }
 
 /* The composer under an open confirmation is inert: show it as the disabled field it behaves as. */
@@ -3351,6 +3369,27 @@ body.assistant-open .app-content .table-responsive,
     [data-testid="export-error"] > .chat-confirm-error {
         flex-basis: 100%;
         margin-bottom: 0;
+    }
+
+    [data-testid="export-error"] > .chat-confirm-dismiss {
+        margin-top: 0;
+    }
+}
+
+/* On a phone the export-error panel's retry and Dismiss share one row too, so a short stack shows both with the message. */
+@media (max-width: 575.98px) {
+    [data-testid="export-error"] {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        column-gap: .5rem;
+    }
+
+    [data-testid="export-error"] > .chat-confirm-error {
+        grid-column: 1 / -1;
+    }
+
+    [data-testid="export-error"] > .chat-confirm-dismiss {
+        margin-top: 0;
     }
 }
 
@@ -3390,7 +3429,7 @@ body.assistant-open .app-content .table-responsive,
         margin-bottom: .375rem;
     }
 
-    .chat-confirm-error {
+    .chat-confirm-panel .chat-confirm-error {
         font-size: .8125rem;
         line-height: 1.3;
         padding: .25rem .5rem;

@@ -381,6 +381,46 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         await expect(page.getByRole('alert').filter({hasText: 'Could not delete the conversation.'})).toBeVisible();
     };
 
+    // After a failed Export first the export-error panel sits above the confirmation: the stack scrolls to its
+    // retry, and the heading and the whole sentence must stay inside the stack (the Delete row may be cut at the bottom).
+    const expectExportFailureKeepsSentence = async (page: Page) => {
+        await chooseItem(page, 'conversation-delete');
+        await page.route(EXPORT_URL, (route) => route.fulfill({status: 500, contentType: 'application/json', body: '{}'}));
+        await page.getByTestId('confirm-export-first').click();
+        const panel = page.getByTestId('export-error');
+        await expect(panel).toBeVisible();
+        await expect.poll(async () => page.evaluate(() => {
+            const slack = 0.5;
+            const stack = document.querySelector('.chat-panel-stack')!.getBoundingClientRect();
+            const box = (sel: string) => document.querySelector(sel)!.getBoundingClientRect();
+            const problems: string[] = [];
+            for (const [name, sel] of [['the export message', '[data-testid="export-error"] .chat-confirm-error'], ['the retry', '[data-testid="export-error"] button']] as const) {
+                const r = box(sel);
+                if (r.top < stack.top - slack || r.bottom > stack.bottom + slack) problems.push(`${name} is not inside the stack`);
+            }
+            // The rule: the destructive button is never on screen while any part of the sentence is clipped.
+            const action = box('[data-testid="confirm-action"]');
+            const copy = box('[data-testid="confirm-panel"] .chat-confirm-copy');
+            const actionShown = action.bottom > stack.top + slack && action.top < stack.bottom - slack;
+            if (actionShown && (copy.top < stack.top - slack || copy.bottom > stack.bottom + slack)) problems.push('the destructive button shows while the sentence is clipped');
+            // Nothing of the confirmation is scrolled above the stack, so the heading and sentence are only ever cut at the bottom.
+            if (box('[data-testid="confirm-panel"] .chat-confirm-heading').top < stack.top - slack) problems.push('the heading is scrolled above the stack');
+            return problems;
+        }), {timeout: 5000}).toEqual([]);
+        // A Delete failure that follows keeps the sentence beside its button.
+        await page.unroute(EXPORT_URL);
+        await failDelete(page);
+        await expectLayout(page, false);
+    };
+
+    for (const size of [{name: 'phone', width: 320, height: 480}, {name: 'phone', width: 375, height: 500}, {name: 'phone', width: 360, height: 520}]) {
+        test(`Export first failing keeps the whole consequence in the stack, ${size.name} ${size.width}x${size.height}`, async ({page}) => {
+            await page.setViewportSize({width: size.width, height: size.height});
+            await openAssistant(page);
+            await expectExportFailureKeepsSentence(page);
+        });
+    }
+
     for (const size of CONFIRM_SIZES) {
         test.describe(`${size.name} ${size.width}x${size.height}`, () => {
             test.beforeEach(async ({page}) => {
@@ -433,6 +473,10 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
                 await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
                 await expect(page.getByTestId('confirm-sign-in')).toHaveAttribute('href', /^\/accounts\/login\/\?next=/);
                 await expectLayout(page, false);
+            });
+
+            test('Export first failing keeps the whole consequence in the stack', async ({page}) => {
+                await expectExportFailureKeepsSentence(page);
             });
 
             test('Export first in flight: Exporting…, Delete disabled, no controls overlap', async ({page}) => {

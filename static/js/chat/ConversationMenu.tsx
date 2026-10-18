@@ -172,7 +172,7 @@ export function ConversationMenu({
         if (!failure) return;
         // The focused retry must be visible, with the failure text above it when both fit.
         confirmButtonRef.current?.focus({preventScroll: true});
-        revealWithin(confirmButtonRef.current, failureRef.current);
+        revealWithin(confirmButtonRef.current, document.getElementById('chat-confirm-copy') ?? failureRef.current);
     }, [failure]);
     React.useEffect(() => {
         if (!exportError) return;
@@ -386,6 +386,25 @@ export function ConversationMenu({
             </div>
 
             <div className="chat-panel-stack">
+            {exportError && (
+                <div ref={exportPanelRef} className="chat-confirm-panel chat-confirm-panel-danger"
+                     data-testid="export-error">
+                    <InlineError message={exportError} signInUrl={signInUrl}/>
+                    <div className="chat-confirm-actions">
+                        <button type="button" ref={exportRetryRef} className="btn btn-sm btn-outline-light chat-focus"
+                                onClick={() => void runExport()}>
+                            Try export again
+                        </button>
+                    </div>
+                    <div className="chat-confirm-dismiss">
+                        <button type="button" className="btn btn-sm btn-outline-light chat-focus"
+                                data-testid="export-error-dismiss"
+                                onClick={() => { setExportError(null); moreRef.current?.focus(); }}>
+                            Dismiss
+                        </button>
+                    </div>
+                </div>
+            )}
             {confirming && (
                 <div
                     className={`chat-confirm-panel${deleting ? ' chat-confirm-panel-danger' : ''}`}
@@ -459,25 +478,6 @@ export function ConversationMenu({
                 </div>
             )}
 
-            {exportError && (
-                <div ref={exportPanelRef} className="chat-confirm-panel chat-confirm-panel-danger"
-                     data-testid="export-error">
-                    <InlineError message={exportError} signInUrl={signInUrl}/>
-                    <div className="chat-confirm-actions">
-                        <button type="button" ref={exportRetryRef} className="btn btn-sm btn-outline-light chat-focus"
-                                onClick={() => void runExport()}>
-                            Try export again
-                        </button>
-                    </div>
-                    <div className="chat-confirm-dismiss">
-                        <button type="button" className="btn btn-sm btn-outline-light chat-focus"
-                                data-testid="export-error-dismiss"
-                                onClick={() => { setExportError(null); moreRef.current?.focus(); }}>
-                            Dismiss
-                        </button>
-                    </div>
-                </div>
-            )}
             </div>
 
             <div className="visually-hidden" aria-live="polite" aria-atomic="true" data-testid="conversation-status">{status}</div>
