@@ -189,7 +189,18 @@ class AllauthRateLimitEndToEndTests(TestCase):
         self.assertTemplateUsed(response, "429.html")
         self.assertContains(response, "Too many attempts", status_code=429)
         self.assertContains(response, "Please wait a minute and try again.", status_code=429)
-        self.assertContains(response, 'href="/"', status_code=429)
+        self.assertContains(
+            response,
+            '<a class="btn btn-primary auth-action" href="/accounts/signup/">Try again</a>',
+            html=True,
+            status_code=429,
+        )
+        self.assertContains(
+            response,
+            '<a class="btn btn-secondary auth-action" href="/">Go to the home page</a>',
+            html=True,
+            status_code=429,
+        )
 
     @override_settings(ACCOUNT_RATE_LIMITS={"login": "1/m/ip"}, **ENABLED)
     def test_signin_429_renders_the_page(self):
@@ -204,3 +215,27 @@ class AllauthRateLimitEndToEndTests(TestCase):
         self.assertEqual(response.status_code, 429)
         self.assertTemplateUsed(response, "429.html")
         self.assertContains(response, "Too many attempts", status_code=429)
+        self.assertContains(
+            response,
+            '<a class="btn btn-primary auth-action" href="/accounts/login/">Try again</a>',
+            html=True,
+            status_code=429,
+        )
+
+    @override_settings(ACCOUNT_RATE_LIMITS={"change_password": "1/m/user"}, **ENABLED)
+    def test_password_change_429_offers_a_way_back_to_the_form(self):
+        User.objects.create_user("limit-change", password="password")
+        self.client.login(username="limit-change", password="password")
+        payload = {"oldpassword": "wrong", "password1": "N3w-pass-phrase!", "password2": "N3w-pass-phrase!"}
+        self.client.post(reverse("account_change_password"), payload, HTTP_CF_CONNECTING_IP="198.51.100.7")
+        response = self.client.post(
+            reverse("account_change_password"), payload, HTTP_CF_CONNECTING_IP="198.51.100.7"
+        )
+
+        self.assertEqual(response.status_code, 429)
+        self.assertContains(
+            response,
+            '<a class="btn btn-primary auth-action" href="/accounts/password/change/">Try again</a>',
+            html=True,
+            status_code=429,
+        )

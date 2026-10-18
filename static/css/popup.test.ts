@@ -957,3 +957,25 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         expect(popupCss).not.toMatch(/^#job-match-panel \.job-match-panel-title \{ scroll-margin-top/m);
     });
 });
+
+describe('auth action links keep the touch floor, the amber focus ring and balanced text (issue #538b visual round 1)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+
+    it('makes an auth action a 44px-tall flex-centred control', () => {
+        expect(popupCss).toMatch(
+            /\.auth-container \.auth-action \{\s*display: inline-flex;\s*align-items: center;\s*justify-content: center;\s*min-height: 44px;\s*\}/,
+        );
+    });
+
+    it('draws the site\u2019s 3px amber focus ring instead of Bootstrap\u2019s halo', () => {
+        expect(popupCss).toMatch(
+            /\.auth-container \.auth-action:focus-visible \{\s*outline: 3px solid var\(--bs-warning\);\s*outline-offset: 2px;\s*box-shadow: none;\s*\}/,
+        );
+    });
+
+    it('balances the sentence so it never ends on one word', () => {
+        expect(popupCss).toMatch(
+            /\.auth-container \.auth-note \{\s*text-wrap: balance;\s*text-wrap: pretty;\s*\}/,
+        );
+    });
+});

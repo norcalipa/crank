@@ -767,6 +767,27 @@ body.app-nav-drawer-open {
     max-width: 42rem;
 }
 
+/* An auth page's action links (issue #538, 538b): the 44px touch floor and
+   the site's amber focus ring; Bootstrap's dark-theme focus halo is 2.0:1. */
+.auth-container .auth-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+}
+
+.auth-container .auth-action:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+    box-shadow: none;
+}
+
+/* The sentence above the actions never ends on one word (538b visual round 1). */
+.auth-container .auth-note {
+    text-wrap: balance;
+    text-wrap: pretty;
+}
+
 .privacy-table {
     min-width: 42rem;
 }
