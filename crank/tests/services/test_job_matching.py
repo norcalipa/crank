@@ -31,7 +31,6 @@ from crank.services.job_matching import (
     _get_criteria,
     _org_excluded,
     _rto_label,
-    _score_organization_match,
     evaluate_org_requirements,
     match_jobs,
     match_organizations,
@@ -880,57 +879,6 @@ class HelperFunctionTests(TestCase):
         ]
         assert reasons_from_requirements(outcomes) == ["Vesting aligns"]
 
-    def test_score_organization_match_funding(self):
-        criteria = project_criteria(
-            preferences(funding_stage=["A"]), 2,
-        )
-        a_org = org(funding_round="A")
-        score = _score_organization_match(a_org, criteria, DEFAULT_CONFIG)
-        assert score > 0
-
-    def test_score_organization_match_rto(self):
-        criteria = project_criteria(
-            preferences(work_location={"modes": ["remote"]}), 2,
-        )
-        remote_org = org(rto_policy="R")
-        score = _score_organization_match(remote_org, criteria, DEFAULT_CONFIG)
-        assert score > 0
-
-    def test_score_organization_match_industry(self):
-        criteria = project_criteria(
-            preferences(industry=["software"]), 2,
-        )
-        a_org = org(industry="software")
-        score = _score_organization_match(a_org, criteria, DEFAULT_CONFIG)
-        assert score > 0
-
-    def test_score_organization_match_vesting(self):
-        criteria = project_criteria(
-            preferences(vesting={"prefer_accelerated": True}), 2,
-        )
-        a_org = org(accelerated_vesting=True)
-        score = _score_organization_match(a_org, criteria, DEFAULT_CONFIG)
-        assert score > 0
-
-    def test_score_organization_match_org_scores(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        score = _score_organization_match(a_org, criteria, DEFAULT_CONFIG)
-        assert score > 0
-
-    def test_score_organization_match_zero(self):
-        criteria = project_criteria(preferences(), 2)
-        # Org with no matching attributes
-        no_match_org = SimpleNamespace(
-            funding_round=None,
-            rto_policy=None,
-            industry="",
-            accelerated_vesting=None,
-            avg_scores=list,
-        )
-        score = _score_organization_match(no_match_org, criteria, DEFAULT_CONFIG)
-        assert score == 0.0
-
     def test_org_excluded_by_name(self):
         criteria = project_criteria(
             preferences(exclusions={"companies": ["bad co"]}), 2,
@@ -1187,31 +1135,159 @@ class PrioritiesMetTests(TestCase):
 
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
-class RankedOrganizationsUnchangedTests(TestCase):
-    """584a changes the company view only: the ranked list keeps its own score (issue #584)."""
+class OrganizationOrderTests(TestCase):
+    """The ranked company list follows the company view's figure (issue #584b).
 
-    def test_the_ranked_payload_keeps_its_scores_order_and_keys(self):
-        user = User.objects.create_user("rankedreader", password="secret")
-        UserPreference.objects.create(
-            user=user,
-            preferences=preferences(funding_stage=["P"], work_location={"modes": ["hybrid"]}),
-            schema_version=3,
+    Replaces the scorer's tests: each case the old scorer pinned (funding,
+    work location, vesting, ratings, nothing set) is re-expressed as an
+    order or a figure.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("orderreader", password="secret")
+
+    def prefer(self, **overrides):
+        UserPreference.objects.create(user=self.user, preferences=preferences(**overrides), schema_version=3)
+
+    def company(self, name, *evidence, **fields):
+        fields.setdefault("status", 1)
+        fields.setdefault("public", True)
+        organization = Organization.objects.create(name=name, **fields)
+        for field_key, value in evidence:
+            make_evidence(organization, field_key, value)
+        return organization
+
+    def rank(self, ratings=None, **kwargs):
+        from unittest import mock
+
+        ratings = ratings or {}
+        with mock.patch(
+            "crank.services.job_matching._company_score", side_effect=lambda o: ratings.get(o.name)
+        ):
+            return match_organizations(self.user, limit=25, **kwargs)
+
+    def test_funding_stage_earns_the_priority(self):
+        self.prefer(funding_stage=["B"])
+        self.company("Match", ("funding_round", "Series B"))
+        self.company("Miss", ("funding_round", "Series A"))
+        rows = self.rank()
+        self.assertEqual(rows[0].name, "Match")
+        self.assertEqual(rows[0].priorities_met, {"met": 1, "counted": 1})
+        self.assertEqual(rows[1].priorities_met, {"met": 0, "counted": 1})
+
+    def test_work_location_and_vesting_earn_their_priorities(self):
+        self.prefer(work_location={"modes": ["remote"]}, vesting={"prefer_accelerated": True})
+        self.company("Both", ("rto_policy", "Remote"), ("accelerated_vesting", "Yes"))
+        self.company("One", ("rto_policy", "Remote"))
+        self.company("None")
+        rows = self.rank()
+        self.assertEqual([r.name for r in rows], ["Both", "One", "None"])
+        self.assertEqual([r.priorities_met["met"] for r in rows], [2, 1, 0])
+        self.assertEqual({r.priorities_met["counted"] for r in rows}, {2})
+
+    def test_most_priorities_met_first_whatever_the_rating(self):
+        self.prefer(funding_stage=["B"], work_location={"modes": ["hybrid"]})
+        self.company("TwoUnrated", ("funding_round", "Series B"), ("rto_policy", "Hybrid"))
+        self.company("OneLoved", ("funding_round", "Series B"))
+        rows = self.rank(ratings={"OneLoved": 5.0})
+        self.assertEqual([r.name for r in rows], ["TwoUnrated", "OneLoved"])
+
+    def test_ties_break_by_rating_unknown_last_then_id(self):
+        self.prefer(funding_stage=["B"])
+        evidence_b = ("funding_round", "Series B")
+        first = self.company("FirstUnrated", evidence_b)
+        low = self.company("Low", evidence_b)
+        high = self.company("High", evidence_b)
+        second = self.company("SecondUnrated", evidence_b)
+        rows = self.rank(ratings={"Low": 2.5, "High": 4.5})
+        self.assertEqual(
+            [r.organization_id for r in rows], [high.pk, low.pk, first.pk, second.pk]
         )
-        Organization.objects.create(name="Alpha", funding_round="P", rto_policy="H", gives_ratings=True)
-        Organization.objects.create(name="Beta", funding_round="A", rto_policy="O")
-        self.client.force_login(user)
-        rows = self.client.get("/api/job-matches/ranked/").json()["organization_matches"]
-        self.assertEqual([r["name"] for r in rows], ["Alpha", "Beta"])
-        criteria = _get_criteria(user)
-        expected = {
-            o.name: round(_score_organization_match(o, criteria, DEFAULT_CONFIG), 1)
-            for o in Organization.objects.all()
-        }
-        self.assertEqual({r["name"]: r["fit_score"] for r in rows}, expected)
-        self.assertEqual({r["name"]: r["score"] for r in rows}, expected)
-        self.assertGreater(rows[0]["score"], rows[1]["score"])
+
+    def test_a_rating_is_not_part_of_the_figure(self):
+        self.prefer(funding_stage=["B"])
+        self.company("Loved", ("funding_round", "Series A"))
+        rows = self.rank(ratings={"Loved": 5.0})
+        self.assertEqual(rows[0].priorities_met, {"met": 0, "counted": 1})
+        self.assertEqual(rows[0].score, 0.0)
+
+    def test_score_and_fit_score_are_the_share_met_rounded(self):
+        self.prefer(funding_stage=["B"], work_location={"modes": ["hybrid"], "countries": ["us"]})
+        self.company("OfThree", ("funding_round", "Series B"))
+        row = self.rank()[0]
+        self.assertEqual(row.priorities_met, {"met": 1, "counted": 3})
+        self.assertEqual(row.score, 33.3)
+        self.assertEqual(row.fit_score, 33.3)
+
+    def test_only_per_job_priorities_leave_the_figure_null_and_the_score_numeric(self):
+        self.prefer(compensation={"minimum_salary": 100000, "currency": "USD"})
+        self.company("Zed")
+        self.company("Alpha")
+        rows = self.rank()
+        self.assertEqual([r.name for r in rows], ["Zed", "Alpha"])  # id order
         for row in rows:
-            self.assertNotIn("priorities_met", row)
+            self.assertIsNone(row.priorities_met)
+            self.assertEqual(row.score, 0.0)
+            self.assertEqual(row.fit_score, 0.0)
+
+    def test_the_hard_filter_and_the_cap_are_unchanged(self):
+        self.prefer(exclusions={"companies": ["Banned"]}, funding_stage=["B"])
+        self.company("Banned", ("funding_round", "Series B"))
+        for number in range(30):
+            self.company(f"Co{number:02d}", ("funding_round", "Series B"))
+        rows = self.rank()
+        self.assertEqual(len(rows), 25)
+        self.assertNotIn("Banned", [r.name for r in rows])
+
+    def test_the_ranked_api_carries_the_figure_in_order(self):
+        self.prefer(funding_stage=["B"], work_location={"modes": ["hybrid"]})
+        self.company("Both", ("funding_round", "Series B"), ("rto_policy", "Hybrid"))
+        self.company("Neither")
+        self.client.force_login(self.user)
+        rows = self.client.get("/api/job-matches/ranked/").json()["organization_matches"]
+        self.assertEqual([r["name"] for r in rows], ["Both", "Neither"])
+        self.assertEqual(rows[0]["priorities_met"], {"met": 2, "counted": 2})
+        self.assertEqual(rows[0]["score"], 100.0)
+        self.assertEqual(rows[0]["fit_score"], 100.0)
+        self.assertEqual(rows[1]["priorities_met"], {"met": 0, "counted": 2})
+        self.assertEqual(rows[1]["score"], 0.0)
+
+    def test_the_ranked_api_null_figure_keeps_a_numeric_score(self):
+        self.prefer(compensation={"minimum_salary": 100000, "currency": "USD"})
+        self.company("Solo")
+        self.client.force_login(self.user)
+        row = self.client.get("/api/job-matches/ranked/").json()["organization_matches"][0]
+        self.assertIsNone(row["priorities_met"])
+        self.assertEqual(row["score"], 0.0)
+
+    def test_the_panel_row_and_the_company_view_print_the_same_figure(self):
+        self.prefer(funding_stage=["B"], work_location={"modes": ["remote"]})
+        acme = self.company("Acme", ("funding_round", "Series B"), ("rto_policy", "Hybrid"))
+        self.client.force_login(self.user)
+        row = self.client.get("/api/job-matches/ranked/").json()["organization_matches"][0]
+        view = self.client.get(f"/api/organizations/{acme.pk}/fit/").json()
+        self.assertEqual(row["priorities_met"], {"met": 1, "counted": 2})
+        self.assertEqual(row["priorities_met"], view["priorities_met"])
+
+    def test_the_assistant_tool_rows_carry_the_figure(self):
+        from crank.agents.job_search.tools import get_matches_for_user
+
+        self.prefer(funding_stage=["B"])
+        self.company("Tooled", ("funding_round", "Series B"))
+        rows = get_matches_for_user(self.user)["organization_matches"]
+        self.assertEqual(rows[0]["priorities_met"], {"met": 1, "counted": 1})
+        self.assertEqual(rows[0]["score"], 100.0)
+
+    def test_the_assistant_tool_tolerates_an_injected_row_without_the_figure(self):
+        from crank.agents.job_search.tools import get_matches_for_user
+
+        injected = SimpleNamespace(
+            organization_id=1, name="Injected", url="", funding_round="", rto_policy="",
+            score=1.0, fit_score=1.0, company_score=None, coverage=0.0, requirements=[],
+            unsupported=[], evidence_ids=[], reasons=[],
+        )
+        rows = get_matches_for_user(self.user, match_service=lambda user, limit: ([], [injected]))
+        self.assertIsNone(rows["organization_matches"][0]["priorities_met"])
 
 
 # ---------------------------------------------------------------------------

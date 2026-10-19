@@ -112,6 +112,8 @@ interface RankedJobMatch {
     revision?: RevisionBlock | null;
 }
 
+type PrioritiesMet = {met: number; counted: number};
+
 interface RankedOrgMatch {
     organization_id: number;
     name: string;
@@ -121,6 +123,7 @@ interface RankedOrgMatch {
     score: number;
     reasons: string[];
     fit_score?: number | null;
+    priorities_met?: PrioritiesMet | null;
     company_score?: number | null;
     coverage?: number;
     requirements?: RequirementOutcome[];
@@ -540,23 +543,33 @@ function requirementLabel(path: string): string {
     return REQUIREMENT_LABELS[path] || path.split('.').pop() || path;
 }
 
-/** Three separately labelled figures: company score (/5), fit (/100), and
+/** Three separately labelled figures: the first (fit, /100, on a job; the
+ * priorities met, "n of m", on a company: issue #584), company score (/5) and
  * coverage (%) (AC-10). Round-3: explicit scales so each number reads on its
  * own, and a three-column grid with legible xs labels + sm semibold values. */
-function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | undefined; company: number | null | undefined; coverage: number | null | undefined; scope: string}) {
+function ThreeFigures({fit, priorities, company, coverage, scope}: {fit?: number | null | undefined; priorities?: PrioritiesMet | null; company: number | null | undefined; coverage: number | null | undefined; scope: string}) {
     const covText = coverage == null ? '—' : `${Math.round(coverage * 100)}%`;
     const fitText = fit == null ? '—' : `${fit.toFixed(1)} / 100`;
+    const prioritiesText = priorities ? `${priorities.met} of ${priorities.counted}` : '—';
     const companyText = company == null ? '—' : `${company.toFixed(1)} / 5`;
+    const isCompanyRow = priorities !== undefined;
     return (
         <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
             <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label" title={MATCH_TERMS.companyScore.meaning}>{MATCH_TERMS.companyScore.label}</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
             </span>
-            <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label" title={MATCH_TERMS.fit.meaning}>{MATCH_TERMS.fit.label}</span>
-                <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
-            </span>
+            {isCompanyRow ? (
+                <span role="listitem" className="job-match-figure">
+                    <span className="job-match-figure-label" title={MATCH_TERMS.prioritiesMet.meaning}>{MATCH_TERMS.prioritiesMet.label}</span>
+                    <strong className="job-match-figure-value" data-testid={`${scope}-priorities-met`}>{prioritiesText}</strong>
+                </span>
+            ) : (
+                <span role="listitem" className="job-match-figure">
+                    <span className="job-match-figure-label" title={MATCH_TERMS.fit.meaning}>{MATCH_TERMS.fit.label}</span>
+                    <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
+                </span>
+            )}
             <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label" title={MATCH_TERMS.requirementCoverage.meaning}>{MATCH_TERMS.requirementCoverage.label}</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-coverage`}>{covText}</strong>
@@ -817,7 +830,7 @@ function MatchLegend() {
             <summary className="how-ranking-works-summary">What these labels mean</summary>
             <div className="how-ranking-works-content">
                 <dl className="ranking-definitions mb-0">
-                    {[MATCH_TERMS.companyScore, MATCH_TERMS.fit, MATCH_TERMS.requirementCoverage].map((term) => (
+                    {[MATCH_TERMS.companyScore, MATCH_TERMS.fit, MATCH_TERMS.prioritiesMet, MATCH_TERMS.requirementCoverage].map((term) => (
                         <React.Fragment key={term.label}>
                             <dt>{term.label}</dt>
                             <dd>{term.meaning}</dd>
@@ -1899,6 +1912,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     {orgs.length > 0 && (
                         <div data-testid="ranked-org-matches">
                             <h3 className="job-match-section-heading mb-2">Ranked Organizations</h3>
+                            <p className="text-muted small mb-2" data-testid="ranked-org-order-note">
+                                {orgs.some((org) => org.priorities_met)
+                                    ? 'Most priorities met first; the better-rated company goes first among equals.'
+                                    : 'None of your priorities can be decided from a fact about a company, so these are listed by rating.'}
+                            </p>
                             {orgs.map((org) => (
                                 <div key={org.organization_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-org-${org.organization_id}`}>
@@ -1927,7 +1945,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                             ))}
                                         </div>
                                     )}
-                                    <ThreeFigures scope={`org-${org.organization_id}`} fit={org.fit_score ?? org.score} company={org.company_score} coverage={org.coverage} />
+                                    <ThreeFigures scope={`org-${org.organization_id}`} priorities={org.priorities_met ?? null} company={org.company_score} coverage={org.coverage} />
                                     <RequirementChips requirements={org.requirements} canRecheck={canRecheck} />
                                     <SuggestCorrectionButton organizationId={org.organization_id} companyName={org.name} />
                                 </div>

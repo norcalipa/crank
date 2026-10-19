@@ -80,6 +80,8 @@ export const REQUIREMENT_MARKS: Record<'match' | 'mismatch' | 'unknown', Evidenc
 // Leads a chip whose stored outcome rests on evidence that has since changed.
 export const EVIDENCE_CHANGED_MARKER = '↻';
 
+// `prioritiesMet` is a count of the reader's own rows, so a company reads the
+// same in its own view and in the ranked list, which is ordered by it (#584).
 // Job-card terms that are not a fact status of their own: what a requirement
 // chip rests on, and the three figures. The cards, their legend and "How
 // ranking works" all read these (pinned by test_frontend_label_parity.py).
@@ -103,6 +105,10 @@ export const MATCH_TERMS: Record<string, {label: string; meaning: string}> = {
     fit: {
         label: 'Fit',
         meaning: 'Computed from your saved priorities and never mixed into the company score.',
+    },
+    prioritiesMet: {
+        label: 'Priorities met',
+        meaning: 'How many of your priorities that a fact about the company can decide are confirmed for you. Unknown rows, and rows whose fact covers only part of the company, count as not met; priorities checked for each job are not counted.',
     },
     requirementCoverage: {
         label: 'Requirement coverage',

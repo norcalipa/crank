@@ -5,6 +5,7 @@ import {cleanup, render, screen, fireEvent, waitFor, within} from '@testing-libr
 import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
+import {MATCH_TERMS} from './labels';
 import {act} from '@testing-library/react';
 import {
     closeAssistant, getWorkspaceSnapshot, openAssistant, resetPriorities, resetWorkspaceForTests,
@@ -67,7 +68,9 @@ const sampleOrgMatch = {
     url: 'https://acme.example.test',
     funding_round: 'P',
     rto_policy: 'R',
-    score: 72.3,
+    score: 50.0,
+    fit_score: 50.0,
+    priorities_met: {met: 1, counted: 2},
     reasons: ['Public company', 'Remote', 'Score 4.2'],
 };
 
@@ -265,7 +268,51 @@ describe('JobMatchPanel', () => {
             expect(screen.queryByTestId('job-score-42')).not.toBeInTheDocument();
             expect(screen.queryByTestId('org-score-7')).not.toBeInTheDocument();
             expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5 / 100');
-            expect(screen.getByTestId('org-7-fit-score')).toHaveTextContent('72.3 / 100');
+            expect(screen.getByTestId('org-7-priorities-met')).toHaveTextContent('1 of 2');
+            // A company has no "Fit x / 100": it prints the figure its own view prints.
+            expect(screen.queryByTestId('org-7-fit-score')).not.toBeInTheDocument();
+        });
+
+        test('a company row prints "Priorities met n of m" with its meaning, and a job row keeps its fit', async () => {
+            await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch], rankedOrgs: [sampleOrgMatch] });
+            const org = screen.getByTestId('ranked-org-7');
+            const label = within(org).getByText(MATCH_TERMS.prioritiesMet.label);
+            expect(label).toHaveAttribute('title', MATCH_TERMS.prioritiesMet.meaning);
+            expect(within(org).queryByText(MATCH_TERMS.fit.label)).toBeNull();
+            expect(org).not.toHaveTextContent('/ 100');
+            expect(within(screen.getByTestId('ranked-job-42')).getByText(MATCH_TERMS.fit.label)).toBeInTheDocument();
+        });
+
+        test('companies keep the server order, with the tie shown by the rating beside the figure', async () => {
+            const tied = (id: number, name: string, rating: number) => ({
+                ...sampleOrgMatch, organization_id: id, name, company_score: rating, priorities_met: {met: 1, counted: 2},
+            });
+            await renderPanel('ok', { count: 1, rankedOrgs: [
+                {...sampleOrgMatch, priorities_met: {met: 2, counted: 2}},
+                tied(8, 'Birch Labs', 4.6),
+                tied(9, 'Cedar Works', 3.2),
+            ] });
+            const cards = within(screen.getByTestId('ranked-org-matches')).getAllByTestId(/^ranked-org-\d+$/);
+            expect(cards.map((card) => card.getAttribute('data-testid'))).toEqual(['ranked-org-7', 'ranked-org-8', 'ranked-org-9']);
+            expect(screen.getByTestId('org-7-priorities-met')).toHaveTextContent('2 of 2');
+            expect(screen.getByTestId('org-8-priorities-met')).toHaveTextContent('1 of 2');
+            expect(screen.getByTestId('org-9-priorities-met')).toHaveTextContent('1 of 2');
+            expect(screen.getByTestId('org-8-company-score')).toHaveTextContent('4.6 / 5');
+            expect(screen.getByTestId('org-9-company-score')).toHaveTextContent('3.2 / 5');
+            expect(screen.getByTestId('ranked-org-order-note'))
+                .toHaveTextContent('Most priorities met first; the better-rated company goes first among equals.');
+        });
+
+        test('a reader with only per-job priorities sees "—" and is told why the order is by rating', async () => {
+            await renderPanel('ok', { count: 1, rankedOrgs: [{...sampleOrgMatch, priorities_met: null, score: 0}] });
+            expect(screen.getByTestId('org-7-priorities-met')).toHaveTextContent('—');
+            expect(screen.getByTestId('ranked-org-order-note'))
+                .toHaveTextContent('None of your priorities can be decided from a fact about a company, so these are listed by rating.');
+        });
+
+        test('an older server that sends no figure reads as "—"', async () => {
+            await renderPanel('ok', { count: 1, rankedOrgs: [{...sampleOrgMatch, priorities_met: undefined}] });
+            expect(screen.getByTestId('org-7-priorities-met')).toHaveTextContent('—');
         });
 
         test('shows remote badge for remote job listing (neutral, not semantic)', async () => {

@@ -29,7 +29,6 @@ from crank.agents.jobs.matching import (
     JobCriteria,
     MatchResult,
     RequirementOutcome,
-    _canonical_stage,
     _decimal,
     _normalized,
     _organization_value,
@@ -122,6 +121,9 @@ class OrgMatchResult:
     data_revision: int | None = None
     generated_at: Any | None = None
     stale: bool = False
+    # issue #584: the figure the list is ordered by, the same one the company
+    # view prints ({"met", "counted"}, or ``None`` when no priority applies).
+    priorities_met: dict[str, int] | None = None
 
     def revision(self) -> dict[str, Any]:
         return {
@@ -341,78 +343,6 @@ def organization_fit(user, organization: Any, config: RankingConfig = DEFAULT_CO
         generated_at=_iso_or_none(generated_at),
     )
     return base
-
-
-# ---------------------------------------------------------------------------
-# Organization scoring (independent of job listings)
-# ---------------------------------------------------------------------------
-
-
-def _score_organization_match(
-    organization: Any,
-    criteria: JobCriteria,
-    config: RankingConfig,
-) -> float:
-    """Score an organization independently of any specific listing."""
-    score = 0.0
-    max_score = float(config.max_score)
-
-    # Funding stage match (hard filter already applied, so just score)
-    funding = getattr(organization, "funding_round", None)
-    if funding and criteria.funding_stages:
-        normalized = _canonical_stage(funding)
-        wanted = frozenset(_canonical_stage(s) for s in criteria.funding_stages)
-        if normalized in wanted:
-            score += max_score * float(config.weights.get("funding_stage", 0.0))
-
-    # RTO / work location
-    rto = getattr(organization, "rto_policy", None)
-    if rto and criteria.work_modes:
-        mode_map = {"R": "remote", "H": "hybrid", "O": "in-office"}
-        mode = mode_map.get(rto, "")
-        if mode in criteria.work_modes:
-            score += max_score * float(config.weights.get("work_location", 0.0))
-
-    # Industry
-    org_industries = _strings_safe(getattr(organization, "industry", ""))
-    if org_industries and criteria.industries and (org_industries & criteria.industries):
-            score += max_score * float(config.weights.get("industry", 0.0))
-
-    # Organization scores
-    try:
-        scores = organization.avg_scores()
-        values: list[float] = []
-        for row in scores or ():
-            if isinstance(row, dict):
-                val = _decimal(row.get("avg_score", row.get("score")))
-                if val is not None:
-                    values.append(float(val))
-        if values:
-            avg = max(0.0, min(5.0, sum(values) / len(values)))
-            weight = float(config.weights.get("organization_scores", 0.0))
-            score += max_score * weight * (avg / 5.0)
-    except (AttributeError, TypeError, ValueError):
-        pass
-
-    # Vesting
-    has_vesting_pref = any(v is not None for v in (
-        criteria.prefer_accelerated,
-        criteria.max_cliff_months,
-        criteria.max_vesting_months,
-    ))
-    if has_vesting_pref:
-        checks: list[float] = []
-        if criteria.prefer_accelerated is not None:
-            accelerated = getattr(organization, "accelerated_vesting", None)
-            if isinstance(accelerated, bool):
-                checks.append(
-                    1.0 if accelerated == criteria.prefer_accelerated else 0.0
-                )
-        if checks:
-            weight = float(config.weights.get("vesting", 0.0))
-            score += max_score * weight * (sum(checks) / len(checks))
-
-    return round(min(max_score, score), 10)
 
 
 def _strings_safe(value: Any) -> frozenset[str]:
@@ -775,7 +705,8 @@ def match_organizations(
     1. Read preferences → JobCriteria.
     2. Query active, public organizations.
     3. Hard-filter (public-only, RTO ceiling, exclusions).
-    4. Score survivors.
+    4. Order survivors by the priorities they meet (the figure the company
+       view prints), then by the ratings average, then by id.
     5. Attach human-readable reasons.
     6. Return a bounded, stable-ordered list.
 
@@ -803,12 +734,14 @@ def match_organizations(
         org for org in orgs if not _org_excluded(org, criteria, evidence.get(int(org.pk)))
     ]
 
-    scored: list[tuple[float, int, OrgMatchResult]] = []
+    scored: list[tuple[int, float, int, OrgMatchResult]] = []
     for org in survivors:
         org_id = int(org.pk)
         outcomes = evaluate_org_requirements(org, criteria, evidence.get(org_id))
         org_evidence = evidence.get(org_id) or {}
-        score = _score_organization_match(org, criteria, config)
+        met = priorities_met(outcomes)
+        # Kept numeric: the assistant's rows cast ``score`` to a float.
+        score = round(100 * met["met"] / met["counted"], 1) if met else 0.0
         reasons = reasons_from_requirements(outcomes)
         company_score = _company_score(org)
         coverage_value = coverage(outcomes)
@@ -834,11 +767,19 @@ def match_organizations(
             data_revision=data_revisions.get(org_id),
             generated_at=generated_at,
             stale=False,
+            priorities_met=met,
         )
-        scored.append((score, org_id, result))
+        # Most confirmed priorities first; the ratings average breaks ties,
+        # unknown last; then the id keeps the order stable.
+        scored.append((
+            met["met"] if met else 0,
+            company_score if company_score is not None else -1.0,
+            org_id,
+            result,
+        ))
 
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [item[2] for item in scored[:capped]]
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    return [item[3] for item in scored[:capped]]
 
 
 def rank_listings_with_reasons(

@@ -144,9 +144,10 @@ const PANEL_RANKED_ORGS = [
         url: 'https://acme.example.test',
         funding_round: 'B',
         rto_policy: 'R',
-        score: 82.0,
+        score: 100.0,
         reasons: ['Series B', 'Remote'],
-        fit_score: 82.0,
+        fit_score: 100.0,
+        priorities_met: {met: 2, counted: 2},
         company_score: 4.1,
         coverage: 1.0,
         requirements: [
@@ -156,6 +157,56 @@ const PANEL_RANKED_ORGS = [
         unsupported: [],
         revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
     },
+];
+
+// Issue #584: the ranked list follows the "Priorities met" figure. Two
+// companies tie on 1 of 2; the better-rated one goes first.
+const PANEL_TIED_ORGS = [
+    PANEL_RANKED_ORGS[0],
+    {
+        organization_id: 8,
+        name: 'Birch Labs',
+        url: 'https://birch.example.test',
+        funding_round: 'B',
+        rto_policy: 'O',
+        score: 50.0,
+        reasons: ['Series B'],
+        fit_score: 50.0,
+        priorities_met: {met: 1, counted: 2},
+        company_score: 4.6,
+        coverage: 1.0,
+        requirements: [
+            {path: 'funding_stage', status: 'match', observed: 'B'},
+            {path: 'work_location.modes', status: 'mismatch', observed: 'in-office'},
+        ],
+        unsupported: [],
+        revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
+    },
+    {
+        organization_id: 9,
+        name: 'Cedar Works',
+        url: 'https://cedar.example.test',
+        funding_round: 'B',
+        rto_policy: 'O',
+        score: 50.0,
+        reasons: ['Remote'],
+        fit_score: 50.0,
+        priorities_met: {met: 1, counted: 2},
+        company_score: 3.2,
+        coverage: 1.0,
+        requirements: [
+            {path: 'funding_stage', status: 'unknown', observed: null},
+            {path: 'work_location.modes', status: 'match', observed: 'remote'},
+        ],
+        unsupported: [],
+        revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
+    },
+];
+
+// A reader whose priorities are all checked for each job: no company has a figure.
+const PANEL_PER_JOB_ORGS = [
+    {...PANEL_RANKED_ORGS[0], score: 0.0, fit_score: 0.0, priorities_met: null, coverage: 0.0, requirements: []},
+    {...PANEL_TIED_ORGS[1], score: 0.0, fit_score: 0.0, priorities_met: null, coverage: 0.0, requirements: []},
 ];
 
 function stubPanelApis(stateKey: string): void {
@@ -175,12 +226,16 @@ function stubPanelApis(stateKey: string): void {
     }
     const status = stateKey === 'stale'
         ? PANEL_STATUS_PAYLOADS.healthy
-        : (PANEL_STATUS_PAYLOADS[stateKey] || PANEL_STATUS_PAYLOADS.no_matches);
+        : stateKey === 'org_ties' || stateKey === 'org_per_job_only'
+            ? PANEL_STATUS_PAYLOADS.healthy
+            : (PANEL_STATUS_PAYLOADS[stateKey] || PANEL_STATUS_PAYLOADS.no_matches);
     const withResults = (
         stateKey === 'refreshing_with_results'
         || stateKey === 'partial_coverage'
         || stateKey === 'healthy'
         || stateKey === 'stale'
+        || stateKey === 'org_ties'
+        || stateKey === 'org_per_job_only'
     );
     const isStale = stateKey === 'stale';
     window.fetch = ((input: RequestInfo | URL): Promise<Response> => {
@@ -198,7 +253,8 @@ function stubPanelApis(stateKey: string): void {
             )) : [];
             return json({
                 job_matches: jobs,
-                organization_matches: withResults ? PANEL_RANKED_ORGS : [],
+                organization_matches: !withResults ? [] : stateKey === 'org_ties' ? PANEL_TIED_ORGS
+                    : stateKey === 'org_per_job_only' ? PANEL_PER_JOB_ORGS : PANEL_RANKED_ORGS,
             });
         }
         // Nothing to poll in the fixture (issue #485): the panel never asks twice.

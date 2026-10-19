@@ -140,11 +140,7 @@ function evidenceText(requirement: FitRequirement): string | null {
 // The first figure is a count of the rows below: how many of the reader's
 // priorities that a fact about the company can decide are confirmed met. The
 // server decides which priorities those are (`counted` on each row).
-export const PRIORITIES_MET_TERM = {
-    label: 'Priorities met',
-    meaning: 'How many of your priorities that a fact about the company can decide are confirmed for you. Unknown rows, '
-        + 'and rows whose fact covers only part of the company, count as not met; priorities checked for each job are not counted.',
-};
+export const PRIORITIES_MET_TERM = MATCH_TERMS.prioritiesMet;
 export const PRIORITIES_NONE_TEXT = 'No priority in the rows below can be decided from a fact about a company; '
     + 'each is checked for each job.';
 // Beside a count, the priorities it leaves out, so "of 3" can be checked against five rows without the legend.
