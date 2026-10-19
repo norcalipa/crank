@@ -1541,6 +1541,70 @@ body.app-nav-drawer-open {
     white-space: nowrap;
 }
 
+/* "Updated results available" on the company rankings (issue #485, 485c):
+   the notice sits between the toolbar and the list, the sentence takes the
+   free width, and the button keeps its label on one line and a 44px target
+   from 320px up (the notice stacks under 576px). */
+.rankings-updated-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+    margin-bottom: 1rem;
+}
+
+.rankings-updated-notice .rankings-updated-text {
+    flex: 1 1 14rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.rankings-updated-notice .rankings-updated-refresh {
+    white-space: nowrap;
+    min-height: 44px;
+    min-width: 8.5rem; /* the busy spinner does not widen it */
+}
+
+/* A failed refresh replaces the sentence and reads as a problem. */
+.rankings-updated-notice .rankings-updated-error {
+    color: var(--bs-danger-text-emphasis);
+}
+
+/* The heading takes focus after a refresh when no row was held; the ring
+   hugs the title instead of spanning the column. */
+#rankings-heading {
+    width: fit-content;
+}
+
+/* On phones the "Updated" mark sits in the line the toolbar reserves under
+   the count whenever that line is empty, so its arrival and departure move
+   nothing however long the count is; with a label error in that line (or
+   the loading line, while the labels are still loading) it follows the
+   count instead of hiding under the alert: the `:empty` gate falls back
+   whenever the status slot holds anything. */
+.organization-results-count {
+    position: relative;
+}
+
+@media (max-width: 575.98px) {
+    .rankings-toolbar-count:has(> .choices-status-slot:empty) .organization-results-count .badge {
+        position: absolute;
+        left: 0;
+        top: calc(100% + 0.125rem);
+        margin-left: 0 !important;
+    }
+}
+
+#rankings-heading:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
+.rankings-updated-notice .rankings-updated-refresh[aria-disabled="true"] {
+    cursor: progress;
+}
+
 /* Job-search result cards (issue #396) */
 .job-card, .org-card {
     box-sizing: border-box;

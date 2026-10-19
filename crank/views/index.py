@@ -1,11 +1,15 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+import hashlib
+import json
 import os
+from decimal import ROUND_HALF_UP, Decimal
 
 import markdown
 from django.db import connection
 from django.views import generic
 from django.core.cache import cache
+from django.core.serializers.json import DjangoJSONEncoder
 from django.conf import settings
 from crank.auth import sign_in_url
 from crank.models.score import ScoreAlgorithm, ScoreType
@@ -54,6 +58,131 @@ def freshness_windows():
     for key, label in CompanyFieldEvidence.FieldKey.choices:
         by_days.setdefault(FIELD_FRESHNESS_POLICY.get(key, DEFAULT_FRESHNESS_DAYS), []).append(str(label))
     return [{'days': days, 'fields': _join_labels(by_days[days])} for days in sorted(by_days)]
+
+
+def _fetch_ranking_rows(algorithm_id):
+    # Active-read predicates mirror the single documented definition in
+    # crank.services.scores.active_score_summary_rows: only active score
+    # rows (cs.status = 1), of active score types (ct.status = 1),
+    # joined through active algorithm weights (cw.status = 1) -- an
+    # inactive weight row would otherwise duplicate the join and skew
+    # the weighted SUM. Raw SQL cannot call the ORM helper without a
+    # rewrite, so keep this predicate set in sync with it.
+    #
+    # Missing dimensions: profile_completeness counts active types
+    # with at least one active score (numerator) over ALL active
+    # types (denominator), so an active type with no active score
+    # counts as a missing dimension and completeness stays <= 100.
+    query = '''
+    SELECT id, name, type, rto_policy, funding_round, accelerated_vesting, avg_score, profile_completeness, RANK() OVER (ORDER BY avg_score desc) as ranking
+    FROM (
+        SELECT orgs.id, orgs.name, orgs.type, orgs.rto_policy, orgs.funding_round, orgs.accelerated_vesting,
+               SUM(orgs.avg_type_score * orgs.weight) / SUM(orgs.weight) AS avg_score,
+               (CAST(score_types.score_type_count AS REAL) / (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
+        FROM (
+            SELECT co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting,
+                   AVG(cs.score) AS avg_type_score, cw.weight, ct.name AS score_type
+            FROM crank_organization AS co
+            JOIN crank_score AS cs ON co.id = cs.target_id
+            JOIN crank_scoretype AS ct ON cs.type_id = ct.id
+            JOIN crank_scorealgorithmweight AS cw ON cs.type_id = cw.type_id
+            WHERE co.status = 1 AND cs.status = 1 AND ct.status = 1 AND cw.status = 1 AND cw.algorithm_id = %s
+            GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, cw.weight, ct.name
+        ) orgs
+        JOIN (
+            SELECT target_id, count(*) AS score_type_count
+            FROM (
+                SELECT cs2.target_id, cs2.type_id, COUNT(cs2.type_id)
+                FROM crank_score AS cs2
+                JOIN crank_scoretype AS ct2 ON cs2.type_id = ct2.id
+                WHERE cs2.status = 1 AND ct2.status = 1
+                GROUP BY cs2.target_id, cs2.type_id
+            ) score_counts
+            GROUP BY score_counts.target_id
+        ) score_types ON score_types.target_id = orgs.id
+        GROUP BY id, name, type, rto_policy, funding_round, accelerated_vesting
+    ) scored_results
+    ORDER BY ranking, id
+    '''
+
+    with connection.cursor() as cursor:
+        cursor.execute(query, [algorithm_id])
+        columns = [col[0] for col in cursor.description]
+        object_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    # Trust signals ride the cached page payload: three extra queries
+    # per uncached build (active score types, accepted evidence, open
+    # claims), never one per row.
+    total_dimensions = ScoreType.objects.filter(status=1).count()
+    summaries = evidence_summaries_for_orgs([row['id'] for row in object_list])
+    for row in object_list:
+        row['rating_dimensions_total'] = total_dimensions
+        row['rating_dimensions_covered'] = round(
+            (row['profile_completeness'] or 0) * total_dimensions / 100
+        )
+        row['evidence'] = summaries[row['id']]
+
+    return object_list
+
+
+def ranking_rows(algorithm_id):
+    """The cached ranking rows for ``algorithm_id``.
+
+    The one read behind the page's embedded list and the ``/api/rankings/``
+    endpoints (issue #485), so they can never disagree. Cached under the
+    result key score publication clears (``algorithm_results_cache_key``).
+    """
+    return cache.get_or_set(
+        algorithm_results_cache_key(algorithm_id), lambda: _fetch_ranking_rows(algorithm_id),
+        timeout=settings.CACHE_MIDDLEWARE_SECONDS)
+
+
+def _shown_score(score):
+    """A score as the list prints it: ``toFixed(2)`` rounds the exact binary value, ties up."""
+    if score is None:
+        return None
+    return str(Decimal(score).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+
+def _shown(row):
+    """What one ranking row puts on screen, and nothing it keeps out of sight."""
+    evidence = row['evidence']
+    verified_at = evidence['last_verified_at']
+    return {
+        'id': row['id'],
+        'name': row['name'],
+        'ranking': row['ranking'],
+        'avg_score': _shown_score(row['avg_score']),
+        'rto_policy': row['rto_policy'],
+        'funding_round': row['funding_round'],
+        'accelerated_vesting': row['accelerated_vesting'],
+        'rating_dimensions_covered': row['rating_dimensions_covered'],
+        'rating_dimensions_total': row['rating_dimensions_total'],
+        'verified': evidence['verified'],
+        'stale': evidence['stale'],
+        'unknown': evidence['unknown'],
+        'has_pending_review': evidence['pending_review'] > 0,
+        'verified_on': str(verified_at)[:10] if verified_at else None,
+    }
+
+
+def rankings_revision(rows):
+    """Sixteen hex characters naming exactly what the rankings show (issue #485).
+
+    A digest of a projection of the rows in their order (``ORDER BY ranking,
+    id`` makes the order a fact of the query): the fields a row renders, at
+    the precision it renders them (score to two places, rounded as the client's
+    ``toFixed(2)`` does, ties up; the verification day in UTC, which is the day
+    the list prints for every reader; open claims as a badge). Computed when the list is
+    read, so the cache key, its value and the invalidation paths stay as they
+    were. A rebuild with identical content, or a change the list does not
+    show (a same-day re-verification, a second open claim, a score drifting
+    below 0.005), gives the identical revision, so no notice announces
+    nothing; a change to anything a reader can see does.
+    """
+    canonical = json.dumps(
+        [_shown(row) for row in rows], cls=DjangoJSONEncoder, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]
 
 
 class IndexView(generic.ListView):
@@ -114,71 +243,7 @@ class IndexView(generic.ListView):
             self.object_list = []
             return self.object_list
 
-        def fetch_results():
-            # Active-read predicates mirror the single documented definition in
-            # crank.services.scores.active_score_summary_rows: only active score
-            # rows (cs.status = 1), of active score types (ct.status = 1),
-            # joined through active algorithm weights (cw.status = 1) -- an
-            # inactive weight row would otherwise duplicate the join and skew
-            # the weighted SUM. Raw SQL cannot call the ORM helper without a
-            # rewrite, so keep this predicate set in sync with it.
-            #
-            # Missing dimensions: profile_completeness counts active types
-            # with at least one active score (numerator) over ALL active
-            # types (denominator), so an active type with no active score
-            # counts as a missing dimension and completeness stays <= 100.
-            query = '''
-            SELECT id, name, type, rto_policy, funding_round, accelerated_vesting, avg_score, profile_completeness, RANK() OVER (ORDER BY avg_score desc) as ranking
-            FROM (
-                SELECT orgs.id, orgs.name, orgs.type, orgs.rto_policy, orgs.funding_round, orgs.accelerated_vesting, 
-                       SUM(orgs.avg_type_score * orgs.weight) / SUM(orgs.weight) AS avg_score,
-                       (CAST(score_types.score_type_count AS REAL) / (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
-                FROM (
-                    SELECT co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, 
-                           AVG(cs.score) AS avg_type_score, cw.weight, ct.name AS score_type
-                    FROM crank_organization AS co
-                    JOIN crank_score AS cs ON co.id = cs.target_id
-                    JOIN crank_scoretype AS ct ON cs.type_id = ct.id
-                    JOIN crank_scorealgorithmweight AS cw ON cs.type_id = cw.type_id
-                    WHERE co.status = 1 AND cs.status = 1 AND ct.status = 1 AND cw.status = 1 AND cw.algorithm_id = %s
-                    GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, cw.weight, ct.name
-                ) orgs
-                JOIN (
-                    SELECT target_id, count(*) AS score_type_count
-                    FROM (
-                        SELECT cs2.target_id, cs2.type_id, COUNT(cs2.type_id)
-                        FROM crank_score AS cs2
-                        JOIN crank_scoretype AS ct2 ON cs2.type_id = ct2.id
-                        WHERE cs2.status = 1 AND ct2.status = 1
-                        GROUP BY cs2.target_id, cs2.type_id
-                    ) score_counts
-                    GROUP BY score_counts.target_id
-                ) score_types ON score_types.target_id = orgs.id
-                GROUP BY id, name, type, rto_policy, funding_round, accelerated_vesting
-            ) scored_results
-            '''
-
-            with connection.cursor() as cursor:
-                cursor.execute(query, [self.algorithm_id])
-                columns = [col[0] for col in cursor.description]
-                object_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
-
-            # Trust signals ride the cached page payload: three extra queries
-            # per uncached build (active score types, accepted evidence, open
-            # claims), never one per row.
-            total_dimensions = ScoreType.objects.filter(status=1).count()
-            summaries = evidence_summaries_for_orgs([row['id'] for row in object_list])
-            for row in object_list:
-                row['rating_dimensions_total'] = total_dimensions
-                row['rating_dimensions_covered'] = round(
-                    (row['profile_completeness'] or 0) * total_dimensions / 100
-                )
-                row['evidence'] = summaries[row['id']]
-
-            return object_list
-
-        cache_key = algorithm_results_cache_key(self.algorithm_id)
-        self.object_list = cache.get_or_set(cache_key, fetch_results, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
+        self.object_list = ranking_rows(self.algorithm_id)
         return self.object_list
 
     def get_context_data(self, **kwargs):
@@ -201,6 +266,7 @@ class IndexView(generic.ListView):
             initial={'accelerated_vesting': self.request.session.get('accelerated_vesting')}, request=self.request)
 
         context['top_organization_list'] = list(self.object_list)
+        context['rankings_revision'] = rankings_revision(context['top_organization_list'])
 
         # The /algo/<id>/ route is full-page cached and shared across every
         # account (issue #470): its shell renders auth-neutral (nav auth
