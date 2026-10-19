@@ -1915,7 +1915,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                             <p className="text-muted small mb-2" data-testid="ranked-org-order-note">
                                 {orgs.some((org) => org.priorities_met)
                                     ? 'Most priorities met first; the better-rated company goes first among equals.'
-                                    : 'None of your priorities can be decided from a fact about a company, so these are listed by rating.'}
+                                    : 'No company figure applies to your priorities, so these are listed by rating.'}
                             </p>
                             {orgs.map((org) => (
                                 <div key={org.organization_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"

@@ -410,6 +410,30 @@ test.describe('integrated suggest-company entry points (issue #471)', () => {
     });
 });
 
+test.describe('ranked organizations follow the priorities met (issue #584)', () => {
+    const PANEL_FIXTURE = '/e2e/fixtures/job-match-panel.html';
+
+    test('rows print "n of m" in the server order, a tie shows its rating, and nothing reads "/ 100"', async ({page}) => {
+        await page.goto(`${PANEL_FIXTURE}?state=org_ties`);
+        const orgs = page.getByTestId('ranked-org-matches');
+        await expect(orgs.locator('.job-match-card')).toHaveCount(3);
+        await expect(orgs.locator('.job-match-name')).toHaveText(['Acme Corp', 'Birch Labs', 'Cedar Works']);
+        await expect(page.getByTestId('org-7-priorities-met')).toHaveText('2 of 2');
+        await expect(page.getByTestId('org-8-priorities-met')).toHaveText('1 of 2');
+        await expect(page.getByTestId('org-9-priorities-met')).toHaveText('1 of 2');
+        await expect(page.getByTestId('org-8-company-score')).toHaveText('4.6 / 5');
+        await expect(page.getByTestId('org-9-company-score')).toHaveText('3.2 / 5');
+        await expect(orgs).not.toContainText('/ 100');
+        await expect(page.getByTestId('ranked-job-matches')).toContainText('/ 100');
+    });
+
+    test('a reader with only per-job priorities sees a dash and the reason for the order', async ({page}) => {
+        await page.goto(`${PANEL_FIXTURE}?state=org_per_job_only`);
+        await expect(page.getByTestId('org-7-priorities-met')).toHaveText('—');
+        await expect(page.getByTestId('ranked-org-order-note')).toContainText('listed by rating');
+    });
+});
+
 test.describe('200% zoom', () => {
     test.skip(({browserName}) => browserName !== 'chromium', 'page-scale zoom emulation is Chromium-only');
 

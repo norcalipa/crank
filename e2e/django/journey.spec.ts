@@ -101,4 +101,16 @@ test.describe.serial('priorities → companies → evidence → jobs journey', (
         await expect(ranked.getByTestId(/job-\d+-fit-score/).first()).toContainText('/ 100');
         await expect(ranked.getByTestId(/job-\d+-coverage/).first()).toContainText('%');
     });
+
+    test('ranked organizations print "Priorities met n of m", never a fit out of 100', async ({page}) => {
+        await login(page);
+        await page.goto('/chat/');
+        const orgs = page.getByTestId('ranked-org-matches');
+        await expect(orgs).toBeVisible();
+        const figures = orgs.getByTestId(/org-\d+-priorities-met/);
+        await expect(figures.first()).toHaveText(/^(\d+ of \d+|—)$/);
+        await expect(orgs.locator('.job-match-figure-label', {hasText: 'Priorities met'}).first()).toBeVisible();
+        await expect(orgs.getByTestId(/org-\d+-fit-score/)).toHaveCount(0);
+        await expect(orgs).not.toContainText('/ 100');
+    });
 });

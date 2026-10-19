@@ -307,7 +307,7 @@ describe('JobMatchPanel', () => {
             await renderPanel('ok', { count: 1, rankedOrgs: [{...sampleOrgMatch, priorities_met: null, score: 0}] });
             expect(screen.getByTestId('org-7-priorities-met')).toHaveTextContent('—');
             expect(screen.getByTestId('ranked-org-order-note'))
-                .toHaveTextContent('None of your priorities can be decided from a fact about a company, so these are listed by rating.');
+                .toHaveTextContent('No company figure applies to your priorities, so these are listed by rating.');
         });
 
         test('an older server that sends no figure reads as "—"', async () => {
