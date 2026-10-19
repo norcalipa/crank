@@ -445,7 +445,7 @@ test.describe('ranked organizations follow the priorities met (issue #584)', () 
     test('a reader with only per-job priorities sees a dash and the reason for the order', async ({page}) => {
         await page.goto(`${PANEL_FIXTURE}?state=org_per_job_only`);
         await expect(page.getByTestId('org-7-priorities-met')).toHaveText('—');
-        await expect(page.getByTestId('ranked-org-order-note')).toContainText('companies are listed by rating');
+        await expect(page.getByTestId('ranked-org-order-note')).toContainText('companies are listed by average rating');
     });
 });
 

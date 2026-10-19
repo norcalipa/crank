@@ -547,11 +547,16 @@ function requirementLabel(path: string): string {
 
 /** The list's one-line account of its order (issue #584). The priorities left
  * out of "Priorities met" are the reader's own, so they are named once here,
- * not on every row. */
-function orgOrderNote(orgs: RankedOrgMatch[]): string {
+ * not on every row. An older server sends no figure at all, and then no
+ * claim is made about the order. */
+function orgOrderNote(orgs: RankedOrgMatch[]): string | null {
+    if (orgs.every((org) => org.priorities_met === undefined)) return null;
     const counted = orgs.find((org) => org.priorities_met);
     if (!counted) {
-        return 'None of your priorities can be decided from a fact about a company, so companies are listed by rating.';
+        const perJob = orgs.some((org) => (org.requirements ?? []).some((r) => r.counted === false));
+        return perJob
+            ? 'None of your priorities can be decided from a fact about a company, so companies are listed by average rating.'
+            : 'Companies are listed by average rating.';
     }
     const names = (counted.requirements ?? []).filter((r) => r.counted === false).map((r) => requirementLabel(r.path));
     const order = 'Most priorities met first, then the higher average rating.';
@@ -1861,6 +1866,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     if (hasRankedMatches) {
         const jobs = rankedMatches!.job_matches || [];
         const orgs = rankedMatches!.organization_matches || [];
+        const orderNote = orgOrderNote(orgs);
         // One consolidated stale flag and one generated-at timestamp for the
         // whole result set (a single computation stamps every row).
         const staleResults = [...jobs, ...orgs].some((m) => m.revision?.stale);
@@ -1944,9 +1950,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     {orgs.length > 0 && (
                         <div data-testid="ranked-org-matches">
                             <h3 className="job-match-section-heading mb-2">Ranked Organizations</h3>
-                            <p className="text-muted small mb-2" data-testid="ranked-org-order-note">
-                                {orgOrderNote(orgs)}
-                            </p>
+                            {orderNote && (
+                                <p className="text-muted small mb-2" data-testid="ranked-org-order-note">
+                                    {orderNote}
+                                </p>
+                            )}
                             {orgs.map((org) => (
                                 <div key={org.organization_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-org-${org.organization_id}`}>

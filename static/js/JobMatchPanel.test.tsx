@@ -365,20 +365,33 @@ describe('JobMatchPanel', () => {
             expect(definition(MATCH_TERMS.averageRating.label)?.textContent).toBe(MATCH_TERMS.averageRating.meaning);
             expect(within(legend).queryByText(/Company score/)).toBeNull();
             expect(definition(MATCH_TERMS.fit.label)).toHaveTextContent(`On job rows. ${MATCH_TERMS.fit.meaning}`);
+            expect(MATCH_TERMS.fit.meaning).toBe('Computed from your saved priorities and never mixed into any company rating.');
             expect(definition(MATCH_TERMS.prioritiesMet.label)).toHaveTextContent(`On company rows. ${MATCH_TERMS.prioritiesMet.meaning}`);
             expect(definition(MATCH_TERMS.requirementCoverage.label)).toHaveTextContent(MATCH_TERMS.requirementCoverage.meaning);
         });
 
-        test('a reader with only per-job priorities sees "—" and is told why the order is by rating', async () => {
-            await renderPanel('ok', { count: 1, rankedOrgs: [{...sampleOrgMatch, priorities_met: null, score: 0}] });
+        test('a reader whose priorities are all checked for each job sees "—" and is told why the order is by average rating', async () => {
+            await renderPanel('ok', { count: 1, rankedOrgs: [{
+                ...sampleOrgMatch, priorities_met: null, score: 0,
+                requirements: [{path: 'industry', status: 'unknown', observed: null, counted: false}],
+            }] });
             expect(screen.getByTestId('org-7-priorities-met')).toHaveTextContent('—');
             expect(screen.getByTestId('ranked-org-order-note'))
-                .toHaveTextContent('None of your priorities can be decided from a fact about a company, so companies are listed by rating.');
+                .toHaveTextContent('None of your priorities can be decided from a fact about a company, so companies are listed by average rating.');
         });
 
-        test('an older server that sends no figure reads as "—"', async () => {
-            await renderPanel('ok', { count: 1, rankedOrgs: [{...sampleOrgMatch, priorities_met: undefined}] });
+        test('a reader with no company-decidable rows at all is not told a per-job reason', async () => {
+            await renderPanel('ok', { count: 1, rankedOrgs: [{...sampleOrgMatch, priorities_met: null, score: 0, requirements: []}] });
+            const note = screen.getByTestId('ranked-org-order-note');
+            expect(note).toHaveTextContent('Companies are listed by average rating.');
+            expect(note.textContent).not.toMatch(/None of your priorities/);
+        });
+
+        test('an older server that sends no figure reads as "—" and the list makes no claim about its order', async () => {
+            const {priorities_met: _omitted, ...withoutFigure} = sampleOrgMatch;
+            await renderPanel('ok', { count: 1, rankedOrgs: [withoutFigure as typeof sampleOrgMatch, {...withoutFigure, organization_id: 8, name: 'Birch Labs'} as typeof sampleOrgMatch] });
             expect(screen.getByTestId('org-7-priorities-met')).toHaveTextContent('—');
+            expect(screen.queryByTestId('ranked-org-order-note')).toBeNull();
         });
 
         test('shows remote badge for remote job listing (neutral, not semantic)', async () => {

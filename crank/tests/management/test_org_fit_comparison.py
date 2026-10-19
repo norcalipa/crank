@@ -71,6 +71,31 @@ class OrgFitComparisonTests(TestCase):
         per_job = text.split("profile=per-job-priorities-only")[1].split("profile=")[0]
         self.assertIn("priorities_met=-", per_job)
 
+    def test_an_old_number_one_that_leaves_the_list_counts_as_a_fall(self):
+        # Carried by a 5.0 rating under the old score (old #1); in-office, so it misses a remote-only
+        # reader's priority and ranks 27th of 27 under the new order, outside the 25 rows the list shows.
+        star = Organization.objects.create(name="Star", rto_policy="O", funding_round="A", public=True, status=1)
+        for n in range(26):
+            Organization.objects.create(name=f"Remote{n:02d}", rto_policy="R", funding_round="A", public=True, status=1)
+        with mock.patch(
+            "crank.services.job_matching._company_score",
+            side_effect=lambda o: 5.0 if o.pk == star.pk else None,
+        ):
+            text = run()
+        block = text.split("profile=remote-only")[1].split("profile=")[0]
+        old_part, new_part = block.split("new top 10:")
+        self.assertIn("1. Star", old_part)
+        self.assertNotIn("Star", new_part.split("old_top10_still")[0])
+        self.assertIn("survivors=27", block)
+        self.assertIn("old_top10_still_in_new_top10=9 of 10", block)
+        self.assertIn("largest_fall=26 (Star)", block)
+        self.assertIn("left_the_25_row_list=1 ", block)
+
+    def test_the_header_says_the_ratings_cache_is_filled(self):
+        text = run()
+        self.assertIn("no rows written; ratings cache filled", text)
+        self.assertNotIn("nothing written", text)
+
     def test_the_exclusion_profile_drops_the_first_company(self):
         Organization.objects.create(name="Dropped", public=True, status=1)
         Organization.objects.create(name="Kept", public=True, status=1)

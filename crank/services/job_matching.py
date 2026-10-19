@@ -692,6 +692,11 @@ def match_jobs(
     return ranked[:capped]
 
 
+def org_sort_key(met: dict[str, int] | None, company_score: float | None, org_id: int) -> tuple[int, float, int]:
+    """The ranked company list's order: priorities met, then the ratings average (unknown last), then id."""
+    return (-(met["met"] if met else 0), -(company_score if company_score is not None else -1.0), org_id)
+
+
 def match_organizations(
     user,
     *,
@@ -773,15 +778,10 @@ def match_organizations(
         )
         # Most confirmed priorities first; the ratings average breaks ties,
         # unknown last; then the id keeps the order stable.
-        scored.append((
-            met["met"] if met else 0,
-            company_score if company_score is not None else -1.0,
-            org_id,
-            result,
-        ))
+        scored.append((org_sort_key(met, company_score, org_id), result))
 
-    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
-    return [item[3] for item in scored[:capped]]
+    scored.sort(key=lambda item: item[0])
+    return [item[1] for item in scored[:capped]]
 
 
 def rank_listings_with_reasons(

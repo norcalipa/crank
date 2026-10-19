@@ -108,7 +108,7 @@ test.describe.serial('priorities → companies → evidence → jobs journey', (
         const orgs = page.getByTestId('ranked-org-matches');
         await expect(orgs).toBeVisible();
         const figures = orgs.getByTestId(/org-\d+-priorities-met/);
-        await expect(figures.first()).toHaveText(/^(\d+ of \d+|—)$/);
+        await expect(figures.first()).toHaveText(/^\d+ of 1$/);
         await expect(orgs.locator('.job-match-figure-label', {hasText: 'Priorities met'}).first()).toBeVisible();
         await expect(orgs.getByTestId(/org-\d+-fit-score/)).toHaveCount(0);
         await expect(orgs).not.toContainText('/ 100');

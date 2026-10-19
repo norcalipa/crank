@@ -6,11 +6,18 @@ For ten synthetic reader profiles defined below, over the active public
 organizations in the current database, it prints the order the ranked list had
 before ("old": the removed factor-weighted score) and the order it has now
 ("new": confirmed company-level priorities, "n of m", then the ratings
-average, then the organization id). It also prints how many of the old top 10
-stay in the new top 10 and the largest rise and fall in rank.
+average, then the organization id). Both orders are ranked over every company
+that survives the hard filter, so a company that leaves the 25-row list counts
+as a fall. It prints how many of the old top 10 stay in the new top 10, the
+largest rise and fall in rank, and how many companies enter or leave the list.
+
+It describes the assistant's list (25 rows from the first 100 candidates). The
+job-match panel reads fewer rows from a smaller candidate window, so its list
+can differ when more than 40 companies are active and public.
 
 The profiles are synthetic documents held in this module. No user's
-preferences are read, nothing is written and no telemetry is recorded. The
+preferences are read, no row is written and no telemetry is recorded (the
+shared ratings-average cache is filled as a side effect of reading ratings). The
 "old" arithmetic is a frozen copy of the scorer this change removed, kept here
 only so the two orders can be put side by side.
 """
@@ -96,8 +103,7 @@ def old_score(organization: Any, criteria: JobCriteria) -> float:
     return round(min(max_score, score), 10)
 
 
-def _figure(row: Any) -> str:
-    met = row.priorities_met
+def _figure(met: Any) -> str:
     return f"{met['met']} of {met['counted']}" if met else "-"
 
 
@@ -110,7 +116,7 @@ class Command(BaseCommand):
         # The same candidate window the ranked list reads.
         organizations = list(Organization.objects.filter(status=1, public=True)[: cap * 4])
         evidence = job_matching._resolve_evidence([int(o.pk) for o in organizations])
-        out("org_fit_comparison (read-only; synthetic readers; no user data read; nothing written)")
+        out("org_fit_comparison (read-only; synthetic readers; no user data read; no rows written; ratings cache filled)")
         out(f"organizations={len(organizations)}")
         first = organizations[0].name if organizations else ""
         for name, document in synthetic_profiles(first):
@@ -120,13 +126,23 @@ class Command(BaseCommand):
                 if not job_matching._org_excluded(o, criteria, evidence.get(int(o.pk)))
             ]
             old = sorted(((old_score(o, criteria), int(o.pk), o.name) for o in survivors), key=lambda t: (-t[0], t[1]))
-            new = job_matching.match_organizations(
-                None, limit=cap, queryset=organizations, preferences_override=document
+            met = {
+                int(o.pk): job_matching.priorities_met(
+                    job_matching.evaluate_org_requirements(o, criteria, evidence.get(int(o.pk)))
+                )
+                for o in survivors
+            }
+            # The list's own key, over every survivor (not only the 25 rows it shows).
+            new = sorted(
+                (job_matching.org_sort_key(met[int(o.pk)], job_matching._company_score(o), int(o.pk)), o.name)
+                for o in survivors
             )
-            old_rank = {pk: i for i, (_, pk, _name) in enumerate(old[:cap])}
-            new_rank = {r.organization_id: i for i, r in enumerate(new)}
-            kept = len({pk for _, pk, _n in old[:TOP]} & {r.organization_id for r in new[:TOP]})
-            moves = [(old_rank[pk] - new_rank[pk], pk) for pk in new_rank if pk in old_rank]
+            new = [(key[2], name) for key, name in new]
+            old_rank = {pk: i for i, (_, pk, _name) in enumerate(old)}
+            new_rank = {pk: i for i, (pk, _name) in enumerate(new)}
+            kept = len({pk for _, pk, _n in old[:TOP]} & {pk for pk, _n in new[:TOP]})
+            left = len({pk for _, pk, _n in old[:cap]} - {pk for pk, _n in new[:cap]})
+            moves = [(old_rank[pk] - new_rank[pk], pk) for pk in new_rank]
             names = {int(o.pk): o.name for o in organizations}
             rise = max(moves, default=(0, None))
             fall = min(moves, default=(0, None))
@@ -136,8 +152,8 @@ class Command(BaseCommand):
             for i, (score, _pk, org_name) in enumerate(old[:TOP], 1):
                 out(f"    {i:>2}. {org_name} score={score:.1f}")
             out("  new top 10:")
-            for i, row in enumerate(new[:TOP], 1):
-                out(f"    {i:>2}. {row.name} priorities_met={_figure(row)}")
+            for i, (pk, org_name) in enumerate(new[:TOP], 1):
+                out(f"    {i:>2}. {org_name} priorities_met={_figure(met[pk])}")
             out(f"  old_top10_still_in_new_top10={kept} of {min(TOP, len(old))}")
             out(
                 f"  largest_rise={max(rise[0], 0)}"
@@ -145,3 +161,4 @@ class Command(BaseCommand):
                 + f" largest_fall={max(-fall[0], 0)}"
                 + (f" ({names[fall[1]]})" if fall[0] < 0 else "")
             )
+            out(f"  left_the_{cap}_row_list={left} (they rank below {cap} under the new order)")

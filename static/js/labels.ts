@@ -100,7 +100,7 @@ export const MATCH_TERMS: Record<string, {label: string; meaning: string}> = {
     },
     fit: {
         label: 'Fit',
-        meaning: 'Computed from your saved priorities and never mixed into the company score.',
+        meaning: 'Computed from your saved priorities and never mixed into any company rating.',
     },
     averageRating: {
         label: 'Average rating',

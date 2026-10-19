@@ -208,9 +208,10 @@ const PANEL_TIED_ORGS = [
 ];
 
 // A reader whose priorities are all checked for each job: no company has a figure.
+const PANEL_PER_JOB_REQUIREMENTS = [{path: 'industry', status: 'unknown', observed: null, counted: false}];
 const PANEL_PER_JOB_ORGS = [
-    {...PANEL_RANKED_ORGS[0], score: 0.0, fit_score: 0.0, priorities_met: null, coverage: 0.0, requirements: []},
-    {...PANEL_TIED_ORGS[1], score: 0.0, fit_score: 0.0, priorities_met: null, coverage: 0.0, requirements: []},
+    {...PANEL_RANKED_ORGS[0], score: 0.0, fit_score: 0.0, priorities_met: null, coverage: 0.0, requirements: PANEL_PER_JOB_REQUIREMENTS},
+    {...PANEL_TIED_ORGS[1], score: 0.0, fit_score: 0.0, priorities_met: null, coverage: 0.0, requirements: PANEL_PER_JOB_REQUIREMENTS},
 ];
 
 function stubPanelApis(stateKey: string): void {

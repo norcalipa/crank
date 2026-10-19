@@ -267,3 +267,31 @@ class TestAvailabilityState:
         contents = [m["content"] for m in context.to_messages()]
         block = next(c for c in contents if "AVAILABILITY STATE (server-controlled" in c)
         assert "refreshing=False" in block
+
+
+class TestOrganizationMatchFigure:
+    """Issue #584b: the assistant sees the figure the company list is ordered by."""
+
+    def lines(self, rows):
+        from crank.agents.job_search.context import build_model_context
+
+        context = build_model_context(
+            prompt_id="p", system="s", conversation=[], user_prompt="q",
+            preference_markdown="", organization_catalog=[], score_summaries=[],
+            max_preference_characters=100, max_conversation_characters=1000,
+            matches={"job_matches": [], "organization_matches": rows},
+        )
+        block = next(m["content"] for m in context.to_messages() if "ORGANIZATION MATCHES" in m["content"])
+        return [line for line in block.splitlines() if line.startswith("organization_id=")]
+
+    def test_each_line_prints_met_of_counted_or_none(self):
+        lines = self.lines([
+            {"organization_id": 1, "name": "Acme", "score": 0.0, "priorities_met": {"met": 0, "counted": 2}},
+            {"organization_id": 2, "name": "Birch", "score": 50.0, "priorities_met": {"met": 1, "counted": 2}},
+            {"organization_id": 3, "name": "Cedar", "score": 0.0, "priorities_met": None},
+            {"organization_id": 4, "name": "Dune", "score": 0.0},
+        ])
+        assert "priorities_met=0 of 2 requirements=" in lines[0]
+        assert "priorities_met=1 of 2 requirements=" in lines[1]
+        assert "priorities_met=none requirements=" in lines[2]
+        assert "priorities_met=none requirements=" in lines[3]
