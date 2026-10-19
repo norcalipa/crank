@@ -56,6 +56,19 @@ class RankingsRevisionTests(TestCase):
         rows[0]['avg_score'] = None  # a row with no score still has a revision
         self.assertRegex(rankings_revision(rows), r'^[0-9a-f]{16}$')
 
+    def test_scores_round_as_the_client_prints_them(self):
+        # toFixed(2) rounds the exact binary value and takes ties up:
+        # (4.125).toFixed(2) is '4.13', (4.625).toFixed(2) is '4.63'.
+        for tie, printed, below in ((4.125, 4.13, 4.12), (4.625, 4.63, 4.62)):
+            with self.subTest(tie=tie):
+                digest = {}
+                for value in (tie, printed, below):
+                    rows = copy.deepcopy(SAMPLE_ROWS)
+                    rows[0]['avg_score'] = value
+                    digest[value] = rankings_revision(rows)
+                self.assertEqual(digest[tie], digest[printed])
+                self.assertNotEqual(digest[tie], digest[below])
+
     def test_every_visible_field_changes_the_revision(self):
         base = rankings_revision(SAMPLE_ROWS)
         changes = {
@@ -99,6 +112,14 @@ class RankingsRevisionTests(TestCase):
         rows = copy.deepcopy(SAMPLE_ROWS)
         rows[1]['evidence']['pending_review'] = 3
         self.assertEqual(rankings_revision(rows), base, 'open claims are a badge, not a count')
+
+    def test_the_verification_day_is_the_utc_day_the_list_prints(self):
+        base = rankings_revision(SAMPLE_ROWS)  # 2026-10-01T00:00Z
+        rows = copy.deepcopy(SAMPLE_ROWS)
+        rows[0]['evidence']['last_verified_at'] = '2026-09-30T23:59:59+00:00'
+        self.assertNotEqual(rankings_revision(rows), base, 'across UTC midnight, the printed day moves')
+        rows[0]['evidence']['last_verified_at'] = '2026-10-01T23:59:59+00:00'
+        self.assertEqual(rankings_revision(rows), base, 'inside the UTC day, nothing printed moves')
 
     def test_order_changes_the_revision(self):
         self.assertNotEqual(rankings_revision(SAMPLE_ROWS), rankings_revision(list(reversed(SAMPLE_ROWS))))

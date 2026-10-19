@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+from decimal import ROUND_HALF_UP, Decimal
 
 import markdown
 from django.db import connection
@@ -136,6 +137,13 @@ def ranking_rows(algorithm_id):
         timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 
 
+def _shown_score(score):
+    """A score as the list prints it: ``toFixed(2)`` rounds the exact binary value, ties up."""
+    if score is None:
+        return None
+    return str(Decimal(score).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+
 def _shown(row):
     """What one ranking row puts on screen, and nothing it keeps out of sight."""
     evidence = row['evidence']
@@ -144,7 +152,7 @@ def _shown(row):
         'id': row['id'],
         'name': row['name'],
         'ranking': row['ranking'],
-        'avg_score': round(row['avg_score'], 2) if row['avg_score'] is not None else None,
+        'avg_score': _shown_score(row['avg_score']),
         'rto_policy': row['rto_policy'],
         'funding_round': row['funding_round'],
         'accelerated_vesting': row['accelerated_vesting'],
@@ -163,8 +171,9 @@ def rankings_revision(rows):
 
     A digest of a projection of the rows in their order (``ORDER BY ranking,
     id`` makes the order a fact of the query): the fields a row renders, at
-    the precision it renders them (score to two places, the verification
-    date without its time, open claims as a badge). Computed when the list is
+    the precision it renders them (score to two places, rounded as the client's
+    ``toFixed(2)`` does, ties up; the verification day in UTC, which is the day
+    the list prints for every reader; open claims as a badge). Computed when the list is
     read, so the cache key, its value and the invalidation paths stay as they
     were. A rebuild with identical content, or a change the list does not
     show (a same-day re-verification, a second open claim, a score drifting

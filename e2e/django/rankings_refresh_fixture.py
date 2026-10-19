@@ -9,8 +9,8 @@ cleared on commit exactly as a published score would clear them.
 - ``set``: one seeded company's score becomes ``VALUE`` (``ORG`` is the name).
 - ``restore``: every seeded company's score goes back to what ``seed_e2e``
   gave it (a no-op when nothing moved), so the other specs' pinned order holds.
-- ``pad``: twelve extra scored companies (``PAD_PREFIX``), so the list has a
-  second page; ``unpad`` removes them again and clears the result caches. The
+- ``pad``: extra scored companies (``PAD_PREFIX``; twelve, or ``COUNT``), so the
+  list has a second page (or a three-digit total); ``unpad`` removes them again and clears the result caches. The
   other specs pin "Showing 1-4 of 4 organizations", so a spec that pads always
   unpads in ``afterEach``.
 """
@@ -28,7 +28,7 @@ if getattr(settings, "ENV", "") != "dev":
     raise SystemExit("rankings_refresh_fixture is dev-only")
 
 PAD_PREFIX = "E2E Pad "
-PAD_COUNT = 12
+PAD_COUNT = int(os.environ.get("COUNT", "12"))
 
 action = os.environ["ACTION"]
 source = Organization.objects.get(name=RATING_SOURCE_ORG_NAME)
@@ -63,7 +63,7 @@ elif action == "pad":
                 "rto_policy": Organization.RTOPolicy.HYBRID,
             },
         )
-        put(name, 1.0 + index / 20)
+        put(name, 1.0 + 0.5 * index / PAD_COUNT)
 elif action == "unpad":
     pads = Organization.objects.filter(name__startswith=PAD_PREFIX)
     keys = affected_cache_keys(source.pk, score_type.pk)

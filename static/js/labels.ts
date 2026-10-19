@@ -120,12 +120,14 @@ export interface EvidenceSummaryData {
     pending_review: number;
 }
 
-export const formatEvidenceDate = (iso: string | null | undefined, long = false): string => {
+// `timeZone` pins the calendar day (the rankings pass 'UTC', the day their
+// revision digests); left out, the reader's own zone decides.
+export const formatEvidenceDate = (iso: string | null | undefined, long = false, timeZone?: string): string => {
     if (!iso) return 'Unknown';
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return 'Unknown';
     return date.toLocaleDateString(undefined, {
-        year: 'numeric', month: long ? 'long' : 'short', day: 'numeric',
+        year: 'numeric', month: long ? 'long' : 'short', day: 'numeric', ...(timeZone ? {timeZone} : {}),
     });
 };
 

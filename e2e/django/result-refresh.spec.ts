@@ -739,50 +739,57 @@ test.describe('Updated rankings available (company rankings)', () => {
         raiseGamma();
     };
 
-    for (const [width, height] of [[320, 640], [375, 667]] as const) {
-        test(`the "Updated" mark sits under a long count on a phone without moving the toolbar at ${width}px`, async ({page}) => {
-            await page.setViewportSize({width, height});
-            rankingsFixture('pad');
-            await openRankings(page);
-            await expect(page.getByText('Showing 1-15 of 16 organizations')).toBeVisible();
-            // The labels have loaded: the status line is empty, so the mark takes the reserved line.
-            await expect(page.locator('.rankings-toolbar-count .choices-status-slot')).toBeEmpty();
-            const toolbarHeight = () => page.locator('.rankings-toolbar-count').evaluate((node) => node.getBoundingClientRect().height);
-            const before = await toolbarHeight();
-            await returnIdle(page);
-            await setTabVisibility(page, 'visible');
-            const badge = page.getByTestId('rankings-updated-badge');
-            await expect(badge).toBeVisible();
-            const geometry = await page.evaluate(() => {
-                const count = document.querySelector<HTMLElement>('.organization-results-count')!;
-                const mark = count.querySelector<HTMLElement>('.badge')!;
-                const range = document.createRange();
-                range.selectNodeContents(count);
-                range.setEndBefore(mark);
-                const text = Array.from(range.getClientRects()).filter((rect) => rect.width > 0);
-                const box = mark.getBoundingClientRect();
-                const overlaps = text.some((rect) => box.left < rect.right && box.right > rect.left
-                    && box.top < rect.bottom && box.bottom > rect.top);
-                return {
-                    box: {left: box.left, right: box.right, top: box.top, bottom: box.bottom},
-                    textRects: text.length,
-                    overlaps,
-                    viewport: {width: window.innerWidth, height: window.innerHeight},
-                };
+    // A three-digit total (4 seeded + 122 padding = 126 organizations) is what made the
+    // count long enough to meet the mark; the short 16-row list fits on the old CSS as well.
+    for (const [width, height] of [[320, 640], [375, 667], [412, 915]] as const) {
+        for (const [path, count] of [
+            ['/', 'Showing 1-15 of 126 organizations'],
+            ['/?page=8', 'Showing 106-120 of 126 organizations'],
+        ] as const) {
+            test(`the "Updated" mark sits under a long count on a phone without moving the toolbar at ${width}px, ${count}`, async ({page}) => {
+                await page.setViewportSize({width, height});
+                rankingsFixture('pad', {COUNT: '122'});
+                await openRankings(page, path);
+                await expect(page.getByText(count)).toBeVisible();
+                // The labels have loaded: the status line is empty, so the mark takes the reserved line.
+                await expect(page.locator('.rankings-toolbar-count .choices-status-slot')).toBeEmpty();
+                const toolbarHeight = () => page.locator('.rankings-toolbar-count').evaluate((node) => node.getBoundingClientRect().height);
+                const before = await toolbarHeight();
+                await returnIdle(page);
+                await setTabVisibility(page, 'visible');
+                const badge = page.getByTestId('rankings-updated-badge');
+                await expect(badge).toBeVisible();
+                const geometry = await page.evaluate(() => {
+                    const count = document.querySelector<HTMLElement>('.organization-results-count')!;
+                    const mark = count.querySelector<HTMLElement>('.badge')!;
+                    const range = document.createRange();
+                    range.selectNodeContents(count);
+                    range.setEndBefore(mark);
+                    const text = Array.from(range.getClientRects()).filter((rect) => rect.width > 0);
+                    const box = mark.getBoundingClientRect();
+                    const overlaps = text.some((rect) => box.left < rect.right && box.right > rect.left
+                        && box.top < rect.bottom && box.bottom > rect.top);
+                    return {
+                        box: {left: box.left, right: box.right, top: box.top, bottom: box.bottom},
+                        textRects: text.length,
+                        overlaps,
+                        viewport: {width: window.innerWidth, height: window.innerHeight},
+                    };
+                });
+                expect(geometry.textRects).toBeGreaterThan(0);
+                expect(geometry.overlaps).toBe(false);
+                expect(geometry.box.left).toBeGreaterThanOrEqual(0);
+                expect(geometry.box.right).toBeLessThanOrEqual(geometry.viewport.width);
+                expect(geometry.box.top).toBeGreaterThanOrEqual(0);
+                expect(geometry.box.bottom).toBeLessThanOrEqual(geometry.viewport.height);
+                // Its arrival and its going move nothing.
+                expect(Math.abs((await toolbarHeight()) - before)).toBeLessThanOrEqual(1);
+                await page.mouse.wheel(0, 40);
+                await expect(badge).toHaveCount(0);
+                expect(Math.abs((await toolbarHeight()) - before)).toBeLessThanOrEqual(1);
+                await expectNoHorizontalOverflow(page);
             });
-            expect(geometry.textRects).toBeGreaterThan(0);
-            expect(geometry.overlaps).toBe(false);
-            expect(geometry.box.left).toBeGreaterThanOrEqual(0);
-            expect(geometry.box.right).toBeLessThanOrEqual(geometry.viewport.width);
-            expect(geometry.box.top).toBeGreaterThanOrEqual(0);
-            expect(geometry.box.bottom).toBeLessThanOrEqual(geometry.viewport.height);
-            // Its arrival and its going move nothing.
-            expect(Math.abs((await toolbarHeight()) - before)).toBeLessThanOrEqual(1);
-            await page.mouse.wheel(0, 40);
-            await expect(badge).toHaveCount(0);
-            expect(Math.abs((await toolbarHeight()) - before)).toBeLessThanOrEqual(1);
-            await expectNoHorizontalOverflow(page);
-        });
+        }
     }
 
     for (const [width, height] of [[1280, 800], [375, 667]] as const) {
@@ -816,6 +823,36 @@ test.describe('Updated rankings available (company rankings)', () => {
             }).toBeLessThanOrEqual(2);
         });
     }
+
+    test('a press on Refresh results while an idle read is out is answered by that read', async ({page}) => {
+        await openRankings(page);
+        // A timed check at the top finds the change: the notice is up.
+        raiseGamma();
+        await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+        await expect(notice(page)).toBeVisible();
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        await page.route(/\/api\/rankings\/\d+\/$/, async (route) => {
+            await held;
+            await route.continue();
+        });
+        const seen = countRankingsRequests(page);
+        // Away and back, idle: the first check starts an idle read with the notice still on screen.
+        await returnIdle(page);
+        await setTabVisibility(page, 'visible');
+        await expect.poll(() => seen.list).toBe(1);
+        await notice(page).getByRole('button', {name: 'Refresh results'}).click();
+        await expect(notice(page)).toHaveAttribute('aria-busy', 'true');
+        expect(await firstThree(page)).toEqual(SEEDED_ORDER);
+        release();
+        await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
+        expect(seen.list).toBe(1);
+        await expect(notice(page)).toHaveCount(0);
+        await expect(page.getByTestId('rankings-updated-badge')).toHaveCount(0);
+        await expect(page.getByTestId('rankings-announcement')).toHaveText('Showing updated rankings.');
+        // A press moves focus onto the row that was held.
+        await expect(page.locator('.organization-row:focus, #rankings-heading:focus')).toHaveCount(1);
+    });
 
     test('a list on page 2 that shrinks to one page lands on page 1 and the URL says so', async ({page}) => {
         rankingsFixture('pad');

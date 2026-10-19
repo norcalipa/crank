@@ -24,7 +24,7 @@ export function rankingsFixture(action: RankingsAction, extra: Record<string, st
     execFileSync(
         'python3',
         ['manage.py', 'shell', '-c', "exec(open('e2e/django/rankings_refresh_fixture.py').read())"],
-        {env: {...process.env, ...djangoServerEnv(), ACTION: action, ...extra}, stdio: 'pipe'},
+        {env: {...process.env, ...djangoServerEnv(), ACTION: action, ...extra}, stdio: 'pipe', maxBuffer: 64 * 1024 * 1024},
     );
 }
 

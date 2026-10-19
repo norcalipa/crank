@@ -24,6 +24,11 @@ import {
 } from './workspace/store';
 import {RtoPolicyCode, WORKSPACE_FOCUS_EVENT, WorkspaceFilters} from './workspace/types';
 
+// The day "Last verified" prints is the UTC day: the same day the server
+// digests into the rankings revision, so a change the revision calls new is a
+// change on screen, and the reverse, in every time zone.
+const RANKINGS_DATE_ZONE = 'UTC';
+
 interface ScoreDetail {
     type__name: string;
     avg_score: number;
@@ -331,6 +336,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // Bumped on unmount: an answer for a list that is gone changes nothing.
     private refreshEpoch = 0;
     private refreshRunning = false;
+    // A press on "Refresh results" that arrived while an idle read was out
+    // (the notice stays live): that read answers it as a press.
+    private pressQueued = false;
     // Rows in view captured just before the notice appears or the rows are
     // replaced; put back (and focus moved, after a press) once React has
     // committed (`settleRefresh`).
@@ -505,6 +513,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // mark instead). Single flight.
     private refreshRankings = async (mode: 'press' | 'auto', polledRevision?: string) => {
         const algorithmId = this.props.currentAlgorithmId;
+        if (this.refreshRunning && mode === 'press' && algorithmId) {
+            // An idle read is already out: it will answer this press when it
+            // lands. Show the busy state now, send nothing twice.
+            this.pressQueued = true;
+            this.setState({refreshing: true, refreshFailed: false});
+            return;
+        }
         if (this.refreshRunning || !algorithmId) {
             return;
         }
@@ -528,10 +543,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             }
         } catch {
             this.refreshRunning = false;
+            const queued = this.pressQueued;
+            this.pressQueued = false;
             if (epoch !== this.refreshEpoch) {
                 return;
             }
-            if (mode === 'press') {
+            if (mode === 'press' || queued) {
                 this.setState({refreshing: false, refreshFailed: true, ...this.announce(REFRESH_FAILED)});
             } else {
                 // The idle swap did not happen: say so the usual way.
@@ -540,10 +557,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             return;
         }
         this.refreshRunning = false;
+        const queued = this.pressQueued;
+        this.pressQueued = false;
         if (epoch !== this.refreshEpoch) {
             return;
         }
-        this.applyRankings(payload, mode);
+        // A press that came in during an idle read is a press: no re-check,
+        // the rows are held, focus moves, the outcome is announced.
+        this.applyRankings(payload, queued ? 'press' : mode);
     };
 
     private applyRankings(payload: {revision: string; organizations: Organization[]}, mode: 'press' | 'auto') {
@@ -1453,12 +1474,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             data-organization-id={org.id}
                         >
                             <td className="col-rank">{org.ranking}</td>
-                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span><span className="visually-hidden" id={`organization-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence)}</span></td>
+                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span><span className="visually-hidden" id={`organization-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence, RANKINGS_DATE_ZONE)}</span></td>
                             <td className="col-score">{org.avg_score.toFixed(2)}</td>
                             <td className="col-funding">{choiceLabel(fundingRoundChoices, org.funding_round)}</td>
                             <td className="col-rto">{choiceLabel(rtoPolicyChoices, org.rto_policy)}</td>
                             <td className="col-profile">{ratingCoverageText(org)}</td>
-                            <td className="col-evidence"><EvidenceSummary evidence={org.evidence}/></td>
+                            <td className="col-evidence"><EvidenceSummary evidence={org.evidence} timeZone={RANKINGS_DATE_ZONE}/></td>
                         </tr>))}
                         </tbody>
                     </table>
@@ -1482,7 +1503,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             aria-describedby={`organization-card-summary-${org.id}`}
                         >
                             <div className="card-body">
-                                <span className="visually-hidden" id={`organization-card-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence)}</span>
+                                <span className="visually-hidden" id={`organization-card-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence, RANKINGS_DATE_ZONE)}</span>
                                 <h2 className="h5 organization-card-name" title={org.name}>{org.name}</h2>
                                 <div className="organization-card-score">
                                     <span className="organization-card-label">Company score{currentPreset && <span className="visually-hidden"> ({currentPreset.name})</span>}</span>
@@ -1502,7 +1523,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                                 </div>
                                 <div className="organization-card-evidence">
                                     <span className="organization-card-label">Facts</span>
-                                    <EvidenceSummary evidence={org.evidence} variant="card"/>
+                                    <EvidenceSummary evidence={org.evidence} variant="card" timeZone={RANKINGS_DATE_ZONE}/>
                                 </div>
                             </div>
                         </article>

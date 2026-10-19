@@ -1308,10 +1308,13 @@ describe('OrganizationList', () => {
                 }
                 if (url === '/api/rankings/5/' && listGate) {
                     const gate = listGate;
-                    return gate.then(() => ({
-                        ok: true, status: 200,
-                        json: () => Promise.resolve({revision: serverRevision, organizations: serverRows}),
-                    }));
+                    return gate.then(() => {
+                        if (listFails === 'reject') throw new Error('offline');
+                        return {
+                            ok: true, status: 200,
+                            json: () => Promise.resolve({revision: serverRevision, organizations: serverRows}),
+                        };
+                    });
                 }
                 if (url === '/api/rankings/5/') {
                     if (listFails === 'reject') return Promise.reject(new Error('offline'));
@@ -1932,6 +1935,79 @@ describe('OrganizationList', () => {
                     await release();
                     expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
                     expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+                    // The revision guard: no "available" sentence for rows that are the shown ones.
+                    expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('');
+                });
+
+                // The notice is already up (a timed check found it at the top); the reader
+                // leaves and returns, an idle read starts, and the notice's button is pressed.
+                const noticeUpThenReturnWithHeldRead = async () => {
+                    await foundNotice();
+                    return returnWithHeldRead();
+                };
+
+                test('a press on the notice while an idle read is out is answered by that read', async () => {
+                    mount();
+                    const release = await noticeUpThenReturnWithHeldRead();
+                    const button = screen.getByTestId('rankings-updated-refresh');
+                    fireEvent.click(button);
+                    await tick(0);
+                    // Busy at once; nothing is sent twice.
+                    expect(listCalls()).toBe(1);
+                    expect(screen.getByTestId('rankings-updated-notice')).toHaveAttribute('aria-busy', 'true');
+                    expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                    await release();
+                    expect(listCalls()).toBe(1);
+                    expect(names()).toEqual(['Beta Co', 'Alpha Co', 'Gamma Co', 'Delta Co']);
+                    expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+                    expect(screen.queryByTestId('rankings-updated-badge')).not.toBeInTheDocument();
+                    expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Showing updated rankings.');
+                    // A press moves focus to the row that was held, as any press does.
+                    expect(document.activeElement).toHaveClass('organization-row');
+                });
+
+                test('a press queued during an idle read is answered as a press even if the read fails', async () => {
+                    mount();
+                    listFails = 'reject';
+                    const release = await noticeUpThenReturnWithHeldRead();
+                    fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+                    await tick(0);
+                    await release();
+                    expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                    expect(screen.getByTestId('rankings-updated-error')).toBeInTheDocument();
+                    expect(screen.getByTestId('rankings-announcement')).toHaveTextContent("Couldn't refresh. Try again.");
+                    expect(screen.getByTestId('rankings-updated-notice')).not.toHaveAttribute('aria-busy', 'true');
+                    // The failed press is spent: the next idle return swaps as an idle read, with the mark.
+                    listFails = 'no';
+                    listGate = null;
+                    (document.activeElement as HTMLElement).blur();
+                    await tick(30_000);
+                    await setVisibility('hidden');
+                    await tick(120_000);
+                    await setVisibility('visible');
+                    await tick(0);
+                    expect(names()[0]).toBe('Beta Co');
+                    expect(screen.getByTestId('rankings-updated-badge')).toBeInTheDocument();
+                });
+
+                test('a press queued during an idle read does not outlive it', async () => {
+                    mount();
+                    const release = await noticeUpThenReturnWithHeldRead();
+                    fireEvent.click(screen.getByTestId('rankings-updated-refresh'));
+                    await tick(0);
+                    await release();
+                    expect(names()[0]).toBe('Beta Co');
+                    // The next idle return is idle again: it swaps with the "Updated" mark, not as a press.
+                    (document.activeElement as HTMLElement).blur();
+                    serverRevision = 'cccccccccccccccc';
+                    serverRows = [org(3, 'Gamma Co', 1, 5.0), ...newerRows.slice(0, 2).map((row) => ({...row, ranking: row.ranking + 1}))];
+                    await tick(30_000);
+                    await setVisibility('hidden');
+                    await tick(120_000);
+                    await setVisibility('visible');
+                    await tick(0);
+                    expect(names()[0]).toBe('Gamma Co');
+                    expect(screen.getByTestId('rankings-updated-badge')).toBeInTheDocument();
                 });
             });
 
@@ -3981,6 +4057,31 @@ describe('OrganizationList', () => {
             expect(row('Legacy Co')).toHaveTextContent('Unknown');
             expect(row('Legacy Co')).toHaveTextContent('70%');
             expect(document.querySelectorAll('.organization-card-evidence').length).toBe(4);
+        });
+
+        test('the rankings print the UTC day of the last verification for a reader in Los Angeles, as the revision digests it', async () => {
+            // 03:00Z on Jan 5 is still Jan 4 in Los Angeles; the list says Jan 5 on the row,
+            // the card and the spoken description, and says which day it is.
+            const original = Date.prototype.toLocaleDateString;
+            const spy = jest.spyOn(Date.prototype, 'toLocaleDateString').mockImplementation(
+                function (this: Date, locale?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
+                    return original.call(this, locale, {timeZone: 'America/Los_Angeles', ...options});
+                });
+            try {
+                const late = {...evidenceOrgs[0], evidence: summary({verified: 3, unknown: 4, last_verified_at: '2025-01-05T03:00:00Z'})};
+                render(<OrganizationList organizations={[late]}/>);
+                const fresh = await screen.findAllByTestId('evidence-last-verified');
+                expect(fresh).toHaveLength(2); // table row and card
+                fresh.forEach((node) => {
+                    expect(node).toHaveTextContent('Last verified Jan 5, 2025');
+                    expect(node).toHaveAttribute('title', 'Day in UTC');
+                });
+                const summaries = Array.from(document.querySelectorAll('[id^="organization-"][id*="summary-"]'));
+                expect(summaries.length).toBe(2);
+                summaries.forEach((node) => expect(node).toHaveTextContent('Last verified Jan 5, 2025.'));
+            } finally {
+                spy.mockRestore();
+            }
         });
 
         test('rows and cards expose coverage, counts, freshness and review to assistive tech via aria-describedby', async () => {
