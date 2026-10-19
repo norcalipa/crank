@@ -1278,6 +1278,26 @@ class OrganizationOrderTests(TestCase):
         self.assertEqual(rows[0]["priorities_met"], {"met": 1, "counted": 1})
         self.assertEqual(rows[0]["score"], 100.0)
 
+    def test_rows_flag_which_requirements_the_figure_counts(self):
+        from crank.agents.job_search.tools import get_matches_for_user
+
+        self.prefer(
+            funding_stage=["B"],
+            compensation={"minimum_salary": 100000, "currency": "USD"},
+            industry=["fintech"],
+        )
+        self.company("Flagged", ("funding_round", "Series B"))
+        expected = {"funding_stage": True, "compensation.minimum_salary": False, "industry": False}
+        service_flags = {r["path"]: r["counted"] for r in self.rank()[0].requirements}
+        self.assertEqual(service_flags, expected)
+        self.client.force_login(self.user)
+        api = self.client.get("/api/job-matches/ranked/").json()["organization_matches"][0]
+        self.assertEqual({r["path"]: r["counted"] for r in api["requirements"]}, expected)
+        tool = get_matches_for_user(self.user)["organization_matches"][0]
+        self.assertEqual({r["path"]: r["counted"] for r in tool["requirements"]}, expected)
+        # The flag agrees with the figure: only the counted row is in "of m".
+        self.assertEqual(api["priorities_met"], {"met": 1, "counted": 1})
+
     def test_the_assistant_tool_tolerates_an_injected_row_without_the_figure(self):
         from crank.agents.job_search.tools import get_matches_for_user
 

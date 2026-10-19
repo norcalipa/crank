@@ -118,7 +118,8 @@ def test_match_terms_read_the_same_in_how_ranking_works():
     ).group("body") + "\n"
     terms = {key: (label, meaning) for key, label, meaning in _TERM_RE.findall(body)}
     assert set(terms) == {
-        "sourced", "changed", "unqualified", "companyScore", "fit", "prioritiesMet", "requirementCoverage",
+        "sourced", "changed", "unqualified", "companyScore", "averageRating", "fit", "prioritiesMet",
+        "requirementCoverage",
     }
     assert _TERM_RE.sub("", body) == ""
     legend = RANKINGS_TEMPLATE.read_text(encoding="utf-8")

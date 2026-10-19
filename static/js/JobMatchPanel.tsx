@@ -53,6 +53,8 @@ interface RequirementOutcome {
     // Read-time status of the backing fact (issue #473). Absent on listing
     // data and on payloads cached before the field existed.
     evidence_status?: RequirementEvidenceStatus | null;
+    // Company rows only: false for a priority checked for each job, which "Priorities met" leaves out (issue #584).
+    counted?: boolean;
 }
 
 interface RequirementEvidenceStatus {
@@ -543,6 +545,21 @@ function requirementLabel(path: string): string {
     return REQUIREMENT_LABELS[path] || path.split('.').pop() || path;
 }
 
+/** The list's one-line account of its order (issue #584). The priorities left
+ * out of "Priorities met" are the reader's own, so they are named once here,
+ * not on every row. */
+function orgOrderNote(orgs: RankedOrgMatch[]): string {
+    const counted = orgs.find((org) => org.priorities_met);
+    if (!counted) {
+        return 'None of your priorities can be decided from a fact about a company, so companies are listed by rating.';
+    }
+    const names = (counted.requirements ?? []).filter((r) => r.counted === false).map((r) => requirementLabel(r.path));
+    const order = 'Most priorities met first; the company with the higher average rating goes first among equals.';
+    if (names.length === 0) return order;
+    if (names.length === 1) return `${order} One priority, ${names[0]}, is checked for each job and is not counted.`;
+    return `${order} ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} are checked for each job and are not counted.`;
+}
+
 /** Three separately labelled figures: the first (fit, /100, on a job; the
  * priorities met, "n of m", on a company: issue #584), company score (/5) and
  * coverage (%) (AC-10). Round-3: explicit scales so each number reads on its
@@ -553,10 +570,12 @@ function ThreeFigures({fit, priorities, company, coverage, scope}: {fit?: number
     const prioritiesText = priorities ? `${priorities.met} of ${priorities.counted}` : '—';
     const companyText = company == null ? '—' : `${company.toFixed(1)} / 5`;
     const isCompanyRow = priorities !== undefined;
+    // A company row's figure is the plain average that breaks ties in the list, as in the company view.
+    const companyTerm = isCompanyRow ? MATCH_TERMS.averageRating : MATCH_TERMS.companyScore;
     return (
         <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label" title={MATCH_TERMS.companyScore.meaning}>{MATCH_TERMS.companyScore.label}</span>
+                <span className="job-match-figure-label" title={companyTerm.meaning}>{companyTerm.label}</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
             </span>
             {isCompanyRow ? (
@@ -824,16 +843,24 @@ const LEGEND_MARKS = ['match', 'mismatch', 'unknown'] as const;
 
 /** The job-card vocabulary in one place (issue #473): the same definitions
  * as "How ranking works" on the rankings page, which this page lacks. */
+// Which row type shows a figure that only one of them has.
+const LEGEND_WHERE: Record<string, string> = {
+    [MATCH_TERMS.companyScore.label]: 'On job rows.',
+    [MATCH_TERMS.averageRating.label]: 'On company rows.',
+    [MATCH_TERMS.fit.label]: 'On job rows.',
+    [MATCH_TERMS.prioritiesMet.label]: 'On company rows.',
+};
+
 function MatchLegend() {
     return (
         <details className="how-ranking-works job-match-legend" data-testid="job-match-legend">
             <summary className="how-ranking-works-summary">What these labels mean</summary>
             <div className="how-ranking-works-content">
                 <dl className="ranking-definitions mb-0">
-                    {[MATCH_TERMS.companyScore, MATCH_TERMS.fit, MATCH_TERMS.prioritiesMet, MATCH_TERMS.requirementCoverage].map((term) => (
+                    {[MATCH_TERMS.companyScore, MATCH_TERMS.averageRating, MATCH_TERMS.fit, MATCH_TERMS.prioritiesMet, MATCH_TERMS.requirementCoverage].map((term) => (
                         <React.Fragment key={term.label}>
                             <dt>{term.label}</dt>
-                            <dd>{term.meaning}</dd>
+                            <dd>{LEGEND_WHERE[term.label] ? `${LEGEND_WHERE[term.label]} ` : ''}{term.meaning}</dd>
                         </React.Fragment>
                     ))}
                     <dt>Requirement chips</dt>
@@ -1913,9 +1940,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                         <div data-testid="ranked-org-matches">
                             <h3 className="job-match-section-heading mb-2">Ranked Organizations</h3>
                             <p className="text-muted small mb-2" data-testid="ranked-org-order-note">
-                                {orgs.some((org) => org.priorities_met)
-                                    ? 'Most priorities met first; the better-rated company goes first among equals.'
-                                    : 'No company figure applies to your priorities, so these are listed by rating.'}
+                                {orgOrderNote(orgs)}
                             </p>
                             {orgs.map((org) => (
                                 <div key={org.organization_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"

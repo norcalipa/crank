@@ -759,7 +759,9 @@ def match_organizations(
             fit_score=score,
             company_score=company_score,
             coverage=coverage_value,
-            requirements=[o.as_dict() for o in outcomes],
+            # ``counted`` marks the rows "Priorities met" counts; the rest are
+            # checked for each job, and the panel names them once for the list.
+            requirements=[{**o.as_dict(), "counted": o.path in COMPANY_LEVEL_PATHS} for o in outcomes],
             unsupported=list(unsupported),
             evidence_ids=evidence_ids,
             preference_revision=preference_revision,

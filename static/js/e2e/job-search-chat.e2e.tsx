@@ -151,8 +151,9 @@ const PANEL_RANKED_ORGS = [
         company_score: 4.1,
         coverage: 1.0,
         requirements: [
-            {path: 'funding_stage', status: 'match', observed: 'B'},
-            {path: 'work_location.modes', status: 'match', observed: 'remote'},
+            {path: 'funding_stage', status: 'match', observed: 'B', counted: true},
+            {path: 'work_location.modes', status: 'match', observed: 'remote', counted: true},
+            {path: 'compensation.minimum_salary', status: 'unknown', observed: null, counted: false},
         ],
         unsupported: [],
         revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
@@ -160,7 +161,8 @@ const PANEL_RANKED_ORGS = [
 ];
 
 // Issue #584: the ranked list follows the "Priorities met" figure. Two
-// companies tie on 1 of 2; the better-rated one goes first.
+// companies tie on 1 of 2; the one with the higher average rating goes first.
+// The minimum salary is checked for each job, so the list note names it once.
 const PANEL_TIED_ORGS = [
     PANEL_RANKED_ORGS[0],
     {
@@ -176,8 +178,9 @@ const PANEL_TIED_ORGS = [
         company_score: 4.6,
         coverage: 1.0,
         requirements: [
-            {path: 'funding_stage', status: 'match', observed: 'B'},
-            {path: 'work_location.modes', status: 'mismatch', observed: 'in-office'},
+            {path: 'funding_stage', status: 'match', observed: 'B', counted: true},
+            {path: 'work_location.modes', status: 'mismatch', observed: 'in-office', counted: true},
+            {path: 'compensation.minimum_salary', status: 'unknown', observed: null, counted: false},
         ],
         unsupported: [],
         revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
@@ -195,8 +198,9 @@ const PANEL_TIED_ORGS = [
         company_score: 3.2,
         coverage: 1.0,
         requirements: [
-            {path: 'funding_stage', status: 'unknown', observed: null},
-            {path: 'work_location.modes', status: 'match', observed: 'remote'},
+            {path: 'funding_stage', status: 'unknown', observed: null, counted: true},
+            {path: 'work_location.modes', status: 'match', observed: 'remote', counted: true},
+            {path: 'compensation.minimum_salary', status: 'unknown', observed: null, counted: false},
         ],
         unsupported: [],
         revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},

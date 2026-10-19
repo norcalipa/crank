@@ -300,14 +300,75 @@ describe('JobMatchPanel', () => {
             expect(screen.getByTestId('org-8-company-score')).toHaveTextContent('4.6 / 5');
             expect(screen.getByTestId('org-9-company-score')).toHaveTextContent('3.2 / 5');
             expect(screen.getByTestId('ranked-org-order-note'))
-                .toHaveTextContent('Most priorities met first; the better-rated company goes first among equals.');
+                .toHaveTextContent('Most priorities met first; the company with the higher average rating goes first among equals.');
+        });
+
+        test('the tie-break figure is called "Average rating" on a company row and keeps its name on a job row', async () => {
+            await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch], rankedOrgs: [sampleOrgMatch] });
+            const org = screen.getByTestId('ranked-org-7');
+            const label = within(org).getByText(MATCH_TERMS.averageRating.label);
+            expect(label).toHaveAttribute('title', MATCH_TERMS.averageRating.meaning);
+            expect(within(org).queryByText(MATCH_TERMS.companyScore.label)).toBeNull();
+            expect(within(screen.getByTestId('ranked-job-42')).getByText(MATCH_TERMS.companyScore.label)).toBeInTheDocument();
+        });
+
+        describe('the order note names the priorities checked for each job, once for the list', () => {
+            const perJob = (path: string) => ({path, status: 'unknown', observed: null, counted: false});
+            const counted = (path: string) => ({path, status: 'match', observed: 'x', counted: true});
+            const note = () => screen.getByTestId('ranked-org-order-note');
+
+            test('two priorities are named with "and", and the rows themselves do not repeat it', async () => {
+                const requirements = [
+                    perJob('compensation.minimum_salary'), counted('work_location.modes'),
+                    perJob('industry'), counted('funding_stage'),
+                ];
+                await renderPanel('ok', { count: 1, rankedOrgs: [
+                    {...sampleOrgMatch, priorities_met: {met: 2, counted: 2}, requirements},
+                    {...sampleOrgMatch, organization_id: 8, name: 'Birch Labs', requirements},
+                ] });
+                expect(note()).toHaveTextContent('Minimum salary and Industry are checked for each job and are not counted.');
+                expect(within(screen.getByTestId('ranked-org-matches')).getAllByText(/not counted/)).toHaveLength(1);
+            });
+
+            test('one priority reads as a sentence of its own', async () => {
+                await renderPanel('ok', { count: 1, rankedOrgs: [
+                    {...sampleOrgMatch, requirements: [perJob('industry'), counted('funding_stage')]},
+                ] });
+                expect(note()).toHaveTextContent('One priority, Industry, is checked for each job and is not counted.');
+            });
+
+            test('three priorities are listed with commas', async () => {
+                await renderPanel('ok', { count: 1, rankedOrgs: [
+                    {...sampleOrgMatch, requirements: [perJob('industry'), perJob('culture'), perJob('compensation.minimum_salary')]},
+                ] });
+                expect(note()).toHaveTextContent('Industry, Culture and Minimum salary are checked for each job and are not counted.');
+            });
+
+            test('nothing is added when every priority is counted, or an older server sends no flag', async () => {
+                await renderPanel('ok', { count: 1, rankedOrgs: [
+                    {...sampleOrgMatch, requirements: [counted('funding_stage'), {path: 'industry', status: 'match'}]},
+                    {...sampleOrgMatch, organization_id: 8, name: 'Birch Labs'},
+                ] });
+                expect(note().textContent).not.toMatch(/checked for each job/);
+            });
+        });
+
+        test('the legend says which row type shows each figure', async () => {
+            await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch], rankedOrgs: [sampleOrgMatch] });
+            const legend = document.querySelector('.job-match-legend') as HTMLElement;
+            const definition = (label: string) => within(legend).getByText(label, {selector: 'dt'}).nextElementSibling;
+            expect(definition(MATCH_TERMS.averageRating.label)).toHaveTextContent(`On company rows. ${MATCH_TERMS.averageRating.meaning}`);
+            expect(definition(MATCH_TERMS.companyScore.label)).toHaveTextContent(`On job rows. ${MATCH_TERMS.companyScore.meaning}`);
+            expect(definition(MATCH_TERMS.fit.label)).toHaveTextContent(`On job rows. ${MATCH_TERMS.fit.meaning}`);
+            expect(definition(MATCH_TERMS.prioritiesMet.label)).toHaveTextContent(`On company rows. ${MATCH_TERMS.prioritiesMet.meaning}`);
+            expect(definition(MATCH_TERMS.requirementCoverage.label)).toHaveTextContent(MATCH_TERMS.requirementCoverage.meaning);
         });
 
         test('a reader with only per-job priorities sees "—" and is told why the order is by rating', async () => {
             await renderPanel('ok', { count: 1, rankedOrgs: [{...sampleOrgMatch, priorities_met: null, score: 0}] });
             expect(screen.getByTestId('org-7-priorities-met')).toHaveTextContent('—');
             expect(screen.getByTestId('ranked-org-order-note'))
-                .toHaveTextContent('No company figure applies to your priorities, so these are listed by rating.');
+                .toHaveTextContent('None of your priorities can be decided from a fact about a company, so companies are listed by rating.');
         });
 
         test('an older server that sends no figure reads as "—"', async () => {

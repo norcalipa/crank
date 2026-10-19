@@ -106,6 +106,10 @@ export const MATCH_TERMS: Record<string, {label: string; meaning: string}> = {
         label: 'Fit',
         meaning: 'Computed from your saved priorities and never mixed into the company score.',
     },
+    averageRating: {
+        label: 'Average rating',
+        meaning: 'The plain average of its rating types, 0 to 5, whatever the ranking preset.',
+    },
     prioritiesMet: {
         label: 'Priorities met',
         meaning: 'How many of your priorities that a fact about the company can decide are confirmed for you. Unknown rows, and rows whose fact covers only part of the company, count as not met; priorities checked for each job are not counted.',

@@ -423,14 +423,25 @@ test.describe('ranked organizations follow the priorities met (issue #584)', () 
         await expect(page.getByTestId('org-9-priorities-met')).toHaveText('1 of 2');
         await expect(page.getByTestId('org-8-company-score')).toHaveText('4.6 / 5');
         await expect(page.getByTestId('org-9-company-score')).toHaveText('3.2 / 5');
+        await expect(orgs.locator('.job-match-figure-label', {hasText: 'Average rating'})).toHaveCount(3);
+        await expect(page.getByTestId('ranked-org-order-note')).toContainText(
+            'One priority, Minimum salary, is checked for each job and is not counted.');
         await expect(orgs).not.toContainText('/ 100');
         await expect(page.getByTestId('ranked-job-matches')).toContainText('/ 100');
+    });
+
+    test('the order note balances its lines so no word is left alone', async ({page}) => {
+        await page.goto(`${PANEL_FIXTURE}?state=org_ties`);
+        const wrap = await page.getByTestId('ranked-org-order-note').evaluate(
+            (el) => getComputedStyle(el).getPropertyValue('text-wrap') || getComputedStyle(el).getPropertyValue('text-wrap-style'),
+        );
+        expect(wrap).toMatch(/balance|pretty/);
     });
 
     test('a reader with only per-job priorities sees a dash and the reason for the order', async ({page}) => {
         await page.goto(`${PANEL_FIXTURE}?state=org_per_job_only`);
         await expect(page.getByTestId('org-7-priorities-met')).toHaveText('—');
-        await expect(page.getByTestId('ranked-org-order-note')).toContainText('listed by rating');
+        await expect(page.getByTestId('ranked-org-order-note')).toContainText('companies are listed by rating');
     });
 });
 

@@ -151,10 +151,7 @@ export const perJobCountText = (count: number): string => (count === 1
 // The number the endpoint sends as `company_score` is the plain mean of the
 // company's rating types (`_company_score`); no preset weights enter it. The
 // job-match panel's own label (`MATCH_TERMS.companyScore`) is not true for it.
-export const COMPANY_SCORE_TERM = {
-    label: 'Average rating',
-    meaning: 'The plain average of its rating types, 0 to 5, whatever the ranking preset.',
-};
+export const COMPANY_SCORE_TERM = MATCH_TERMS.averageRating;
 
 const figure = (value: number | null, scale: string, digits = 1): string =>
     value === null || value === undefined ? '—' : `${value.toFixed(digits)}${scale}`;
