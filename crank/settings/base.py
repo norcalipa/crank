@@ -288,6 +288,10 @@ SOCIALACCOUNT_LOGIN_ON_GET = True
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/'
 
+# allauth's per-address rate limits key on the trusted client address when
+# one is identified (see crank/adapters.py).
+ACCOUNT_ADAPTER = 'crank.adapters.AccountAdapter'
+
 # Log the underlying exception behind allauth's stock "Third-Party Login
 # Failure" page instead of swallowing it.
 SOCIALACCOUNT_ADAPTER = 'crank.adapters.SocialAccountAdapter'
