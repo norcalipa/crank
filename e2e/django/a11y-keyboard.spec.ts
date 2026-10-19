@@ -5,7 +5,7 @@
 // aria-live status regions. These are DOM/semantics assertions only — no
 // claim that emulation alone certifies accessibility (see docs/e2e-validation.md).
 import {expect, test} from '@playwright/test';
-import {login, pendingTicketMerge, requireDjangoTier} from './support';
+import {login, requireDjangoTier} from './support';
 
 requireDjangoTier();
 
