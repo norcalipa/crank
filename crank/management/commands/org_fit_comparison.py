@@ -113,7 +113,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         out = self.stdout.write
         cap = job_matching.MAX_MATCH_RESULTS
-        # The same candidate window the ranked list reads.
+        # The assistant's list: the first 100 candidates (cap * 4), as match_organizations reads them;
+        # the panel's smaller window is not run here.
         organizations = list(Organization.objects.filter(status=1, public=True)[: cap * 4])
         evidence = job_matching._resolve_evidence([int(o.pk) for o in organizations])
         out("org_fit_comparison (read-only; synthetic readers; no user data read; no rows written; ratings cache filled)")

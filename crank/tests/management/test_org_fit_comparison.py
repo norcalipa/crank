@@ -17,6 +17,7 @@ from crank.management.commands.org_fit_comparison import old_score, synthetic_pr
 from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.organization import Organization
 from crank.models.preference import SCHEMA_VERSION, UserPreference, default_preferences
+from crank.services import job_matching
 
 
 def evidence(org, field_key, value):
@@ -89,6 +90,42 @@ class OrgFitComparisonTests(TestCase):
         self.assertIn("survivors=27", block)
         self.assertIn("old_top10_still_in_new_top10=9 of 10", block)
         self.assertIn("largest_fall=26 (Star)", block)
+        self.assertIn("left_the_25_row_list=1 ", block)
+
+    def test_the_new_top_ten_is_the_lists_own_top_ten(self):
+        # The profile says in-office; accepted 'Remote' evidence decides. Two 1-of-1 companies are
+        # told apart only by their ratings. The command's order must equal match_organizations'.
+        ev_remote = Organization.objects.create(name="EvRemote", rto_policy="O", public=True, status=1)
+        evidence(ev_remote, "rto_policy", "Remote")
+        Organization.objects.create(name="TieHigh", rto_policy="R", public=True, status=1)
+        Organization.objects.create(name="TieLow", rto_policy="R", public=True, status=1)
+        Organization.objects.create(name="Office", rto_policy="O", public=True, status=1)
+        ratings = {"TieHigh": 4.5, "TieLow": 2.0, "Office": 5.0}
+        with mock.patch("crank.services.job_matching._company_score", side_effect=lambda o: ratings.get(o.name)):
+            text = run()
+            document = dict(synthetic_profiles("Nobody"))["remote-only"]
+            expected = [
+                r.name for r in job_matching.match_organizations(None, limit=25, preferences_override=document)
+            ][:10]
+        self.assertEqual(expected, ["TieHigh", "TieLow", "EvRemote", "Office"])
+        block = text.split("profile=remote-only")[1].split("profile=")[0]
+        part = block.split("new top 10:")[1].split("old_top10_still")[0]
+        shown = [line.split(". ", 1)[1].split(" priorities_met=")[0] for line in part.strip().splitlines()]
+        self.assertEqual(shown, expected)
+
+    def test_a_company_from_old_ranks_11_to_25_that_leaves_the_list_is_counted(self):
+        for n in range(10):
+            Organization.objects.create(name=f"Remote{n:02d}", rto_policy="R", public=True, status=1)
+        office = Organization.objects.create(name="Office", rto_policy="O", public=True, status=1)  # old #11
+        for n in range(10, 25):
+            Organization.objects.create(name=f"Remote{n:02d}", rto_policy="R", public=True, status=1)
+        with mock.patch(
+            "crank.services.job_matching._company_score",
+            side_effect=lambda o: 5.0 if o.pk == office.pk else None,
+        ):
+            text = run()
+        block = text.split("profile=remote-only")[1].split("profile=")[0]
+        self.assertIn("survivors=26", block)
         self.assertIn("left_the_25_row_list=1 ", block)
 
     def test_the_header_says_the_ratings_cache_is_filled(self):

@@ -739,7 +739,7 @@ def match_organizations(
         org for org in orgs if not _org_excluded(org, criteria, evidence.get(int(org.pk)))
     ]
 
-    scored: list[tuple[int, float, int, OrgMatchResult]] = []
+    scored: list[tuple[tuple[int, float, int], OrgMatchResult]] = []
     for org in survivors:
         org_id = int(org.pk)
         outcomes = evaluate_org_requirements(org, criteria, evidence.get(org_id))
