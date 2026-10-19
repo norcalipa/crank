@@ -844,15 +844,20 @@ describe('ConversationMenu history follow-ups (issue #547)', () => {
             expect(screen.getByTestId('confirm-action')).toBeEnabled();
             fireEvent.click(more());
             expect(screen.getByTestId('conversation-export')).toBeEnabled();
-            // The old export settling afterwards shows nothing in the next account's view.
-            await old.settle('Could not export your conversation.');
-            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
-            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
-            // ...and does not release an export the next account started meanwhile.
+            // The next account's own export starts while the old one is still out.
             armConfirm();
             fireEvent.click(screen.getByTestId('confirm-export-first'));
             expect(onExport).toHaveBeenCalledTimes(2);
             expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Exporting…');
+            // The old export settling now shows nothing in the next account's view, and releases nothing of the next one's.
+            await old.settle('Could not export your conversation.');
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Exporting…');
+            expect(screen.getByTestId('confirm-action')).toBeDisabled();
+            expect(screen.getByTestId('conversation-status')).toHaveTextContent('Exporting conversation…');
+            // A press while the next export is out starts no third request.
+            fireEvent.click(screen.getByTestId('confirm-export-first'));
+            expect(onExport).toHaveBeenCalledTimes(2);
             await next.settle(null);
             expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Export first');
         });

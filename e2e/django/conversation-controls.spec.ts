@@ -384,6 +384,11 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
     // After a failed Export first the export-error panel sits above the confirmation: the stack scrolls to its
     // retry, and the heading and the whole sentence must stay inside the stack (the Delete row may be cut at the bottom).
     const expectExportFailureKeepsSentence = async (page: Page) => {
+        // A typed draft leaves Send enabled, so only the [inert] dimming (never .btn:disabled) can make it look unavailable.
+        const send = page.getByRole('button', {name: 'Send message'});
+        await page.getByTestId('assistant-composer').fill('A draft that keeps Send enabled.');
+        await expect(send).toBeEnabled();
+        expect(await send.evaluate((b) => [getComputedStyle(b).opacity, getComputedStyle(b).cursor]), 'Send is fully shown before the confirmation').toEqual(['1', 'pointer']);
         await chooseItem(page, 'conversation-delete');
         await page.route(EXPORT_URL, (route) => route.fulfill({status: 500, contentType: 'application/json', body: '{}'}));
         await page.getByTestId('confirm-export-first').click();
@@ -402,12 +407,14 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
                 stack: getComputedStyle(stack).backgroundColor,
                 body,
                 footerButtons: Array.from(document.querySelectorAll('#job-search-chat .chat-footer .btn')).map((b) => getComputedStyle(b).opacity),
+                sendCursor: getComputedStyle(document.querySelector('#job-search-chat .chat-footer .chat-send')!).cursor,
             };
         });
         expect(chrome.body, 'the panel background resolves').not.toBe('rgba(0, 0, 0, 0)');
         expect(chrome.stack, 'the gap between the two panels shows the panel background').toBe(chrome.body);
         expect(chrome.footerButtons.length, 'the footer has buttons').toBeGreaterThan(0);
         expect(chrome.footerButtons, 'every footer button, Send included, is dimmed under the open confirmation').toEqual(chrome.footerButtons.map(() => '0.65'));
+        expect(chrome.sendCursor, 'Send reads as unavailable under the open confirmation').toBe('default');
         await expect.poll(async () => page.evaluate(() => {
             const slack = 0.5;
             const stack = document.querySelector('.chat-panel-stack')!.getBoundingClientRect();
@@ -430,6 +437,10 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
         await page.unroute(EXPORT_URL);
         await failDelete(page);
         await expectLayout(page, false);
+        // The draft is stored per conversation: leave none behind for the next case.
+        await page.getByTestId('confirm-cancel').click();
+        await page.getByTestId('assistant-composer').fill('');
+        await expect(page.getByTestId('assistant-composer')).toHaveValue('');
     };
 
     for (const size of [{name: 'phone', width: 320, height: 480}, {name: 'phone', width: 375, height: 500}, {name: 'phone', width: 360, height: 520}]) {
@@ -515,10 +526,10 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
     test('an ended session on Delete and on New is reported and nothing is removed', async ({page, context}) => {
         const replies = page.locator('article[aria-label="Assistant message"]');
         const before = await replies.count();
+        await chooseItem(page, 'conversation-delete');
+        await waitForConfirmArmed(page);
+        await context.clearCookies({name: 'sessionid'});
         try {
-            await chooseItem(page, 'conversation-delete');
-            await waitForConfirmArmed(page);
-            await context.clearCookies({name: 'sessionid'});
             await page.getByTestId('confirm-action').click();
             await expect(page.getByRole('alert').filter({hasText: SESSION_ENDED})).toBeVisible();
             await expect(page.getByTestId('confirm-action')).toHaveText('Try deleting again');
@@ -538,8 +549,8 @@ test.describe('conversation controls follow-ups (issue #547)', () => {
     test('an ended session on Export is reported in the export-error panel and nothing downloads', async ({page, context}) => {
         const downloads: string[] = [];
         page.on('download', (download) => downloads.push(download.suggestedFilename()));
+        await context.clearCookies({name: 'sessionid'});
         try {
-            await context.clearCookies({name: 'sessionid'});
             await chooseItem(page, 'conversation-export');
             await expect(page.getByTestId('export-error')).toContainText(SESSION_ENDED);
             await expect(page.getByTestId('conversation-status')).toHaveText('');

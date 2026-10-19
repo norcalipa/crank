@@ -1550,7 +1550,7 @@ describe('history actions: ended session, server word, busy composer, inert (iss
         openMore();
         expect(screen.getByTestId('conversation-new')).toBeDisabled();
         expect(screen.getByTestId('conversation-delete')).toBeDisabled();
-        const deleteCalls = () => mock.mock.calls.filter(([, init]) => init?.method === 'DELETE');
+        const deleteCalls = () => mock.mock.calls.filter(([url, init]) => init?.method === 'POST' && /\/delete\/$/.test(String(url)));
         expect(deleteCalls()).toHaveLength(0);
         await settleStatus(statusResponse('ready'));
         await screen.findByText('Answered.');
