@@ -65,9 +65,10 @@ The table says who is supposed to; the gate below is what makes it true.
   (120) rejected attempts an hour, across all accounts. The per-account limits
   (10 and 60) are checked first and are not loosened.
 - With the source on and an address identified, allauth's per-address limits
-  (sign-up, sign-in, failed sign-in, password reset, and password reset from
-  the e-mailed link, `reset_password_from_key`, 20 a minute for each address)
-  key on that address, an IPv6 /64 as its network, instead of the leftmost
+  (a minute for each address: sign-up 20, sign-in 30, failed sign-in 10,
+  password reset 20, and password reset from the e-mailed link,
+  `reset_password_from_key`, 20; allauth 65.3.0 defaults, see
+  `allauth/account/app_settings.py`) key on that address, an IPv6 /64 as its network, instead of the leftmost
   `X-Forwarded-For`. A request with no identified address keeps allauth's own
   value. A tripped limit answers a `429` page ("Too many attempts"), except
   failed sign-ins: those re-render the sign-in form with the error "Too many
@@ -107,7 +108,10 @@ The table says who is supposed to; the gate below is what makes it true.
   busy the account or address is. A request that runs longer than a minute
   may stop being counted as in flight before it ends.
 - The limiter keeps a keyed digest of the address in the cache for up to one
-  hour. No address is written to the database, logs or telemetry.
+  hour. No address is written to the database, logs or telemetry. This
+  describes the correction limiter only: with the switch on, allauth's own
+  rate-limit cache keys hold the trusted address in clear text for up to a
+  minute, as they already did for honest clients before this change.
 
 ## The gate
 
