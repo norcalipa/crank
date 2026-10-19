@@ -554,10 +554,10 @@ function orgOrderNote(orgs: RankedOrgMatch[]): string {
         return 'None of your priorities can be decided from a fact about a company, so companies are listed by rating.';
     }
     const names = (counted.requirements ?? []).filter((r) => r.counted === false).map((r) => requirementLabel(r.path));
-    const order = 'Most priorities met first; the company with the higher average rating goes first among equals.';
+    const order = 'Most priorities met first, then the higher average rating.';
     if (names.length === 0) return order;
-    if (names.length === 1) return `${order} One priority, ${names[0]}, is checked for each job and is not counted.`;
-    return `${order} ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} are checked for each job and are not counted.`;
+    const joined = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    return `${order} Checked for each job, not counted: ${joined}.`;
 }
 
 /** Three separately labelled figures: the first (fit, /100, on a job; the
@@ -570,24 +570,31 @@ function ThreeFigures({fit, priorities, company, coverage, scope}: {fit?: number
     const prioritiesText = priorities ? `${priorities.met} of ${priorities.counted}` : '—';
     const companyText = company == null ? '—' : `${company.toFixed(1)} / 5`;
     const isCompanyRow = priorities !== undefined;
-    // A company row's figure is the plain average that breaks ties in the list, as in the company view.
-    const companyTerm = isCompanyRow ? MATCH_TERMS.averageRating : MATCH_TERMS.companyScore;
+    // The plain average is "Average rating" on every row; a company row leads with the figure its list is sorted by, as the company view does.
+    const rating = (
+        <span role="listitem" className="job-match-figure">
+            <span className="job-match-figure-label" title={MATCH_TERMS.averageRating.meaning}>{MATCH_TERMS.averageRating.label}</span>
+            <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
+        </span>
+    );
     return (
         <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
-            <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label" title={companyTerm.meaning}>{companyTerm.label}</span>
-                <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
-            </span>
             {isCompanyRow ? (
-                <span role="listitem" className="job-match-figure">
-                    <span className="job-match-figure-label" title={MATCH_TERMS.prioritiesMet.meaning}>{MATCH_TERMS.prioritiesMet.label}</span>
-                    <strong className="job-match-figure-value" data-testid={`${scope}-priorities-met`}>{prioritiesText}</strong>
-                </span>
+                <>
+                    <span role="listitem" className="job-match-figure">
+                        <span className="job-match-figure-label" title={MATCH_TERMS.prioritiesMet.meaning}>{MATCH_TERMS.prioritiesMet.label}</span>
+                        <strong className="job-match-figure-value" data-testid={`${scope}-priorities-met`}>{prioritiesText}</strong>
+                    </span>
+                    {rating}
+                </>
             ) : (
-                <span role="listitem" className="job-match-figure">
-                    <span className="job-match-figure-label" title={MATCH_TERMS.fit.meaning}>{MATCH_TERMS.fit.label}</span>
-                    <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
-                </span>
+                <>
+                    {rating}
+                    <span role="listitem" className="job-match-figure">
+                        <span className="job-match-figure-label" title={MATCH_TERMS.fit.meaning}>{MATCH_TERMS.fit.label}</span>
+                        <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
+                    </span>
+                </>
             )}
             <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label" title={MATCH_TERMS.requirementCoverage.meaning}>{MATCH_TERMS.requirementCoverage.label}</span>
@@ -845,8 +852,6 @@ const LEGEND_MARKS = ['match', 'mismatch', 'unknown'] as const;
  * as "How ranking works" on the rankings page, which this page lacks. */
 // Which row type shows a figure that only one of them has.
 const LEGEND_WHERE: Record<string, string> = {
-    [MATCH_TERMS.companyScore.label]: 'On job rows.',
-    [MATCH_TERMS.averageRating.label]: 'On company rows.',
     [MATCH_TERMS.fit.label]: 'On job rows.',
     [MATCH_TERMS.prioritiesMet.label]: 'On company rows.',
 };
@@ -857,7 +862,7 @@ function MatchLegend() {
             <summary className="how-ranking-works-summary">What these labels mean</summary>
             <div className="how-ranking-works-content">
                 <dl className="ranking-definitions mb-0">
-                    {[MATCH_TERMS.companyScore, MATCH_TERMS.averageRating, MATCH_TERMS.fit, MATCH_TERMS.prioritiesMet, MATCH_TERMS.requirementCoverage].map((term) => (
+                    {[MATCH_TERMS.averageRating, MATCH_TERMS.fit, MATCH_TERMS.prioritiesMet, MATCH_TERMS.requirementCoverage].map((term) => (
                         <React.Fragment key={term.label}>
                             <dt>{term.label}</dt>
                             <dd>{LEGEND_WHERE[term.label] ? `${LEGEND_WHERE[term.label]} ` : ''}{term.meaning}</dd>

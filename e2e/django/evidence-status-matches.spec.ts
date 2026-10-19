@@ -104,11 +104,11 @@ for (const [width, height] of [[1280, 800], [375, 800], [320, 700]] as const) {
             // The terms on the cards are defined on this page too.
             const legend = page.getByTestId('job-match-legend');
             await legend.locator('summary').click();
-            for (const term of ['Company score (preset)', 'Requirement coverage', 'Sourced, not confirmed', 'Evidence changed']) {
+            for (const term of ['Average rating', 'Requirement coverage', 'Sourced, not confirmed', 'Evidence changed']) {
                 await expect(legend).toContainText(term);
             }
             await expectNoHorizontalOverflow(page);
-            await expect(panel.locator('.job-match-figure-label').first()).toHaveText('Company score (preset)');
+            await expect(panel.locator('.job-match-figure-label').first()).toHaveText('Average rating');
             await expect(panel.locator('.job-match-figure-label').nth(2)).toHaveText('Requirement coverage');
             await expect(page.getByTestId('evidence-changed-notice')).toHaveCount(0);
             await expectNoHorizontalOverflow(page);

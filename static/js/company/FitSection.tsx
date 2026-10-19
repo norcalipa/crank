@@ -150,7 +150,7 @@ export const perJobCountText = (count: number): string => (count === 1
 
 // The number the endpoint sends as `company_score` is the plain mean of the
 // company's rating types (`_company_score`); no preset weights enter it. The
-// job-match panel's own label (`MATCH_TERMS.companyScore`) is not true for it.
+// job-match panel prints it under the same term.
 export const COMPANY_SCORE_TERM = MATCH_TERMS.averageRating;
 
 const figure = (value: number | null, scale: string, digits = 1): string =>

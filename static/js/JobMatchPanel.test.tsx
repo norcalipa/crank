@@ -300,16 +300,20 @@ describe('JobMatchPanel', () => {
             expect(screen.getByTestId('org-8-company-score')).toHaveTextContent('4.6 / 5');
             expect(screen.getByTestId('org-9-company-score')).toHaveTextContent('3.2 / 5');
             expect(screen.getByTestId('ranked-org-order-note'))
-                .toHaveTextContent('Most priorities met first; the company with the higher average rating goes first among equals.');
+                .toHaveTextContent('Most priorities met first, then the higher average rating.');
         });
 
-        test('the tie-break figure is called "Average rating" on a company row and keeps its name on a job row', async () => {
+        test('the plain average is called "Average rating" on a company row and on a job row, and a company row leads with the priorities met', async () => {
             await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch], rankedOrgs: [sampleOrgMatch] });
             const org = screen.getByTestId('ranked-org-7');
             const label = within(org).getByText(MATCH_TERMS.averageRating.label);
             expect(label).toHaveAttribute('title', MATCH_TERMS.averageRating.meaning);
-            expect(within(org).queryByText(MATCH_TERMS.companyScore.label)).toBeNull();
-            expect(within(screen.getByTestId('ranked-job-42')).getByText(MATCH_TERMS.companyScore.label)).toBeInTheDocument();
+            const labels = (row: HTMLElement) => Array.from(row.querySelectorAll('.job-match-figure-label')).map((el) => el.textContent);
+            expect(labels(org)).toEqual(['Priorities met', 'Average rating', 'Requirement coverage']);
+            const job = screen.getByTestId('ranked-job-42');
+            expect(labels(job)).toEqual(['Average rating', 'Fit', 'Requirement coverage']);
+            expect(within(job).getByText(MATCH_TERMS.averageRating.label)).toHaveAttribute('title', MATCH_TERMS.averageRating.meaning);
+            expect(screen.queryByText(/Company score/)).toBeNull();
         });
 
         describe('the order note names the priorities checked for each job, once for the list', () => {
@@ -326,7 +330,7 @@ describe('JobMatchPanel', () => {
                     {...sampleOrgMatch, priorities_met: {met: 2, counted: 2}, requirements},
                     {...sampleOrgMatch, organization_id: 8, name: 'Birch Labs', requirements},
                 ] });
-                expect(note()).toHaveTextContent('Minimum salary and Industry are checked for each job and are not counted.');
+                expect(note()).toHaveTextContent('Checked for each job, not counted: Minimum salary and Industry.');
                 expect(within(screen.getByTestId('ranked-org-matches')).getAllByText(/not counted/)).toHaveLength(1);
             });
 
@@ -334,14 +338,14 @@ describe('JobMatchPanel', () => {
                 await renderPanel('ok', { count: 1, rankedOrgs: [
                     {...sampleOrgMatch, requirements: [perJob('industry'), counted('funding_stage')]},
                 ] });
-                expect(note()).toHaveTextContent('One priority, Industry, is checked for each job and is not counted.');
+                expect(note()).toHaveTextContent('Checked for each job, not counted: Industry.');
             });
 
             test('three priorities are listed with commas', async () => {
                 await renderPanel('ok', { count: 1, rankedOrgs: [
                     {...sampleOrgMatch, requirements: [perJob('industry'), perJob('culture'), perJob('compensation.minimum_salary')]},
                 ] });
-                expect(note()).toHaveTextContent('Industry, Culture and Minimum salary are checked for each job and are not counted.');
+                expect(note()).toHaveTextContent('Checked for each job, not counted: Industry, Culture and Minimum salary.');
             });
 
             test('nothing is added when every priority is counted, or an older server sends no flag', async () => {
@@ -353,12 +357,13 @@ describe('JobMatchPanel', () => {
             });
         });
 
-        test('the legend says which row type shows each figure', async () => {
+        test('the legend defines the average rating once and says which row type shows the other figures', async () => {
             await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch], rankedOrgs: [sampleOrgMatch] });
             const legend = document.querySelector('.job-match-legend') as HTMLElement;
             const definition = (label: string) => within(legend).getByText(label, {selector: 'dt'}).nextElementSibling;
-            expect(definition(MATCH_TERMS.averageRating.label)).toHaveTextContent(`On company rows. ${MATCH_TERMS.averageRating.meaning}`);
-            expect(definition(MATCH_TERMS.companyScore.label)).toHaveTextContent(`On job rows. ${MATCH_TERMS.companyScore.meaning}`);
+            expect(within(legend).getAllByText(MATCH_TERMS.averageRating.label, {selector: 'dt'})).toHaveLength(1);
+            expect(definition(MATCH_TERMS.averageRating.label)?.textContent).toBe(MATCH_TERMS.averageRating.meaning);
+            expect(within(legend).queryByText(/Company score/)).toBeNull();
             expect(definition(MATCH_TERMS.fit.label)).toHaveTextContent(`On job rows. ${MATCH_TERMS.fit.meaning}`);
             expect(definition(MATCH_TERMS.prioritiesMet.label)).toHaveTextContent(`On company rows. ${MATCH_TERMS.prioritiesMet.meaning}`);
             expect(definition(MATCH_TERMS.requirementCoverage.label)).toHaveTextContent(MATCH_TERMS.requirementCoverage.meaning);
@@ -1067,7 +1072,7 @@ describe('JobMatchPanel requirement figures and states (issue #467)', () => {
     test('renders three separately labelled figures with explicit scales', async () => {
         await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
         const card = screen.getByTestId('ranked-job-42');
-        expect(card).toHaveTextContent('Company score (preset)');
+        expect(card).toHaveTextContent('Average rating');
         expect(card).toHaveTextContent('Fit');
         expect(card).toHaveTextContent('Requirement coverage');
         // Round-3: each value carries its scale so the number reads on its own.

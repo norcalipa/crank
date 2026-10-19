@@ -98,17 +98,13 @@ export const MATCH_TERMS: Record<string, {label: string; meaning: string}> = {
         label: 'No qualifier',
         meaning: 'A match or mismatch with no qualifier was decided from the job listing itself.',
     },
-    companyScore: {
-        label: 'Company score (preset)',
-        meaning: 'The preset-weighted average of the rating dimensions. It is the same for everyone.',
-    },
     fit: {
         label: 'Fit',
         meaning: 'Computed from your saved priorities and never mixed into the company score.',
     },
     averageRating: {
         label: 'Average rating',
-        meaning: 'The plain average of its rating types, 0 to 5, whatever the ranking preset.',
+        meaning: 'The plain average of a company’s rating types, 0 to 5, whatever the ranking preset.',
     },
     prioritiesMet: {
         label: 'Priorities met',

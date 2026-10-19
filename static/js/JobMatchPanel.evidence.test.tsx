@@ -776,14 +776,14 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
             .toHaveAttribute('title', MATCH_TERMS.sourced.meaning);
         const titles = Array.from(screen.getByTestId('ranked-job-42').querySelectorAll('.job-match-figure-label'))
             .map((el) => el.getAttribute('title'));
-        expect(titles).toEqual([MATCH_TERMS.companyScore.meaning, MATCH_TERMS.fit.meaning, MATCH_TERMS.requirementCoverage.meaning]);
+        expect(titles).toEqual([MATCH_TERMS.averageRating.meaning, MATCH_TERMS.fit.meaning, MATCH_TERMS.requirementCoverage.meaning]);
     });
 
-    test('figures are labelled as preset score, fit and requirement coverage', async () => {
+    test('figures are labelled as average rating, fit and requirement coverage', async () => {
         await renderRanked([job([])]);
         const labels = Array.from(screen.getByTestId('ranked-job-42').querySelectorAll('.job-match-figure-label'))
             .map((el) => el.textContent);
-        expect(labels).toEqual(['Company score (preset)', 'Fit', 'Requirement coverage']);
+        expect(labels).toEqual(['Average rating', 'Fit', 'Requirement coverage']);
         expect(screen.getByTestId('job-42-company-score')).toHaveTextContent('4.2 / 5');
         expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5 / 100');
         expect(screen.getByTestId('job-42-coverage')).toHaveTextContent('75%');

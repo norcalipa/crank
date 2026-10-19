@@ -424,8 +424,12 @@ test.describe('ranked organizations follow the priorities met (issue #584)', () 
         await expect(page.getByTestId('org-8-company-score')).toHaveText('4.6 / 5');
         await expect(page.getByTestId('org-9-company-score')).toHaveText('3.2 / 5');
         await expect(orgs.locator('.job-match-figure-label', {hasText: 'Average rating'})).toHaveCount(3);
+        await expect(orgs.locator('.job-match-card').first().locator('.job-match-figure-label')).toHaveText(
+            ['Priorities met', 'Average rating', 'Requirement coverage']);
+        await expect(page.getByTestId('ranked-job-matches').locator('.job-match-card').first().locator('.job-match-figure-label')).toHaveText(
+            ['Average rating', 'Fit', 'Requirement coverage']);
         await expect(page.getByTestId('ranked-org-order-note')).toContainText(
-            'One priority, Minimum salary, is checked for each job and is not counted.');
+            'Most priorities met first, then the higher average rating. Checked for each job, not counted: Minimum salary.');
         await expect(orgs).not.toContainText('/ 100');
         await expect(page.getByTestId('ranked-job-matches')).toContainText('/ 100');
     });
