@@ -679,9 +679,11 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
     });
 });
 
-// Issue #568: the confirmation opens under the pointer that chose its item. On the real page at 375x440 the centre
-// of "Delete conversation…" is on the confirm button, so a second press at that point, however late it is released,
-// must be ignored. (The fixture page's menu sits higher at heights up to 480, so only this tier proves the case.)
+// Issue #568: the confirmation opens under the pointer that chose its item. On the real page at 375x667 the lower
+// half of "Delete conversation…" is on the confirm button, so a second press there, however late it is released,
+// must be ignored. (The fixture page's menu sits higher at heights up to 480, so only this tier proves the case.
+// Since issue #547 the action row follows the consequence in flow, so at 375x440, where the stack is capped, the
+// button no longer opens under the item.)
 test.describe('a press that starts right after Delete conversation opens its confirmation does nothing (issue #568)', () => {
     test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE === '1', 'needs assistant replies: not part of the provider-outage pass');
 
@@ -698,21 +700,31 @@ test.describe('a press that starts right after Delete conversation opens its con
         await setPriorities(page, null);
     });
 
-    // Opens the chat at 375x440 with a conversation, and returns the centre of the item once More is open.
+    // Opens the chat at 375x667 with a conversation, and returns the centre of the part of the item the confirm button opens under, once More is open.
     const prepare = async (page: Page) => {
         await page.setViewportSize({width: 1280, height: 900});
         await page.goto('/');
         await setPriorities(page, TEN);
         await openChat(page);
         await ensureConversation(page, 2);
-        await page.setViewportSize({width: 375, height: 440});
+        await page.setViewportSize({width: 375, height: 667});
         await openChat(page);
         const deletes = trackDeletes(page);
         const articles = page.locator('[role="log"] article');
         const articlesBefore = await articles.count();
         await page.getByTestId('conversation-more').click();
         const item = (await page.getByTestId('conversation-delete').boundingBox())!;
-        return {deletes, articles, articlesBefore, x: item.x + item.width / 2, y: item.y + item.height / 2};
+        await page.getByTestId('conversation-delete').click();
+        const button = (await page.getByTestId('confirm-action').boundingBox())!;
+        await page.getByTestId('confirm-cancel').click();
+        const left = Math.max(item.x, button.x);
+        const right = Math.min(item.x + item.width, button.x + button.width);
+        const top = Math.max(item.y, button.y);
+        const bottom = Math.min(item.y + item.height, button.y + button.height);
+        expect(right - left, 'the confirm button opens under part of the item').toBeGreaterThan(8);
+        expect(bottom - top, 'the confirm button opens under part of the item').toBeGreaterThan(8);
+        await page.getByTestId('conversation-more').click();
+        return {deletes, articles, articlesBefore, x: (left + right) / 2, y: (top + bottom) / 2};
     };
 
     const expectNothingDeleted = async (page: Page, deletes: string[], articles: Locator, articlesBefore: number, what: string) => {
@@ -724,7 +736,7 @@ test.describe('a press that starts right after Delete conversation opens its con
         await expect(page.getByRole('alert')).toHaveCount(0);
     };
 
-    test('375x440: two presses 150 ms apart on the centre of the item delete nothing', async ({page}) => {
+    test('375x667: two presses 150 ms apart where the button opens under the item delete nothing', async ({page}) => {
         test.setTimeout(120_000);
         const {deletes, articles, articlesBefore, x, y} = await prepare(page);
         await mousePress(page, x, y);
@@ -737,7 +749,7 @@ test.describe('a press that starts right after Delete conversation opens its con
         await expectNothingDeleted(page, deletes, articles, articlesBefore, 'the second press');
     });
 
-    test('375x440: a press held from 150 ms to 560 ms after the opening press deletes nothing; a deliberate press then deletes', async ({page}) => {
+    test('375x667: a press held from 150 ms to 560 ms after the opening press deletes nothing; a deliberate press then deletes', async ({page}) => {
         test.setTimeout(120_000);
         const {deletes, articles, articlesBefore, x, y} = await prepare(page);
         await mousePress(page, x, y);

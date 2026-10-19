@@ -12,6 +12,7 @@ import {
     DELETE_CONVERSATION_COPY,
     NEW_CONVERSATION_COPY,
 } from './ConversationMenu';
+import {SESSION_ENDED_COPY} from '../session';
 
 const setup = (overrides: Partial<ConversationMenuProps> = {}) => {
     const props: ConversationMenuProps = {
@@ -251,10 +252,10 @@ describe('ConversationMenu', () => {
         });
     });
 
-    describe('revealing the focused retry above the pinned dismiss row', () => {
+    describe('revealing the focused retry inside the stack', () => {
         const box = (top: number, bottom: number) => ({top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON: () => ''}) as DOMRect;
-        // The stack spans 0-200 with its dismiss row pinned at 150-200. The focused retry and
-        // the context element sit at natural (unscrolled) positions and move with scrollTop.
+        // The stack spans 0-200 and pins nothing. The focused retry and the context
+        // element sit at natural (unscrolled) positions and move with scrollTop.
         let scrollTops: WeakMap<object, number>;
         beforeEach(() => {
             scrollTops = new WeakMap();
@@ -273,46 +274,62 @@ describe('ConversationMenu', () => {
             jest.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
                 const stack = document.querySelector<HTMLElement>('.chat-panel-stack');
                 if (this === stack) return box(0, 200);
-                if (this.classList.contains('chat-confirm-dismiss')) return box(150, 200);
                 const scrolled = stack ? stack.scrollTop : 0;
                 if (this === document.activeElement) return box(target - scrolled, target - scrolled + 30);
                 if (this.matches(contextSelector)) return box(context - scrolled, context - scrolled + 30);
                 return real.call(this);
             });
         };
-
-        test('a failure hidden under the pinned row is scrolled up; the pinned retry itself needs no scroll', async () => {
-            layOut(160, 160, '#chat-confirm-failure');
+        const failDelete = async () => {
             setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId('conversation-delete'));
             armConfirm();
             fireEvent.click(screen.getByTestId('confirm-action'));
             await screen.findByRole('alert');
-            const stack = document.querySelector('.chat-panel-stack') as HTMLElement;
-            // The failure's bottom (190) is 40px under the row's top (150), plus 4px of air.
-            await waitFor(() => expect(stack.scrollTop).toBe(44));
+            return document.querySelector('.chat-panel-stack') as HTMLElement;
+        };
+
+        test('a retry below the stack is scrolled into view, with 4px of air', async () => {
+            layOut(230, 230, '#chat-confirm-failure');
+            const stack = await failDelete();
+            // The retry's bottom (260) is 60px under the stack's bottom (200).
+            await waitFor(() => expect(stack.scrollTop).toBe(64));
             expect(screen.getByTestId('confirm-action')).toHaveFocus();
         });
 
-        test('a failure that already clears the pinned row leaves the stack where it is', async () => {
-            layOut(160, 20, '#chat-confirm-failure');
-            setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
+        test('a sentence above the stack comes down only as far as the retry stays visible', async () => {
+            layOut(230, 20, '#chat-confirm-copy');
+            const stack = await failDelete();
+            // After the retry is revealed (64) the sentence (at 20) is 44px above the top, with 4px of room.
+            await waitFor(() => expect(stack.scrollTop).toBe(60));
+        });
+
+        test('a retry and failure already inside the stack leave it where it is', async () => {
+            layOut(100, 20, '#chat-confirm-failure');
+            const stack = await failDelete();
+            expect(stack.scrollTop).toBe(0);
+        });
+
+        test('after a failed Export first the export error sits above the confirmation, so revealing its retry never scrolls the sentence away', async () => {
+            setup({onExport: jest.fn().mockResolvedValue('Could not export your conversation.')});
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId('conversation-delete'));
             armConfirm();
-            fireEvent.click(screen.getByTestId('confirm-action'));
-            await screen.findByRole('alert');
-            expect((document.querySelector('.chat-panel-stack') as HTMLElement).scrollTop).toBe(0);
+            fireEvent.click(screen.getByText('Export first'));
+            const panel = await screen.findByTestId('export-error');
+            const confirm = document.getElementById('chat-confirm-copy')!.closest('.chat-confirm-panel') as HTMLElement;
+            expect(panel.compareDocumentPosition(confirm) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+            expect(panel.parentElement).toBe(confirm.parentElement);
         });
 
         test('an export error retry is revealed the same way', async () => {
-            layOut(160, 0, '[data-testid="export-error"]');
+            layOut(230, 0, '[data-testid="export-error"]');
             setup({onExport: jest.fn().mockResolvedValue('Could not export your conversation.')});
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId('conversation-export'));
             await screen.findByTestId('export-error');
-            await waitFor(() => expect((document.querySelector('.chat-panel-stack') as HTMLElement).scrollTop).toBe(40));
+            await waitFor(() => expect((document.querySelector('.chat-panel-stack') as HTMLElement).scrollTop).toBe(60));
         });
     });
 
@@ -632,5 +649,336 @@ describe('ConversationMenu', () => {
         fireEvent.click(screen.getByTestId('conversation-new'));
         rerender(<ConversationMenu {...props} hasConversation={false}/>);
         expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument();
+    });
+});
+
+describe('ConversationMenu history follow-ups (issue #547)', () => {
+    beforeEach(() => {
+        setClocks(1000);
+        jest.spyOn(performance, 'now').mockImplementation(() => handlerClock);
+        Object.defineProperty(Event.prototype, 'timeStamp', {configurable: true, get: () => eventClock});
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        Object.defineProperty(Event.prototype, 'timeStamp', realTimeStamp!);
+    });
+
+    const held = <T,>() => {
+        let settle: (value: T) => void = () => undefined;
+        const promise = new Promise<T>((resolve) => { settle = resolve; });
+        return {promise, settle: (value: T) => act(async () => { settle(value); await promise; })};
+    };
+    const openDelete = () => {
+        fireEvent.click(more());
+        fireEvent.click(screen.getByTestId('conversation-delete'));
+    };
+
+    describe('an export in flight', () => {
+        test('Export first reads Exporting…, Delete is disabled, Cancel stays enabled, one status is announced', async () => {
+            const exported = held<null>();
+            const onExport = jest.fn(() => exported.promise);
+            setup({onExport});
+            openDelete();
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-export-first'));
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Exporting…');
+            // aria-disabled, not disabled: the button keeps the keyboard focus it was pressed with.
+            expect(screen.getByTestId('confirm-export-first')).toHaveAttribute('aria-disabled', 'true');
+            expect(screen.getByTestId('confirm-action')).toBeDisabled();
+            expect(screen.getByTestId('confirm-cancel')).toBeEnabled();
+            expect(screen.getByTestId('conversation-status')).toHaveTextContent('Exporting conversation…');
+            // The menu's Export item is disabled meanwhile.
+            fireEvent.click(more());
+            expect(screen.getByTestId('conversation-export')).toBeDisabled();
+            expect(onExport).toHaveBeenCalledTimes(1);
+            await exported.settle(null);
+            expect(screen.getByTestId('confirm-action')).toBeEnabled();
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Export first');
+            expect(screen.getByTestId('confirm-export-first')).toBeEnabled();
+            expect(screen.getByTestId('confirm-export-first')).not.toHaveAttribute('aria-disabled');
+            expect(screen.getByTestId('conversation-status')).toHaveTextContent('Conversation exported');
+        });
+
+        test('keyboard focus stays on Export first while it exports (visual review round 1, P1-3)', async () => {
+            const exported = held<null>();
+            setup({onExport: jest.fn(() => exported.promise)});
+            openDelete();
+            armConfirm();
+            const exportFirst = screen.getByTestId('confirm-export-first');
+            exportFirst.focus();
+            fireEvent.click(exportFirst);
+            expect(exportFirst).toHaveAttribute('aria-disabled', 'true');
+            expect(document.activeElement).toBe(exportFirst);
+            await exported.settle(null);
+            expect(document.activeElement).toBe(exportFirst);
+        });
+
+        test('the action row follows the consequence and precedes Export first, so a short stack shows them together (round 1, P1-1/P1-2)', () => {
+            setup();
+            openDelete();
+            const panel = screen.getByTestId('confirm-panel');
+            const order = Array.from(panel.children).map((el) => el.className);
+            expect(order).toEqual(['chat-confirm-heading', 'chat-confirm-copy', 'chat-confirm-dismiss', 'chat-confirm-actions']);
+        });
+
+        test('the ended-session failure turns "Sign in again" into a link back to this page (round 1, P2-3)', async () => {
+            setup({onDeleteConversation: jest.fn(async () => SESSION_ENDED_COPY), signInUrl: '/accounts/login/'});
+            openDelete();
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            const link = await screen.findByTestId('confirm-sign-in');
+            expect(link).toHaveTextContent('Sign in again');
+            expect(link).toHaveAttribute('href', `/accounts/login/?next=${encodeURIComponent(window.location.pathname)}`);
+            expect(screen.getByRole('alert')).toHaveTextContent(SESSION_ENDED_COPY);
+        });
+
+        test('an ended session without a sign-in address, and an ended export with one, show the copy as given', async () => {
+            const {unmount} = setup({onDeleteConversation: jest.fn(async () => SESSION_ENDED_COPY)});
+            openDelete();
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await screen.findByText(SESSION_ENDED_COPY);
+            expect(screen.queryByTestId('confirm-sign-in')).toBeNull();
+            unmount();
+            setup({onExport: jest.fn(async () => SESSION_ENDED_COPY), signInUrl: '/accounts/login/'});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            const panel = await screen.findByTestId('export-error');
+            expect(panel).toContainElement(screen.getByTestId('confirm-sign-in'));
+        });
+
+        test('another failure shows plain text', async () => {
+            setup({onDeleteConversation: jest.fn(async () => 'Could not delete the conversation.'), signInUrl: '/accounts/login/'});
+            openDelete();
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await screen.findByText('Could not delete the conversation.');
+            expect(screen.queryByTestId('confirm-sign-in')).toBeNull();
+        });
+
+        test('a second press while one is in flight starts no second request', async () => {
+            const exported = held<null>();
+            const onExport = jest.fn(() => exported.promise);
+            setup({onExport});
+            openDelete();
+            const first = screen.getByTestId('confirm-export-first');
+            // Both presses land before React has re-rendered the disabled button.
+            act(() => { first.click(); first.click(); });
+            expect(onExport).toHaveBeenCalledTimes(1);
+            await exported.settle(null);
+        });
+
+        test('a failed export enables Delete again and shows the failure', async () => {
+            const exported = held<string>();
+            setup({onExport: jest.fn(() => exported.promise)});
+            openDelete();
+            fireEvent.click(screen.getByTestId('confirm-export-first'));
+            expect(screen.getByTestId('confirm-action')).toBeDisabled();
+            await exported.settle('Could not export your conversation.');
+            expect(screen.getByTestId('confirm-action')).toBeEnabled();
+            expect(screen.getByTestId('export-error')).toHaveTextContent('Could not export your conversation.');
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+        });
+
+        test('a dropped export enables Delete again and shows nothing', async () => {
+            const exported = held<typeof DROPPED>();
+            setup({onExport: jest.fn(() => exported.promise)});
+            openDelete();
+            fireEvent.click(screen.getByTestId('confirm-export-first'));
+            await exported.settle(DROPPED);
+            expect(screen.getByTestId('confirm-action')).toBeEnabled();
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+        });
+    });
+
+    describe('the conversation going away', () => {
+        test('withdraws the export failure and the export status with the other panels', async () => {
+            const props: ConversationMenuProps = {
+                title: <h2>Conversation</h2>, hasConversation: true, hasMessages: true, pending: false,
+                onExport: jest.fn().mockResolvedValue('Could not export your conversation.'),
+                onNewConversation: jest.fn(), onDeleteConversation: jest.fn(),
+            };
+            const {rerender} = render(<ConversationMenu {...props}/>);
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            await screen.findByTestId('export-error');
+            rerender(<ConversationMenu {...props} hasConversation={false} hasMessages={false}/>);
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+        });
+
+        test('withdraws the "Conversation exported" announcement', async () => {
+            const props: ConversationMenuProps = {
+                title: <h2>Conversation</h2>, hasConversation: true, hasMessages: true, pending: false,
+                onExport: jest.fn().mockResolvedValue(null),
+                onNewConversation: jest.fn(), onDeleteConversation: jest.fn(),
+            };
+            const {rerender} = render(<ConversationMenu {...props}/>);
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            await waitFor(() => expect(screen.getByTestId('conversation-status')).toHaveTextContent('Conversation exported'));
+            rerender(<ConversationMenu {...props} hasConversation={false} hasMessages={false}/>);
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+        });
+
+        test('an export still out when the account switches does not hold the next account\'s Delete', async () => {
+            const old = held<string | null>();
+            const next = held<string | null>();
+            const onExport = jest.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+            const props: ConversationMenuProps = {
+                title: <h2>Conversation</h2>, hasConversation: true, hasMessages: true, pending: false,
+                onExport, onNewConversation: jest.fn(), onDeleteConversation: jest.fn(),
+            };
+            const {rerender} = render(<ConversationMenu {...props}/>);
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            expect(screen.getByTestId('conversation-status')).toHaveTextContent('Exporting conversation…');
+            // The account switch: the old conversation goes away, then the next account's own appears.
+            rerender(<ConversationMenu {...props} hasConversation={false} hasMessages={false}/>);
+            rerender(<ConversationMenu {...props}/>);
+            openDelete();
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Export first');
+            expect(screen.getByTestId('confirm-export-first')).not.toHaveAttribute('aria-disabled');
+            expect(screen.getByTestId('confirm-action')).toBeEnabled();
+            fireEvent.click(more());
+            expect(screen.getByTestId('conversation-export')).toBeEnabled();
+            // The next account's own export starts while the old one is still out.
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-export-first'));
+            expect(onExport).toHaveBeenCalledTimes(2);
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Exporting…');
+            // The old export settling now shows nothing in the next account's view, and releases nothing of the next one's.
+            await old.settle('Could not export your conversation.');
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Exporting…');
+            expect(screen.getByTestId('confirm-action')).toBeDisabled();
+            expect(screen.getByTestId('conversation-status')).toHaveTextContent('Exporting conversation…');
+            // A press while the next export is out starts no third request.
+            fireEvent.click(screen.getByTestId('confirm-export-first'));
+            expect(onExport).toHaveBeenCalledTimes(2);
+            await next.settle(null);
+            expect(screen.getByTestId('confirm-export-first')).toHaveTextContent('Export first');
+        });
+
+        test('Delete succeeding withdraws an earlier export failure', async () => {
+            const onExport = jest.fn().mockResolvedValue('Could not export your conversation.');
+            const Host = () => {
+                const [has, setHas] = React.useState(true);
+                return (
+                    <ConversationMenu
+                        title={<h2>Conversation</h2>} hasConversation={has} hasMessages={has} pending={false}
+                        onExport={onExport} onNewConversation={jest.fn()}
+                        onDeleteConversation={async () => { setHas(false); return null; }}
+                    />
+                );
+            };
+            render(<Host/>);
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            await screen.findByTestId('export-error');
+            openDelete();
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+        });
+    });
+
+    describe('onConfirmationChange', () => {
+        test('reports open on opening and closed on Cancel', () => {
+            const onConfirmationChange = jest.fn();
+            setup({onConfirmationChange});
+            expect(onConfirmationChange).toHaveBeenLastCalledWith(false);
+            openDelete();
+            expect(onConfirmationChange).toHaveBeenLastCalledWith(true);
+            fireEvent.click(screen.getByTestId('confirm-cancel'));
+            expect(onConfirmationChange).toHaveBeenLastCalledWith(false);
+        });
+
+        test('stays open through a failure and closes on success', async () => {
+            const onConfirmationChange = jest.fn();
+            const onNewConversation = jest.fn().mockResolvedValueOnce('Could not reset the conversation.').mockResolvedValue(null);
+            setup({onConfirmationChange, onNewConversation});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-new'));
+            armConfirm();
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await screen.findByRole('alert');
+            expect(onConfirmationChange).toHaveBeenLastCalledWith(true);
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await waitFor(() => expect(onConfirmationChange).toHaveBeenLastCalledWith(false));
+        });
+
+        test('closes when the conversation goes away', () => {
+            const onConfirmationChange = jest.fn();
+            const props: ConversationMenuProps = {
+                title: <h2>Conversation</h2>, hasConversation: true, hasMessages: true, pending: false,
+                onExport: jest.fn(), onNewConversation: jest.fn(), onDeleteConversation: jest.fn(), onConfirmationChange,
+            };
+            const {rerender} = render(<ConversationMenu {...props}/>);
+            openDelete();
+            expect(onConfirmationChange).toHaveBeenLastCalledWith(true);
+            rerender(<ConversationMenu {...props} hasConversation={false}/>);
+            expect(onConfirmationChange).toHaveBeenLastCalledWith(false);
+        });
+
+        test('About and an export failure are not confirmations', async () => {
+            const onConfirmationChange = jest.fn();
+            setup({onConfirmationChange, onExport: jest.fn().mockResolvedValue('Could not export your conversation.')});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-about-history'));
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-export'));
+            await screen.findByTestId('export-error');
+            expect(onConfirmationChange).not.toHaveBeenCalledWith(true);
+        });
+    });
+
+    test('opening a confirmation scrolls the stack to its heading', () => {
+        const assigned: number[] = [];
+        Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+            configurable: true,
+            get() { return 50; },
+            set(v: number) { assigned.push(v); },
+        });
+        try {
+            setup();
+            openDelete();
+            expect(assigned).toContain(0);
+            expect(screen.getByRole('heading', {name: 'Delete conversation?'})).toHaveFocus();
+        } finally {
+            delete (HTMLElement.prototype as {scrollTop?: unknown}).scrollTop;
+        }
+    });
+});
+
+describe('ConversationMenu sign-in link (issue #547 review)', () => {
+    const endedProps = (signInUrl: string): ConversationMenuProps => ({
+        title: <h2>Conversation</h2>, hasConversation: true, hasMessages: true, pending: false,
+        onExport: jest.fn().mockResolvedValue(SESSION_ENDED_COPY),
+        onNewConversation: jest.fn(), onDeleteConversation: jest.fn(), signInUrl,
+    });
+    const endedLink = async () => {
+        fireEvent.click(screen.getByRole('button', {name: 'More'}));
+        fireEvent.click(screen.getByTestId('conversation-export'));
+        return screen.findByTestId('confirm-sign-in');
+    };
+
+    test('keeps a server-built sign-in address that already names where to return, company included', async () => {
+        const given = '/accounts/login/?next=%2Fchat%2F%3Fcompany%3D5';
+        render(<ConversationMenu {...endedProps(given)}/>);
+        expect((await endedLink()).getAttribute('href')).toBe(given);
+    });
+
+    test('adds the current page as next when the address names none', async () => {
+        window.history.pushState({}, '', '/jobs/?x=1');
+        try {
+            render(<ConversationMenu {...endedProps('/accounts/login/')}/>);
+            expect((await endedLink()).getAttribute('href')).toBe('/accounts/login/?next=%2Fjobs%2F');
+        } finally {
+            window.history.pushState({}, '', '/');
+        }
     });
 });

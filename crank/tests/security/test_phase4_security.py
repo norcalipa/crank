@@ -942,16 +942,23 @@ class ScopePinningTests(TestCase):
             last_matched_at=now,
         )
         preferences.apply_patch_to_user(self.alice, {"set": {"notes": "keep me"}})
-        before = UserPreference.objects.get(user=self.alice).preferences
+        saved = UserPreference.objects.get(user=self.alice)
+        before = (saved.preferences, saved.revision)
 
         first = self._start_conversation()
         assert self._talk(first, "history").status_code == 201
         resp = self.client.post(reverse("agent-conversation-reset", args=[first]))
         assert resp.status_code == 201
-        second = resp.json()["id"]
-        assert self.client.post(reverse("agent-conversation-delete", args=[second])).status_code == 200
+        assert not JobSearchConversation.objects.get(pk=first).active
+        assert JobSearchMessage.objects.filter(conversation_id=first).exists()
+        # Delete the conversation that has the history (archived by the reset;
+        # delete does not filter on ``active``), not the fresh empty one.
+        assert self.client.post(reverse("agent-conversation-delete", args=[first])).status_code == 200
+        assert not JobSearchConversation.objects.filter(pk=first).exists()
+        assert not JobSearchMessage.objects.filter(conversation_id=first).exists()
 
-        assert UserPreference.objects.get(user=self.alice).preferences == before
+        after = UserPreference.objects.get(user=self.alice)
+        assert (after.preferences, after.revision) == before
         match.refresh_from_db()
         assert match.seen_at is None
         assert match.dismissed is False
