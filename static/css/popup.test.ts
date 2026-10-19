@@ -621,10 +621,35 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         expect(popupCss).not.toMatch(/\.assistant-panel-body[^{]*\{[^}]*scroll-padding/);
     });
 
-    it('pins the action row of an inline panel and caps footer notices against the card, falling back to 40% of the view', () => {
-        expect(rule('.chat-confirm-dismiss')).toMatch(/position:\s*sticky/);
+    it('leaves the action row of an inline panel in flow after the consequence and caps footer notices against the card, falling back to 40% of the view', () => {
+        expect(rule('.chat-confirm-dismiss')).not.toMatch(/position:\s*sticky/);
         expect(popupCss).not.toMatch(/\.chat-panel-stack \.chat-confirm-actions\s*\{/);
         expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);
+    });
+
+    it('lets an open New / Delete confirmation cover the inert composer band, spaces the action row either side of Export first, and keeps a busy Export first readable (visual review round 1)', () => {
+        expect(rule('.chat-panel-stack:has(> .chat-confirm-panel[role="group"])')).toMatch(/max-height:\s*var\(--chat-stack-cover-max,\s*var\(--chat-stack-max,\s*none\)\)/);
+        expect(popupCss).toMatch(/\.chat-confirm-actions \+ \.chat-confirm-dismiss,\s*\.chat-confirm-dismiss \+ \.chat-confirm-actions\s*\{[^}]*margin-top:\s*\.5rem/);
+        expect(rule('.chat-confirm-actions .btn[aria-disabled="true"]')).toMatch(/opacity:\s*1;[^}]*text-decoration:\s*none/);
+        expect(rule('#job-search-chat .chat-footer[inert] .form-control')).toMatch(/background-color:\s*var\(--bs-secondary-bg\)/);
+        expect(popupCss).toMatch(/@media \(max-height: 30rem\)\s*\{[\s\S]*?\.chat-confirm-panel \.chat-confirm-error\s*\{[^}]*font-size:\s*\.8125rem/);
+    });
+
+    it('beats the base failure-text rule in compact mode, aligns the export-error row, and gives the sign-in link a tap target (visual review round 2)', () => {
+        // The compact rule must out-specify the base .chat-confirm-error rule that follows it.
+        expect(popupCss).not.toMatch(/@media \(max-height: 30rem\)\s*\{[\s\S]*?\n    \.chat-confirm-error\s*\{/);
+        expect(popupCss).toMatch(/@media \(min-width: 576px\)\s*\{[\s\S]*?\[data-testid="export-error"\] > \.chat-confirm-dismiss\s*\{\s*margin-top:\s*0/);
+        expect(popupCss).toMatch(/@media \(max-width: 575\.98px\)\s*\{\s*\[data-testid="export-error"\]\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*1fr 1fr/);
+        expect(popupCss).toMatch(/\[data-testid="export-error"\] > \.chat-confirm-error\s*\{\s*grid-column:\s*1 \/ -1/);
+        expect(rule('.chat-confirm-signin')).toMatch(/white-space:\s*nowrap/);
+        expect(popupCss).toMatch(/@media \(max-width: 575\.98px\), \(max-height: 30rem\)\s*\{\s*\.chat-confirm-signin\s*\{[^}]*display:\s*inline-block;[^}]*padding-block:\s*\.75rem;[^}]*margin-block:\s*-\.75rem/);
+        expect(popupCss).toMatch(/@media \(max-height: 30rem\)\s*\{\s*\.chat-confirm-signin\s*\{[^}]*padding-block:\s*\.875rem;[^}]*margin-block:\s*-\.875rem/);
+    });
+
+    it('fills the gap between two stacked panels, dims the footer buttons under [inert], and leaves the sign-in link room above the retry on a short phone (visual review round 3)', () => {
+        expect(rule('.chat-panel-stack:has(> .chat-confirm-panel + .chat-confirm-panel)')).toMatch(/background-color:\s*var\(--bs-body-bg\)/);
+        expect(rule('#job-search-chat .chat-footer[inert] .btn')).toMatch(/opacity:\s*\.65;[^}]*cursor:\s*default/);
+        expect(popupCss).toMatch(/@media \(max-width: 575\.98px\) and \(max-height: 30rem\)\s*\{\s*\.chat-confirm-panel \.chat-confirm-error:has\(\.chat-confirm-signin\)\s*\{[^}]*margin-bottom:\s*\.625rem/);
     });
 });
 
@@ -673,12 +698,11 @@ describe('one transcript scroller in the assistant panel (issue #483)', () => {
             .toMatch(/min-height:\s*4\.5rem;/);
     });
 
-    it('pins nothing in the chat: no rule that names the chat, the panel body or the priorities block is sticky, bar four known ones', () => {
+    it('pins nothing in the chat: no rule that names the chat, the panel body or the priorities block is sticky, bar three known ones', () => {
         const sticky = rules.filter((r) => /#job-search-chat|\.chat-|\.assistant-panel-body|\.priorities-sidebar/.test(r.selector)
             && /position:\s*sticky/.test(r.declarations));
-        // Only the confirmation's dismiss control and the priorities editor's own bars pin; no bar of the chat does.
+        // Only the priorities editor's own bars pin; no bar of the chat does, and the confirmation's action row follows its consequence in flow (issue #547).
         expect(sticky.map((r) => r.selector)).toEqual([
-            '.chat-confirm-dismiss',
             '.priorities-sidebar .priorities-applied > .chat-actions, .priorities-sidebar .priorities-confirm > .chat-actions',
             '.priorities-review > .chat-actions',
             '.priorities-sidebar .priorities-review-compact > .pref-change-error',
