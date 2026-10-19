@@ -273,10 +273,12 @@ test.describe('availability before submission @outage', () => {
         // The status is cached for up to 30 s, and the normal pass leaves a
         // 'ready' answer behind: wait until the server reports the outage,
         // then load the page so the notice cannot be hidden by the cache.
-        await expect.poll(async () => {
-            const response = await page.request.get('/api/agent/assistant-status/');
-            return (await response.json()).state;
-        }, {timeout: 35_000, intervals: [1_000]}).not.toBe('ready');
+        // (An in-page fetch: the request fixture does not use the browser's
+        // host mapping for local.crank.fyi.)
+        await expect.poll(
+            () => page.evaluate(async () => (await (await fetch('/api/agent/assistant-status/')).json()).state),
+            {timeout: 35_000, intervals: [1_000]},
+        ).not.toBe('ready');
         await page.goto('/chat/');
 
         // Before ANY text is entered, the advisory notice is visible as an

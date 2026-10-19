@@ -123,10 +123,10 @@ test.describe('failed assistant turn persistence @outage', () => {
         await expect(sent).toHaveCount(1);
         await expect(sent.getByTestId('failed-turn')).toContainText('after several retries');
 
-        // The server's own message states the cap: the first send plus every
-        // press is one attempt.
+        // The server's own message states the cap: the first send and the
+        // accepted presses are the attempts, and the last press was refused.
         await expect(error).toHaveAttribute('data-error-type', 'retry_limit_reached');
-        await expect(error).toContainText(`after ${presses + 1} attempts`);
+        await expect(error).toContainText(`after ${presses} attempts`);
 
         // The exhausted state is the persisted one: it survives a reload.
         await page.reload();
