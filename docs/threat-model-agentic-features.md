@@ -592,6 +592,14 @@ compared with `main`, requests in flight, concurrency against real Redis), `cran
    identified, they key on the trusted address (an IPv6 /64 as its network).
    Until then, and for a request with no identified address, they key on the
    leftmost `X-Forwarded-For`, which a client behind Cloudflare controls.
+   Even then the limits hold sequential attempts only: allauth counts with an
+   unlocked read-then-write (`cache.get`, then `cache.set`, in
+   `allauth/core/ratelimit.py`), so parallel requests from one address can
+   exceed them. Measured on the changed code with one trusted address and a
+   limit of 30 a minute for sign-in: 60 sequential attempts gave 30 allowed and
+   30 refused, while 60 attempts over 12 concurrent connections gave 44 to 51
+   allowed; 60 threads against a limit of 20 for sign-up were all allowed in
+   5 of 5 trials. The race is in allauth, not in this change.
    Throwaway accounts still multiply every other per-account limit:
    job-search messages, company suggestions and match refreshes.
 3. **There is no global ceiling and no alert.** One account can queue 240

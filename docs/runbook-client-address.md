@@ -65,12 +65,15 @@ The table says who is supposed to; the gate below is what makes it true.
   (120) rejected attempts an hour, across all accounts. The per-account limits
   (10 and 60) are checked first and are not loosened.
 - With the source on and an address identified, allauth's per-address limits
-  (sign-up, sign-in, failed sign-in, password reset and sign-in code request,
-  at allauth's default values) key on that address, an IPv6 /64 as its
-  network, instead of the leftmost `X-Forwarded-For`. A request with no
-  identified address keeps allauth's own value. A tripped limit answers a `429`
-  page ("Too many attempts"). While the switch is off, these limits key on the
-  leftmost `X-Forwarded-For`, which a client behind Cloudflare chooses.
+  (sign-up, sign-in, failed sign-in, password reset, and password reset from
+  the e-mailed link, `reset_password_from_key`, 20 a minute for each address)
+  key on that address, an IPv6 /64 as its network, instead of the leftmost
+  `X-Forwarded-For`. A request with no identified address keeps allauth's own
+  value. A tripped limit answers a `429` page ("Too many attempts"), except
+  failed sign-ins: those re-render the sign-in form with the error "Too many
+  failed login attempts" (status 200), not the `429` page. While the switch is
+  off, these limits key on the leftmost `X-Forwarded-For`, which a client
+  behind Cloudflare chooses.
 - A request whose header is missing, duplicated or malformed is not refused and
   is not put in a shared bucket: it gets the per-account limits only, and the
   app logs `client address unavailable` with the reason (`missing`,
@@ -403,11 +406,46 @@ per-address layer stays off and production keeps the per-account limits.
   have no `client address unavailable` warning. The warning is written by one
   pod, at most once every 10 minutes for each reason, so one pod's logs are
   not enough.
-- **V6.** From one machine, send a burst of 40 sign-in attempts with a
-  different `X-Forwarded-For` value on each (the `login` limit is 30 a
-  minute for each address). The burst is held: the later attempts answer `429`
-  with the "Too many attempts" page. If every attempt is answered normally, the
-  limits still key on the forwarded header: treat it as a failure and roll back.
+- **V6.** On the sign-in page (`https://crank.fyi/accounts/login/`), in the
+  browser console, send 40 sign-in attempts from this machine, each with a
+  different `X-Forwarded-For` value and a fresh throwaway login (the `login`
+  limit is 30 a minute for each address):
+
+  ```js
+  (async () => {
+    const token = document.querySelector('[name=csrfmiddlewaretoken]').value;
+    const codes = [];
+    for (let i = 1; i <= 40; i++) {
+      const r = await fetch('/accounts/login/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Forwarded-For': `198.51.100.${i}`,
+        },
+        body: new URLSearchParams({
+          csrfmiddlewaretoken: token,
+          login: `v6-${Date.now()}-${i}@example.invalid`,
+          password: 'not-a-real-password',
+        }),
+      });
+      codes.push(r.status);
+    }
+    console.log(codes.join(' '));
+  })();
+  ```
+
+  Judge by status code only. **Pass:** attempts 31 to 40 answer `429` (the
+  earlier ones answer `200`, the form with its error). **Fail, roll back:** no
+  `429` at all, which means the limits still key on the forwarded header. Any
+  `403` means the check did not run (the CSRF check refused the request before
+  allauth's limiter): reload the sign-in page and repeat.
+
+  Run it in the console, not as a `curl` loop: a POST without the form's CSRF
+  cookie and token answers `403` (over HTTPS, also without an `Origin` or
+  `Referer` header) whatever the switch says. Use a new login name for every
+  attempt: with one name, allauth's per-login limit (5 in 5 minutes) answers
+  "Too many failed login attempts" on the form from the sixth attempt, with the
+  switch off as well, and that looks like a held burst but is not.
 
 ## Roll back
 
