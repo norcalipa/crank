@@ -1577,17 +1577,21 @@ body.app-nav-drawer-open {
     width: fit-content;
 }
 
-/* Under 375px the "Updated" mark sits in the line the toolbar already
-   reserves below the count, so its arrival and departure move nothing. */
-.rankings-toolbar-count {
+/* On phones the "Updated" mark sits in the line the toolbar reserves under
+   the count whenever that line is empty, so its arrival and departure move
+   nothing however long the count is; with a label error in that line (or
+   the loading line, while the labels are still loading) it follows the
+   count instead of hiding under the alert: the `:empty` gate falls back
+   whenever the status slot holds anything. */
+.organization-results-count {
     position: relative;
 }
 
-@media (max-width: 374.98px) {
-    .organization-results-count .badge {
+@media (max-width: 575.98px) {
+    .rankings-toolbar-count:has(> .choices-status-slot:empty) .organization-results-count .badge {
         position: absolute;
         left: 0;
-        top: 1.75rem;
+        top: calc(100% + 0.125rem);
         margin-left: 0 !important;
     }
 }

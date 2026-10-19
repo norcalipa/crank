@@ -1248,6 +1248,8 @@ describe('OrganizationList', () => {
         let pollSeconds: number | null;
         let revisionFails: boolean;
         let listFails: 'no' | 'reject' | 'status' | 'malformed';
+        // When set, the list read waits for it (the reader acts while it is out).
+        let listGate: Promise<void> | null;
         let scrollBy: jest.Mock;
         let rectSpy: jest.SpyInstance;
         let heading: HTMLElement;
@@ -1292,6 +1294,7 @@ describe('OrganizationList', () => {
             pollSeconds = 60;
             revisionFails = false;
             listFails = 'no';
+            listGate = null;
             Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => visibility});
             setScrollY(0);
             const choices = global.fetch as jest.Mock;
@@ -1302,6 +1305,13 @@ describe('OrganizationList', () => {
                         ok: true, status: 200,
                         json: () => Promise.resolve({revision: serverRevision, poll_after_seconds: pollSeconds}),
                     });
+                }
+                if (url === '/api/rankings/5/' && listGate) {
+                    const gate = listGate;
+                    return gate.then(() => ({
+                        ok: true, status: 200,
+                        json: () => Promise.resolve({revision: serverRevision, organizations: serverRows}),
+                    }));
                 }
                 if (url === '/api/rankings/5/') {
                     if (listFails === 'reject') return Promise.reject(new Error('offline'));
@@ -1676,6 +1686,48 @@ describe('OrganizationList', () => {
             expect(screen.queryByTestId('rankings-updated-error')).not.toBeInTheDocument();
         });
 
+        test('a second failed Refresh is announced again: the sentence is cleared when each read starts', async () => {
+            mount();
+            await foundNotice();
+            listFails = 'reject';
+            const region = screen.getByTestId('rankings-announcement');
+            const texts: string[] = [];
+            const observer = new MutationObserver(() => texts.push(region.textContent ?? ''));
+            observer.observe(region, {childList: true, characterData: true, subtree: true});
+            await press();
+            await Promise.resolve();
+            expect(region).toHaveTextContent("Couldn't refresh. Try again.");
+            const nodeBefore = region.firstChild;
+            await press();
+            await Promise.resolve();
+            expect(region).toHaveTextContent("Couldn't refresh. Try again.");
+            // A new node each time, so the polite region speaks it again.
+            expect(region.firstChild).not.toBe(nodeBefore);
+            expect(texts.filter((text) => text === "Couldn't refresh. Try again.").length).toBeGreaterThanOrEqual(2);
+            observer.disconnect();
+        });
+
+        test('a second idle apply is announced again', async () => {
+            mount();
+            const region = screen.getByTestId('rankings-announcement');
+            await tick(30_000);
+            await setVisibility('hidden');
+            await tick(120_000);
+            serverRevision = NEWER;
+            await setVisibility('visible');
+            expect(region).toHaveTextContent('Showing updated rankings.');
+            const nodeBefore = region.firstChild;
+            // Away again; the data moves once more and the next return applies it.
+            await setVisibility('hidden');
+            await tick(120_000);
+            serverRevision = 'cccccccccccccccc';
+            serverRows = [org(1, 'Alpha Co', 1, 5), ...newerRows.slice(1)];
+            await setVisibility('visible');
+            expect(names()[0]).toBe('Alpha Co');
+            expect(region).toHaveTextContent('Showing updated rankings.');
+            expect(region.firstChild).not.toBe(nodeBefore);
+        });
+
         test('a second press while the read is out sends nothing more, and the button says it is busy', async () => {
             mount();
             await foundNotice();
@@ -1815,6 +1867,72 @@ describe('OrganizationList', () => {
                 expect(seen).toHaveClass('invisible');
                 expect(seen).toHaveAttribute('aria-hidden', 'true');
                 panel.remove();
+            });
+
+            describe('the reader acts while the list read is out', () => {
+                // Return to the tab with a newer revision; the poll answers at the top
+                // of an untouched page, then the list read is held until `release`.
+                const returnWithHeldRead = async () => {
+                    let release = () => {};
+                    listGate = new Promise<void>((resolve) => { release = resolve; });
+                    await tick(30_000);
+                    await setVisibility('hidden');
+                    await tick(120_000);
+                    serverRevision = NEWER;
+                    await setVisibility('visible');
+                    expect(listCalls()).toBe(1);
+                    expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                    return async () => {
+                        await act(async () => {
+                            release();
+                            await jest.advanceTimersByTimeAsync(0);
+                        });
+                    };
+                };
+
+                test.each([
+                    ['a scroll', () => setScrollY(400)],
+                    ['focus in the search box', () => screen.getByPlaceholderText('Search organizations').focus()],
+                    ['focus on a row', () => {
+                        const row = document.querySelector('.organization-row') as HTMLElement;
+                        row.tabIndex = -1;
+                        row.focus();
+                    }],
+                ])('%s before the rows land gets the notice, and the order stays', async (_label, act_) => {
+                    mount();
+                    const release = await returnWithHeldRead();
+                    act_();
+                    await release();
+                    expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                    expect(screen.getByTestId('rankings-updated-notice')).toBeInTheDocument();
+                    expect(screen.queryByTestId('rankings-updated-badge')).not.toBeInTheDocument();
+                    expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Updated results available.');
+                    // Only the notice's own height is made up for; no row moved.
+                    scrollBy.mock.calls.forEach(([arg]) => expect(arg).toEqual({top: 80, left: 0, behavior: 'instant'}));
+                    // The notice's button still brings them in.
+                    await press();
+                    expect(names()[0]).toBe('Beta Co');
+                });
+
+                test('with no input before the rows land, the idle return still swaps', async () => {
+                    mount();
+                    const release = await returnWithHeldRead();
+                    await release();
+                    expect(names()).toEqual(['Beta Co', 'Alpha Co', 'Gamma Co', 'Delta Co']);
+                    expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+                    expect(screen.getByTestId('rankings-updated-badge')).toBeInTheDocument();
+                });
+
+                test('rows that went back to what is shown change nothing even if the reader scrolled', async () => {
+                    mount();
+                    const release = await returnWithHeldRead();
+                    serverRevision = SHOWN;
+                    serverRows = shownRows;
+                    setScrollY(400);
+                    await release();
+                    expect(names()).toEqual(['Alpha Co', 'Beta Co', 'Gamma Co']);
+                    expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
+                });
             });
 
             test('a scrolled page gets the notice instead', async () => {

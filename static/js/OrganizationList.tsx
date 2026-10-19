@@ -144,6 +144,7 @@ interface OrganizationListState {
     refreshing: boolean;
     refreshFailed: boolean;
     announcement: string;
+    announcementKey: number;
     updatedMark: 'off' | 'on' | 'seen';
 }
 
@@ -209,7 +210,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             newerRevision: null,
             refreshing: false,
             refreshFailed: false,
-            announcement: '',
+            ...this.announce(''),
+            announcementKey: 0,
             updatedMark: 'off',
         };
     }
@@ -454,11 +456,20 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
     }
 
+    // A new sentence for the polite region. Each one is a new node (keyed), so
+    // the same outcome twice in a row is heard twice.
+    private announce(text: string) {
+        this.announcementSeq += 1;
+        return {announcement: text, announcementKey: this.announcementSeq};
+    }
+
+    private announcementSeq = 0;
+
     // The notice goes up (or its revision moves on); the row being read stays.
     private showNotice(revision: string) {
         if (this.state.newerRevision === null) {
             this.pendingRows = this.captureRows();
-            this.setState({newerRevision: revision, announcement: UPDATED_AVAILABLE});
+            this.setState({newerRevision: revision, ...this.announce(UPDATED_AVAILABLE)});
         } else if (this.state.newerRevision !== revision) {
             this.setState({newerRevision: revision});
         }
@@ -469,7 +480,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             // The data went back to what is on screen: the notice has no point.
             if (this.state.newerRevision !== null) {
                 this.pendingRows = this.captureRows();
-                this.setState({newerRevision: null, refreshFailed: false, announcement: ''});
+                this.setState({newerRevision: null, refreshFailed: false, ...this.announce('')});
             }
             return;
         }
@@ -499,8 +510,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
         this.refreshRunning = true;
         const epoch = this.refreshEpoch;
+        // Clear the sentence first, so a repeat of the last outcome is a change.
         if (mode === 'press') {
-            this.setState({refreshing: true, refreshFailed: false});
+            this.setState({refreshing: true, refreshFailed: false, ...this.announce('')});
+        } else {
+            this.setState({...this.announce('')});
         }
         let payload: {revision: string; organizations: Organization[]};
         try {
@@ -518,7 +532,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 return;
             }
             if (mode === 'press') {
-                this.setState({refreshing: false, refreshFailed: true, announcement: REFRESH_FAILED});
+                this.setState({refreshing: false, refreshFailed: true, ...this.announce(REFRESH_FAILED)});
             } else {
                 // The idle swap did not happen: say so the usual way.
                 this.showNotice(polledRevision as string);
@@ -543,11 +557,24 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             }
             return;
         }
-        // An idle apply only happens at the top of the page: it holds nothing.
+        // The idle rule was true when the poll answered; the reader may have
+        // scrolled or focused something since. Re-check as the rows land (as
+        // the job-match panel does) and offer them instead of swapping.
+        if (mode === 'auto' && revision !== this.state.shownRevision && !shouldAutoApplyRefresh({
+            foundOnFirstCheckAfterReturn: true,
+            scrollY: window.scrollY,
+            focusInsidePanel: this.resultsRef.current?.contains(document.activeElement) === true,
+        })) {
+            this.setState({refreshing: false});
+            this.showNotice(revision);
+            return;
+        }
+        // An idle apply that gets here is at the top of the page with nothing
+        // focused in the list: it holds nothing.
         this.pendingRows = mode === 'auto' ? null : this.captureRows();
         this.heldRow = null;
         if (revision === this.state.shownRevision) {
-            this.setState({newerRevision: null, refreshing: false, refreshFailed: false, announcement: ''});
+            this.setState({newerRevision: null, refreshing: false, refreshFailed: false, ...this.announce('')});
             return;
         }
         const {searchTerm, acceleratedVesting, rtoPolicy} = this.state;
@@ -566,7 +593,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             newerRevision: null,
             refreshing: false,
             refreshFailed: false,
-            announcement: UPDATED_SHOWN,
+            ...this.announce(UPDATED_SHOWN),
             updatedMark: mode === 'auto' ? 'on' : 'off',
         });
     }
@@ -1232,6 +1259,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             refreshing,
             refreshFailed,
             announcement,
+            announcementKey,
             updatedMark,
         } = this.state;
 
@@ -1348,7 +1376,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                                   aria-hidden="true">Updated</span>
                         )}
                     </div>
-                    <div className="visually-hidden" data-testid="rankings-announcement">{announcement}</div>
+                    <div className="visually-hidden" data-testid="rankings-announcement"><span key={announcementKey}>{announcement}</span></div>
                     <div className="choices-status-slot">
                     {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Loading funding round and RTO labels…</span></div>}
                     {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">

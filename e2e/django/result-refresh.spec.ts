@@ -728,6 +728,95 @@ test.describe('Updated rankings available (company rankings)', () => {
         expect(Math.abs((await page.locator('.organization-results-count').boundingBox())!.height - count.height)).toBeLessThanOrEqual(1);
     });
 
+    // Away, then back at the top with nothing focused: the first check finds the change.
+    const returnIdle = async (page: Page) => {
+        await page.evaluate(() => {
+            window.scrollTo({top: 0, left: 0, behavior: 'instant'});
+            (document.activeElement as HTMLElement | null)?.blur();
+        });
+        await setTabVisibility(page, 'hidden');
+        await page.clock.runFor(5 * 60_000);
+        raiseGamma();
+    };
+
+    for (const [width, height] of [[320, 640], [375, 667]] as const) {
+        test(`the "Updated" mark sits under a long count on a phone without moving the toolbar at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            rankingsFixture('pad');
+            await openRankings(page);
+            await expect(page.getByText('Showing 1-15 of 16 organizations')).toBeVisible();
+            // The labels have loaded: the status line is empty, so the mark takes the reserved line.
+            await expect(page.locator('.rankings-toolbar-count .choices-status-slot')).toBeEmpty();
+            const toolbarHeight = () => page.locator('.rankings-toolbar-count').evaluate((node) => node.getBoundingClientRect().height);
+            const before = await toolbarHeight();
+            await returnIdle(page);
+            await setTabVisibility(page, 'visible');
+            const badge = page.getByTestId('rankings-updated-badge');
+            await expect(badge).toBeVisible();
+            const geometry = await page.evaluate(() => {
+                const count = document.querySelector<HTMLElement>('.organization-results-count')!;
+                const mark = count.querySelector<HTMLElement>('.badge')!;
+                const range = document.createRange();
+                range.selectNodeContents(count);
+                range.setEndBefore(mark);
+                const text = Array.from(range.getClientRects()).filter((rect) => rect.width > 0);
+                const box = mark.getBoundingClientRect();
+                const overlaps = text.some((rect) => box.left < rect.right && box.right > rect.left
+                    && box.top < rect.bottom && box.bottom > rect.top);
+                return {
+                    box: {left: box.left, right: box.right, top: box.top, bottom: box.bottom},
+                    textRects: text.length,
+                    overlaps,
+                    viewport: {width: window.innerWidth, height: window.innerHeight},
+                };
+            });
+            expect(geometry.textRects).toBeGreaterThan(0);
+            expect(geometry.overlaps).toBe(false);
+            expect(geometry.box.left).toBeGreaterThanOrEqual(0);
+            expect(geometry.box.right).toBeLessThanOrEqual(geometry.viewport.width);
+            expect(geometry.box.top).toBeGreaterThanOrEqual(0);
+            expect(geometry.box.bottom).toBeLessThanOrEqual(geometry.viewport.height);
+            // Its arrival and its going move nothing.
+            expect(Math.abs((await toolbarHeight()) - before)).toBeLessThanOrEqual(1);
+            await page.mouse.wheel(0, 40);
+            await expect(badge).toHaveCount(0);
+            expect(Math.abs((await toolbarHeight()) - before)).toBeLessThanOrEqual(1);
+            await expectNoHorizontalOverflow(page);
+        });
+    }
+
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
+        test(`a scroll while the idle read is out gets the notice, and no row moves at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            rankingsFixture('pad');
+            await openRankings(page);
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            await page.route(/\/api\/rankings\/\d+\/$/, async (route) => {
+                await held;
+                await route.continue();
+            });
+            const seen = countRankingsRequests(page);
+            await returnIdle(page);
+            await setTabVisibility(page, 'visible');
+            // The poll answered at the top of an untouched page and the list read is out.
+            await expect.poll(() => seen.list).toBe(1);
+            await page.mouse.wheel(0, 180);
+            await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+            const before = await rowTops(page);
+            const names = await rowNames(page);
+            release();
+            await expect(notice(page)).toBeVisible();
+            expect(await rowNames(page)).toEqual(names);
+            await expect(page.getByTestId('rankings-updated-badge')).toHaveCount(0);
+            // The notice is above the rows and the page makes up for its height: the rows stay put.
+            await expect.poll(async () => {
+                const after = await rowTops(page);
+                return Math.max(...Object.keys(before).map((id) => Math.abs(after[id] - before[id])));
+            }).toBeLessThanOrEqual(2);
+        });
+    }
+
     test('a list on page 2 that shrinks to one page lands on page 1 and the URL says so', async ({page}) => {
         rankingsFixture('pad');
         await openRankings(page, '/?page=2');

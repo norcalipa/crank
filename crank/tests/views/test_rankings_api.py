@@ -12,6 +12,7 @@ from django.urls import reverse
 
 from crank.models.organization import Organization
 from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
+from crank.services.scores import algorithm_results_cache_key
 from crank.settings import DEFAULT_ALGORITHM_ID
 from crank.views.index import ranking_rows, rankings_revision
 
@@ -46,18 +47,20 @@ class RankingsRevisionTests(TestCase):
         self.assertEqual(revision, rankings_revision(copy.deepcopy(SAMPLE_ROWS)))
         self.assertEqual(revision, rankings_revision(tuple(SAMPLE_ROWS)))
 
-    def test_floats_are_rounded_to_six_places(self):
+    def test_scores_are_digested_as_the_list_shows_them(self):
         rows = copy.deepcopy(SAMPLE_ROWS)
-        rows[0]['avg_score'] = 4.8000001
+        rows[0]['avg_score'] = 4.8040001
         self.assertEqual(rankings_revision(rows), rankings_revision(SAMPLE_ROWS))
-        rows[0]['avg_score'] = 4.8001
+        rows[0]['avg_score'] = 4.81
         self.assertNotEqual(rankings_revision(rows), rankings_revision(SAMPLE_ROWS))
+        rows[0]['avg_score'] = None  # a row with no score still has a revision
+        self.assertRegex(rankings_revision(rows), r'^[0-9a-f]{16}$')
 
     def test_every_visible_field_changes_the_revision(self):
         base = rankings_revision(SAMPLE_ROWS)
         changes = {
-            'id': 9, 'name': 'Alpha 2', 'type': 'S', 'rto_policy': 'O', 'funding_round': 'A',
-            'accelerated_vesting': False, 'avg_score': 3.0, 'profile_completeness': 90.0, 'ranking': 3,
+            'id': 9, 'name': 'Alpha 2', 'rto_policy': 'O', 'funding_round': 'A',
+            'accelerated_vesting': False, 'avg_score': 3.0, 'ranking': 3,
             'rating_dimensions_total': 3, 'rating_dimensions_covered': 1,
         }
         for field, value in changes.items():
@@ -65,13 +68,37 @@ class RankingsRevisionTests(TestCase):
             rows[0][field] = value
             self.assertNotEqual(rankings_revision(rows), base, field)
         evidence_changes = {
-            'verified': 4, 'stale': 0, 'unknown': 1, 'total': 7, 'fact_coverage': 5,
-            'last_verified_at': '2026-10-02T00:00:00+00:00', 'pending_review': 2,
+            'verified': 4, 'stale': 0, 'unknown': 1,
+            'last_verified_at': '2026-10-02T00:00:00+00:00',
         }
         for field, value in evidence_changes.items():
             rows = copy.deepcopy(SAMPLE_ROWS)
             rows[0]['evidence'][field] = value
             self.assertNotEqual(rankings_revision(rows), base, f'evidence.{field}')
+        rows = copy.deepcopy(SAMPLE_ROWS)
+        rows[1]['evidence']['pending_review'] = 0
+        self.assertNotEqual(rankings_revision(rows), base, 'pending_review appears or goes')
+        rows = copy.deepcopy(SAMPLE_ROWS)
+        rows[1]['evidence']['last_verified_at'] = '2026-10-01T00:00:00+00:00'
+        self.assertNotEqual(rankings_revision(rows), base, 'a first verification date')
+
+    def test_changes_the_list_does_not_show_leave_the_revision_alone(self):
+        base = rankings_revision(SAMPLE_ROWS)
+        quiet = [
+            ('type', lambda row: row.update(type='S')),
+            ('profile_completeness', lambda row: row.update(profile_completeness=90.0)),
+            ('fact_coverage', lambda row: row['evidence'].update(fact_coverage=5)),
+            ('evidence.total', lambda row: row['evidence'].update(total=7)),
+            ('same-day re-verification',
+             lambda row: row['evidence'].update(last_verified_at='2026-10-01T17:45:09.123456+00:00')),
+        ]
+        for label, change in quiet:
+            rows = copy.deepcopy(SAMPLE_ROWS)
+            change(rows[0])
+            self.assertEqual(rankings_revision(rows), base, label)
+        rows = copy.deepcopy(SAMPLE_ROWS)
+        rows[1]['evidence']['pending_review'] = 3
+        self.assertEqual(rankings_revision(rows), base, 'open claims are a badge, not a count')
 
     def test_order_changes_the_revision(self):
         self.assertNotEqual(rankings_revision(SAMPLE_ROWS), rankings_revision(list(reversed(SAMPLE_ROWS))))
@@ -130,11 +157,13 @@ class RankingsApiTests(TestCase):
         first = self.client.get(f'/algo/{DEFAULT_ALGORITHM_ID}/')
         revision = self.config_revision(first)
         Score.objects.filter(target_id=self.orgs[1].id).update(score=5.0)
-        cache.delete(f'algorithm_{DEFAULT_ALGORITHM_ID}_results')
-        # The page is still the cached one: rows and revision still agree.
+        cache.delete(algorithm_results_cache_key(DEFAULT_ALGORITHM_ID))
+        # The page is still the cached one: rows and revision still agree...
         second = self.client.get(f'/algo/{DEFAULT_ALGORITHM_ID}/')
         self.assertEqual(self.config_revision(second), revision)
         self.assertEqual(rankings_revision(self.embedded(second)), revision)
+        # ...while the endpoint reads the rows as they are now (AC 17).
+        self.assertNotEqual(self.client.get(self.revision_url).json()['revision'], revision)
 
     def test_revision_survives_a_cache_rebuild_and_follows_a_score_change(self):
         before = self.client.get(self.revision_url).json()['revision']

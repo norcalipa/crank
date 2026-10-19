@@ -136,28 +136,43 @@ def ranking_rows(algorithm_id):
         timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 
 
-def _canonical(value):
-    """``value`` with every float rounded to 6 places, for a stable digest."""
-    if isinstance(value, float):
-        return round(value, 6)
-    if isinstance(value, dict):
-        return {key: _canonical(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_canonical(item) for item in value]
-    return value
+def _shown(row):
+    """What one ranking row puts on screen, and nothing it keeps out of sight."""
+    evidence = row['evidence']
+    verified_at = evidence['last_verified_at']
+    return {
+        'id': row['id'],
+        'name': row['name'],
+        'ranking': row['ranking'],
+        'avg_score': round(row['avg_score'], 2) if row['avg_score'] is not None else None,
+        'rto_policy': row['rto_policy'],
+        'funding_round': row['funding_round'],
+        'accelerated_vesting': row['accelerated_vesting'],
+        'rating_dimensions_covered': row['rating_dimensions_covered'],
+        'rating_dimensions_total': row['rating_dimensions_total'],
+        'verified': evidence['verified'],
+        'stale': evidence['stale'],
+        'unknown': evidence['unknown'],
+        'has_pending_review': evidence['pending_review'] > 0,
+        'verified_on': str(verified_at)[:10] if verified_at else None,
+    }
 
 
 def rankings_revision(rows):
     """Sixteen hex characters naming exactly what the rankings show (issue #485).
 
-    A digest of the rows in their order (``ORDER BY ranking, id`` makes the
-    order a fact of the query), computed when the list is read, so the cache
-    key, its value and the invalidation paths stay as they were. A rebuild
-    with identical content gives the identical revision, so a cache expiry
-    alone never raises a notice; a change to any field a reader can see does.
+    A digest of a projection of the rows in their order (``ORDER BY ranking,
+    id`` makes the order a fact of the query): the fields a row renders, at
+    the precision it renders them (score to two places, the verification
+    date without its time, open claims as a badge). Computed when the list is
+    read, so the cache key, its value and the invalidation paths stay as they
+    were. A rebuild with identical content, or a change the list does not
+    show (a same-day re-verification, a second open claim, a score drifting
+    below 0.005), gives the identical revision, so no notice announces
+    nothing; a change to anything a reader can see does.
     """
     canonical = json.dumps(
-        _canonical(list(rows)), cls=DjangoJSONEncoder, sort_keys=True, separators=(',', ':'))
+        [_shown(row) for row in rows], cls=DjangoJSONEncoder, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]
 
 

@@ -968,8 +968,8 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
         const section = popupCss.slice(start, next);
         expect(section).toMatch(/#rankings-heading \{\s*width: fit-content;\s*\}/);
-        expect(section).toMatch(/\.rankings-toolbar-count \{\s*position: relative;\s*\}/);
-        expect(section).toMatch(/@media \(max-width: 374\.98px\) \{\s*\.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*top: 1\.75rem;\s*margin-left: 0 !important;/);
+        expect(section).toMatch(/\.organization-results-count \{\s*position: relative;\s*\}/);
+        expect(section).toMatch(/@media \(max-width: 575\.98px\) \{\s*\.rankings-toolbar-count:has\(> \.choices-status-slot:empty\) \.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*top: calc\(100% \+ 0\.125rem\);\s*margin-left: 0 !important;/);
     });
 
     it('scopes the heading scroll margin to the widths that show the sticky top bar', () => {
