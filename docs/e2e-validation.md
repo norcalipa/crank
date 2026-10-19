@@ -34,8 +34,8 @@ implementation run and are re-run by CI.
 | Command | Result |
 | --- | --- |
 | `npx webpack` | compiled successfully (webpack 5.95.0, both `main` and `jobsearch`/`jobmatch` bundles) |
-| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **PASSED_PLACEHOLDER** — the skips are the #490 test (named below) and the three capture-pass-only tests; the flaky test (`company-view.spec.ts` "Ask keeps the view…") passed on its retry |
-| `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **7 passed, 0 skipped (29.5s)**; with `--repeat-each=2` on one database: 14 passed (the failed-turn tests scope every locator to their own probe, so a second run passes) |
+| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **546 passed, 4 skipped, 1 flaky (26.4m)** — the skips are the #490 test (named below) and the three capture-pass-only tests; the flaky test (`assistant-actions.spec.ts` "Open, return to results, then Apply…") passed on its retry |
+| `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **7 passed, 0 skipped (32.2s)**, started right after the normal pass on the same Redis, so the assistant-status notice test waits out the 30 s cache the normal pass left behind |
 | `npx playwright test --project=chromium --project=firefox` (fixture tier) | **402 passed, 971 skipped (Django-tier specs collected by the fixture config, named-reason skips), 1 flaky** (Firefox, `job-search-chat-viewport.spec.ts` double press on Delete; passed on retry). WebKit cannot launch on the local host; CI runs it |
 | `npx jest` | **2285 passed (50 suites)** |
 | `coverage run -m pytest -q` (`ENV=dev`, private Redis) | **4979 passed, 18 skipped** |
