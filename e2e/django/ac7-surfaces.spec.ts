@@ -3,10 +3,10 @@
 // AC7 (issue #491): every action from rankings, details, jobs, Help and the
 // assistant has a visible, asserted outcome.
 //
-// The surfaces below ship on main, except the company comparison (#490) and
-// the update-revision race (#504), whose tests stay skipped under a named
-// ticket. The skip ledger in docs/e2e-validation.md lists every skip.
+// The surfaces below ship on main, except the company comparison (#490),
+// whose test stays skipped under a named ticket. The skip ledger in docs/e2e-validation.md lists every skip.
 import {expect, test} from '@playwright/test';
+import {openRankings, POLL_INTERVAL_MS, raiseGamma, rankingsFixture, rowNames} from './rankings-fixture';
 import {expectNoHorizontalOverflow, login, pendingTicketMerge, requireDjangoTier} from './support';
 
 requireDjangoTier();
@@ -85,6 +85,10 @@ test.describe('direct action during outage @outage', () => {
         // never clobber the failed turn's error or conjure a late reply.
         await page.getByTestId('job-match-refresh').click();
         await expect(page.getByTestId('ranked-job-matches')).toBeVisible();
+        // The ranked list is already on screen before the click (the refresh
+        // is a quiet read), so wait for the refresh to finish before checking
+        // that it left the failed turn alone.
+        await expect(page.getByTestId('read-announcement')).toHaveText('Finished checking your job matches.');
 
         // The failed turn's error stays honest and no reply arrives late.
         await expect(error).toBeVisible();
@@ -219,6 +223,7 @@ test.describe('jobs availability states', () => {
         // focus), the body is busy, and the current results stay up instead of
         // collapsing into an empty state.
         await expect(refresh).toHaveAttribute('aria-disabled', 'true');
+        await expect(refresh.locator('svg[data-icon="spinner"]')).toBeVisible();
         await expect(panel.locator('.card-body[aria-busy="true"]')).toHaveCount(1);
         await expect(matches).toBeVisible();
         await expect(page.getByTestId(/empty-state-/)).toHaveCount(0);
@@ -228,6 +233,7 @@ test.describe('jobs availability states', () => {
         release();
         await expect(panel.locator('[aria-busy="true"]')).toHaveCount(0);
         await expect(refresh).not.toHaveAttribute('aria-disabled', 'true');
+        await expect(refresh.locator('svg[data-icon="refresh-cw"]')).toBeVisible();
         await expect(page.getByTestId('read-announcement')).toHaveText('Finished checking your job matches.');
         await expect(matches).toBeVisible();
         await page.unroute(pattern);
@@ -246,10 +252,13 @@ test.describe('availability before submission (healthy)', () => {
         // null), and the composer is usable before any text is entered.
         await expect(page.getByTestId('assistant-status-notice')).toHaveCount(0);
         const replies = page.locator('article[aria-label="Assistant message"]');
-        const before = await replies.count();
         const composer = page.locator('textarea[aria-label="Message"]');
-        await composer.fill('E2E availability probe');
+        // The composer stays disabled until the history has loaded; count the
+        // prior replies only then, or an old reply satisfies the assertion.
         await expect(composer).toBeEnabled();
+        await expect(page.getByTestId('chat-loading')).toHaveCount(0);
+        const before = await replies.count();
+        await composer.fill('E2E availability probe');
         await page.getByLabel('Send message').click();
         await expect(replies).toHaveCount(before + 1);
         await expect(replies.nth(before)).toBeVisible();
@@ -261,6 +270,13 @@ test.describe('availability before submission @outage', () => {
 
     test('degraded assistant availability is disclosed before a turn is submitted', async ({page}) => {
         await login(page);
+        // The status is cached for up to 30 s, and the normal pass leaves a
+        // 'ready' answer behind: wait until the server reports the outage,
+        // then load the page so the notice cannot be hidden by the cache.
+        await expect.poll(async () => {
+            const response = await page.request.get('/api/agent/assistant-status/');
+            return (await response.json()).state;
+        }, {timeout: 35_000, intervals: [1_000]}).not.toBe('ready');
         await page.goto('/chat/');
 
         // Before ANY text is entered, the advisory notice is visible as an
@@ -280,29 +296,31 @@ test.describe('availability before submission @outage', () => {
 });
 
 // -- Update-revision race: post-commit visibility (#504 / issue #470) --------
+// A score is raised through the real write path (persist_score_observation,
+// which clears the result caches on commit) behind an open rankings page.
 test.describe('update-revision race', () => {
+    test.afterEach(() => rankingsFixture('restore'));
+
     test('a mid-session score update invalidates caches and appears only on refresh', async ({page}) => {
-        // NON-EXECUTABLE from the browser harness (fix-verification round 2,
-        // named per the skip ledger). #504's contract is server-side
-        // publication and invalidation: the outbox clears the
-        // algorithm_<id>_page full-page key and the algorithm result keys on
-        // commit. No browser-reachable seam can create a score revision —
-        // verified at the #504 head 2f130e8, where no view mutates Score —
-        // so a browser-only flow cannot exercise the race. Deleting this
-        // skip without wiring a real revision trigger fails loudly below
-        // instead of passing vacuously on rectangle bookkeeping.
-        pendingTicketMerge(
-            504,
-            'post-commit cache invalidation / update-revision visibility ships ' +
-            'with #504 (issue #470, with #485\'s non-disruptive refresh); the ' +
-            'browser harness cannot drive the server-side revision/publication ' +
-            'path, so wire a real revision trigger (or move the contract to the ' +
-            'Django unit tier) when deleting this skip',
-        );
-        throw new Error(
-            'non-executable: the #504 update-revision race has no browser-reachable ' +
-            'revision trigger; wire the real publication flow (or move the contract ' +
-            'to the Django unit tier) before unskipping this test',
-        );
+        await openRankings(page);
+        const before = await rowNames(page);
+        expect(before.slice(0, 3)).toEqual(['E2E Alpha Corp', 'E2E Beta Labs', 'E2E Gamma Works']);
+
+        raiseGamma();
+        await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+        const notice = page.getByTestId('rankings-updated-notice');
+        await expect(notice).toBeVisible();
+        // The open page keeps its order until the reader presses the button...
+        expect(await rowNames(page)).toEqual(before);
+        // ...while a fresh read of the same cache entry already has the new one.
+        const fresh = await page.evaluate(async () => {
+            const id = document.getElementById('organization-list-config')!.dataset.currentAlgorithmId;
+            return (await (await fetch(`/api/rankings/${id}/`)).json()).organizations.map((org: {name: string}) => org.name);
+        });
+        expect(fresh.slice(0, 3)).toEqual(['E2E Gamma Works', 'E2E Alpha Corp', 'E2E Beta Labs']);
+
+        await notice.getByRole('button', {name: 'Refresh results'}).click();
+        await expect(notice).toHaveCount(0);
+        await expect.poll(() => rowNames(page)).toEqual(fresh);
     });
 });

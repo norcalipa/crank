@@ -34,7 +34,7 @@ implementation run and are re-run by CI.
 | Command | Result |
 | --- | --- |
 | `npx webpack` | compiled successfully (webpack 5.95.0, both `main` and `jobsearch`/`jobmatch` bundles) |
-| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **469 passed, 5 skipped, 1 flaky (21.1m)** — the skips are the #490 and #504 tests (named above), and the three capture-pass-only tests; the flaky test (`company-view.spec.ts` "Ask keeps the view…") passed on its retry |
+| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **PASSED_PLACEHOLDER** — the skips are the #490 test (named below) and the three capture-pass-only tests; the flaky test (`company-view.spec.ts` "Ask keeps the view…") passed on its retry |
 | `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **7 passed, 0 skipped (29.5s)**; with `--repeat-each=2` on one database: 14 passed (the failed-turn tests scope every locator to their own probe, so a second run passes) |
 | `npx playwright test --project=chromium --project=firefox` (fixture tier) | **402 passed, 971 skipped (Django-tier specs collected by the fixture config, named-reason skips), 1 flaky** (Firefox, `job-search-chat-viewport.spec.ts` double press on Delete; passed on retry). WebKit cannot launch on the local host; CI runs it |
 | `npx jest` | **2285 passed (50 suites)** |
@@ -80,7 +80,6 @@ are listed after them.
 | Surface | Owning ticket / PR | Reason (greppable) | Where |
 | --- | --- | --- | --- |
 | AC7: company comparison vs saved priorities | #490 (open) | `pending #490 merge: the 2–4 company comparison surface…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: update-revision race (post-commit cache) | #504 | `pending #504 merge: post-commit cache invalidation…` — **explicitly non-executable from the browser harness**: no browser-reachable seam can create a score revision (head 2f130e8 has no Score-mutating view), so deleting the skip without wiring a real revision trigger fails loudly instead of passing vacuously | `e2e/django/ac7-surfaces.spec.ts` |
 | Outage-only specs, in the normal pass | — | `provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1…` | `e2e/django/regression.spec.ts`, `e2e/django/ac7-surfaces.spec.ts`, `e2e/django/priorities.spec.ts` (the outage describe at the end of the file) |
 | Specs that need assistant replies, in the outage pass | — | `needs assistant replies: not part of the provider-outage pass` | `e2e/django/priorities.spec.ts`, `e2e/django/conversation-controls.spec.ts`, `e2e/django/chat-layout.spec.ts` (three describes) |
 | Touch input outside Chromium | — | `touch is emulated in Chromium only` | `e2e/django/priorities.spec.ts` (two loops) |
@@ -89,9 +88,10 @@ are listed after them.
 
 Skips removed for merged tickets (#471, #496, #497, #500, #501, #502, #503):
 
-- Re-enabled as written: the two rankings "Suggest a company" tests (#471), the
-  composer test of the healthy pass (#503; it now counts replies before sending).
-- Re-enabled and re-targeted where the product moved: failed-turn cancel (#496)
+- Re-enabled as written: the two rankings "Suggest a company" tests (#471).
+- Re-enabled and re-targeted where the product moved: the composer test of the
+  healthy pass (#503), which waits for the history to load before it counts
+  replies; failed-turn cancel (#496)
   and the independent direct action (#501), which now check their own probe's
   turn and, after a reload, its enabled Retry (the footer error is client state);
   the jobs refresh test (#502), which holds the ranked read and checks the busy
@@ -104,6 +104,12 @@ Skips removed for merged tickets (#471, #496, #497, #500, #501, #502, #503):
   `e2e/django/company-view.spec.ts`; the queued-ingestion card test (#497) by
   `e2e/django/journey.spec.ts::match panel shows the ranked seeded listing with reasons`;
   the sidebar open/closed test (#471) by `e2e/django/workspace.spec.ts::no horizontal overflow at ${width}px with the panel open and closed`.
+  The deleted #500 test also checked, at 375 px, that the mobile nav toggle does
+  not overlap the company heading. That rectangle-intersection check is dropped:
+  `e2e/navigation.spec.ts::topbar band pushes content below it without overlap`
+  (the toggle sits inside the reserved band above the content) and
+  `e2e/organization-popup.spec.ts::heading and Back to results are fully visible in the first screen and at least 44px tall`
+  (the heading is whole in the first screen) cover its neighbours, not the intersection itself.
 
 The zoom scenarios are no longer skipped for non-Chromium browsers: the 200%
 text-zoom scenario uses root font-size scaling and the 400% browser-zoom

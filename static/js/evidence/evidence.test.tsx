@@ -58,6 +58,23 @@ describe('EvidenceBadge', () => {
         }
     });
 
+    test('formatEvidenceDate with a time zone prints that zone\'s day for a Pacific reader', () => {
+        // The rankings pass 'UTC' (the day their revision digests): 03:00Z is
+        // Aug 8 there for a reader in Los Angeles, where the plain call says Aug 7.
+        const original = Date.prototype.toLocaleDateString;
+        const spy = jest.spyOn(Date.prototype, 'toLocaleDateString').mockImplementation(
+            function (this: Date, locale?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
+                return original.call(this, locale, {timeZone: 'America/Los_Angeles', ...options});
+            });
+        try {
+            expect(formatEvidenceDate('2024-08-08T03:00:00Z')).toBe('Aug 7, 2024');
+            expect(formatEvidenceDate('2024-08-08T03:00:00Z', false, 'UTC')).toBe('Aug 8, 2024');
+            expect(formatEvidenceDate('2024-08-08T03:00:00Z', true, 'UTC')).toBe('August 8, 2024');
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
     test('no other component renders the status vocabulary', () => {
         const root = path.resolve(__dirname, '..');
         const files: string[] = [];

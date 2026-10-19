@@ -1,0 +1,20 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+{% extends "base.html" %}
+
+{% block head_title %}Too many attempts | CRank{% endblock %}
+
+{% block content %}
+    <div class="container py-4 auth-container">
+        <div class="card">
+            <div class="card-body">
+                <h1 class="card-title">Too many attempts</h1>
+                <p class="auth-note">Please wait a minute and try again.</p>
+                <div class="d-flex flex-wrap gap-2">
+                    <a class="btn btn-primary auth-action" href="{{ request.get_full_path }}">Try again</a>
+                    <a class="btn btn-secondary auth-action" href="{% url 'index' %}">Go to the home page</a>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

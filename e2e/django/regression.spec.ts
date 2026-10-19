@@ -123,13 +123,21 @@ test.describe('failed assistant turn persistence @outage', () => {
         await expect(sent).toHaveCount(1);
         await expect(sent.getByTestId('failed-turn')).toContainText('after several retries');
 
+        // The server's own message states the cap: the first send plus every
+        // press is one attempt.
+        await expect(error).toHaveAttribute('data-error-type', 'retry_limit_reached');
+        await expect(error).toContainText(`after ${presses + 1} attempts`);
+
         // The exhausted state is the persisted one: it survives a reload.
         await page.reload();
         await expect(sent.getByTestId('retry-response-button')).toBeDisabled();
 
-        // "Edit as new message" hands the content back to a focused composer.
-        await sent.getByTestId('edit-as-new-button').click();
+        // A failed send's draft survives a reload, so empty the composer
+        // first: only "Edit as new message" may put the content back.
         const composer = page.locator('textarea[aria-label="Message"]');
+        await composer.fill('');
+        await expect(composer).toHaveValue('');
+        await sent.getByTestId('edit-as-new-button').click();
         await expect(composer).toHaveValue(probe);
         await expect(composer).toBeFocused();
     });

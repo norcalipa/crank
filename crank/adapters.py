@@ -13,9 +13,27 @@ visible without surfacing it to the user.
 """
 import logging
 
+from allauth.account.adapter import DefaultAccountAdapter
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 
+from crank.client_address import client_address
+
 logger = logging.getLogger("users")
+
+
+class AccountAdapter(DefaultAccountAdapter):
+    """Key allauth's per-address rate limits on the trusted client address.
+
+    allauth's default reads the leftmost ``X-Forwarded-For``, which a client
+    behind the edge chooses. When ``client_address()`` identifies the request
+    its bucket is used; otherwise allauth's own value is returned unchanged.
+    """
+
+    def get_client_ip(self, request):
+        address = client_address(request)
+        if address is not None:
+            return address.bucket
+        return super().get_client_ip(request)
 
 
 class SocialAccountAdapter(DefaultSocialAccountAdapter):

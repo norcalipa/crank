@@ -457,6 +457,10 @@ const readPanel = (page: Page) => page.evaluate(() => {
         formBottom: formRect.bottom,
         composerInViewport: formRect.top >= -0.5 && formRect.bottom <= window.innerHeight + 0.5,
         composerHit: !!hit && form.contains(hit),
+        // An inert footer (an open confirmation, issue #547) is skipped by hit testing: the panel stack is then
+        // checked against the composer band by geometry.
+        footerInert: footer.hasAttribute('inert'),
+        stackBottom: (card.querySelector('.chat-panel-stack') as HTMLElement | null)?.getBoundingClientRect().bottom ?? null,
         positions: [header, footer, log].map((el) => getComputedStyle(el).position),
         firstVisible,
         firstVisibleOffset: firstVisible < 0 ? 0 : articles[firstVisible].getBoundingClientRect().top - top,
@@ -484,7 +488,12 @@ const expectOneScroller = (reading: Awaited<ReturnType<typeof readPanel>>, label
     expect(reading.bodyScrollTop, `${label}: the panel body is not scrolled`).toBe(0);
     expect(reading.logOverflowY, `${label}: the transcript scrolls`).toBe('auto');
     expect(reading.composerInViewport, `${label}: the composer is inside the viewport`).toBe(true);
-    expect(reading.composerHit, `${label}: nothing covers the composer`).toBe(true);
+    if (reading.footerInert) {
+        // The confirmation may cover the composer band it has made inert (visual review round 1), never more than the card.
+        expect(reading.stackBottom ?? 0, `${label}: the panel stack ends within the composer band`).toBeLessThanOrEqual(reading.formBottom + 0.5);
+    } else {
+        expect(reading.composerHit, `${label}: nothing covers the composer`).toBe(true);
+    }
     expect(reading.positions, `${label}: no chat bar is pinned`).not.toContain('sticky');
 };
 
@@ -888,16 +897,28 @@ test.describe('one transcript scroller (issue #483)', () => {
 
     for (const size of [{width: 320, height: 420}, {width: 320, height: 640}]) {
         for (const [trigger, label] of [['conversation-new', 'new'], ['conversation-delete', 'delete']]) {
-            test(`the ${label} confirm shows its action and Cancel together on open, ${size.width}x${size.height}`, async ({page}) => {
+            test(`the ${label} confirm opens on its heading and consequence and its action and Cancel are reachable, ${size.width}x${size.height}`, async ({page}) => {
                 await page.setViewportSize(size);
                 await loadPanel(page, 'priorities=57');
+                // CI's fallback font is wider than most hosts': the sentence wraps to more lines there.
+                await page.addStyleTag({content: "body, button, input, textarea, select { font-family: 'DejaVu Sans', sans-serif !important; }"});
                 await settledPanel(page);
                 await page.getByTestId('conversation-more').click();
                 await page.getByTestId(trigger).click();
                 await expect(page.getByTestId('confirm-panel')).toBeVisible();
                 const reading = await settledPanel(page);
                 expectOneScroller(reading, 'with the confirmation open');
+                // Nothing is pinned (issue #547): the heading and the whole consequence are in the stack on open, and the
+                // action row is reached by scrolling the stack.
+                const consequence = await page.getByTestId('confirm-panel').evaluate((panel) => {
+                    const stack = panel.closest('.chat-panel-stack')!.getBoundingClientRect();
+                    const heading = panel.querySelector('.chat-confirm-heading')!.getBoundingClientRect();
+                    const copy = panel.querySelector('.chat-confirm-copy')!.getBoundingClientRect();
+                    return {headingInside: heading.top >= stack.top - 0.5, copyInside: copy.bottom <= stack.bottom + 0.5};
+                });
+                expect(consequence, 'the heading and the whole consequence are visible on open').toEqual({headingInside: true, copyInside: true});
                 for (const id of ['confirm-action', 'confirm-cancel']) {
+                    await page.getByTestId(id).scrollIntoViewIfNeeded();
                     const topmost = await page.getByTestId(id).evaluate((el) => {
                         const r = el.getBoundingClientRect();
                         return [r.top + 2, r.top + r.height / 2, r.bottom - 2].map((y) => {
@@ -911,7 +932,7 @@ test.describe('one transcript scroller (issue #483)', () => {
         }
     }
 
-    test('after a failed delete at 320x420 the focused retry is topmost, not under the Cancel row', async ({page}) => {
+    test('after a failed delete at 320x420 the focused retry is topmost and nothing covers it', async ({page}) => {
         await page.setViewportSize({width: 320, height: 420});
         await loadPanel(page, 'priorities=57');
         // Registered after the catch-all mock so it wins for the delete call.
@@ -925,6 +946,16 @@ test.describe('one transcript scroller (issue #483)', () => {
         await expect(retry).toBeFocused();
         const reading = await settledPanel(page);
         expectOneScroller(reading, 'after the failed delete');
+        // The failure text, the whole consequence and the retry are on screen together (visual review round 1, P1-1 / P1-2).
+        const together = await page.getByTestId('confirm-panel').evaluate((panel) => {
+            const stack = panel.closest('.chat-panel-stack')!.getBoundingClientRect();
+            const inside = (sel: string) => {
+                const r = panel.querySelector(sel)!.getBoundingClientRect();
+                return r.top >= stack.top - 0.5 && r.bottom <= stack.bottom + 0.5;
+            };
+            return {error: inside('.chat-confirm-error'), copy: inside('.chat-confirm-copy'), retry: inside('[data-testid="confirm-action"]'), cancel: inside('[data-testid="confirm-cancel"]')};
+        });
+        expect(together).toEqual({error: true, copy: true, retry: true, cancel: true});
         const topmost = await retry.evaluate((el) => {
             const r = el.getBoundingClientRect();
             return [r.top + 2, r.top + r.height / 2, r.bottom - 2].map((y) => {
@@ -942,9 +973,11 @@ test.describe('one transcript scroller (issue #483)', () => {
 // delay still confirms. The fixture carries the real panel header and the real
 // collapsed row (issue #483), so its menu sits where the real page's does and the
 // confirm button opens under the item at the listed sizes: on the real page the
-// centre of the item is on the button at 375x440, 430x440, 375x460 and 412x460
-// (e2e/django/chat-layout.spec.ts covers 375x440 there), and not at 320x480,
-// 375x380 or 320x420, which are therefore not cases here. 320x568 is not a case
+// centre of the item is on the button at 375x540 and 360x520, and not at 320x480,
+// 375x380, 320x420, 375x440 or 412x460, which are therefore not cases here (since
+// issue #547 the action row follows the consequence in normal flow instead of
+// pinning to the bottom of a capped stack, so it no longer opens under the item
+// where the stack is capped; the delay itself is pinned by Jest at 499 and 500 ms). 320x568 is not a case
 // either: the overlap there depends on the fonts (about 15 px high with some
 // hosts' fonts and none with CI's in Chromium and Firefox), which is under the
 // 8 px the cases require.
@@ -955,7 +988,7 @@ test.describe('a double press on Delete conversation does not delete (issue #568
 
     const SIZES = [
         {width: 375, height: 667}, {width: 390, height: 844}, {width: 1024, height: 800}, {width: 1280, height: 800},
-        {width: 375, height: 440}, {width: 412, height: 460},
+        {width: 375, height: 540}, {width: 360, height: 520},
     ];
 
     type Press = (page: Page, x: number, y: number) => Promise<void>;

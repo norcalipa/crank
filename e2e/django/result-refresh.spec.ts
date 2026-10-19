@@ -12,7 +12,21 @@ import {execFileSync} from 'child_process';
 import {expect, Page, test} from '@playwright/test';
 
 import {DJANGO_STORED_BASE_URL, djangoServerEnv} from './server-env';
-import {E2E_PASSWORD, expectNoHorizontalOverflow, requireDjangoTier} from './support';
+import {
+    countRankingsRequests,
+    openRankings,
+    orgTop,
+    placeRankingsReader,
+    POLL_INTERVAL_MS,
+    raiseGamma,
+    ReaderPosition,
+    readingOrg,
+    rankingsFixture,
+    rowNames,
+    rowTops,
+    setTabVisibility,
+} from './rankings-fixture';
+import {E2E_PASSWORD, expectNoHorizontalOverflow, login, requireDjangoTier} from './support';
 
 requireDjangoTier();
 
@@ -461,5 +475,409 @@ test.describe('Updated results available (stored results)', () => {
         await notice.getByRole('button', {name: 'Refresh results'}).click();
         await expect(notice).toHaveCount(0);
         await expect(composer).toHaveValue('a half-written question');
+    });
+});
+
+// The company rankings against the main server (issue #485c). A score is
+// raised through the real write path behind the open page; the page's poller
+// finds it within one simulated interval, offers it, and changes nothing until
+// the reader presses Refresh results (or the idle rule applies it).
+const SEEDED_ORDER = ['E2E Alpha Corp', 'E2E Beta Labs', 'E2E Gamma Works'];
+const RAISED_ORDER = ['E2E Gamma Works', 'E2E Alpha Corp', 'E2E Beta Labs'];
+
+test.describe('Updated rankings available (company rankings)', () => {
+    test.afterEach(() => {
+        rankingsFixture('unpad');
+        rankingsFixture('restore');
+    });
+
+    const notice = (page: Page) => page.getByTestId('rankings-updated-notice');
+    const firstThree = async (page: Page) => (await rowNames(page)).slice(0, 3);
+
+    for (const [width, height] of [[1280, 800], [375, 800]] as const) {
+        test(`a score raised behind the page shows a notice, changes nothing, and Refresh results applies it at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            const seen = countRankingsRequests(page);
+            await openRankings(page);
+            expect(await firstThree(page)).toEqual(SEEDED_ORDER);
+            await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+
+            raiseGamma();
+            await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+            await expect(notice(page)).toBeVisible();
+            await expect(notice(page)).toContainText('Updated results available.');
+            expect(seen.revision).toBe(1);
+            expect(seen.list).toBe(0);
+            // Nothing else changed: same order, same count, one polite region.
+            expect(await firstThree(page)).toEqual(SEEDED_ORDER);
+            await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+            await expect(page.getByTestId('rankings-announcement')).toHaveText('Updated results available.');
+            expect(await page.locator('[aria-live="polite"]:has([data-testid="rankings-announcement"])').count()).toBe(1);
+            const button = notice(page).getByRole('button', {name: 'Refresh results'});
+            expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+            await expectNoHorizontalOverflow(page);
+
+            await button.focus();
+            await page.keyboard.press('Enter');
+            await expect(notice(page)).toHaveCount(0);
+            expect(seen.list).toBe(1);
+            await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
+            // Focus goes to the row that was held, or to the heading when none was; either way it is on screen.
+            await expect.poll(() => page.evaluate(() => {
+                const active = document.activeElement as HTMLElement | null;
+                const rect = active?.getBoundingClientRect();
+                const held = !!active && (active.id === 'rankings-heading' || active.hasAttribute('data-organization-id'));
+                return held && rect!.height > 0 && rect!.bottom > 0 && rect!.top < window.innerHeight;
+            })).toBe(true);
+            await expect(page.getByTestId('rankings-announcement')).toHaveText('Showing updated rankings.');
+            await expectNoHorizontalOverflow(page);
+            // The page a reader would reload to shows the same order.
+            await page.reload();
+            expect(await firstThree(page)).toEqual(RAISED_ORDER);
+        });
+    }
+
+    test('a signed-in reader gets the same notice, and the same endpoints answer', async ({page}) => {
+        await login(page);
+        const seen = countRankingsRequests(page);
+        await openRankings(page);
+        raiseGamma();
+        await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+        await expect(notice(page)).toBeVisible();
+        expect(seen.revision).toBe(1);
+        await notice(page).getByRole('button', {name: 'Refresh results'}).click();
+        await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
+        // The in-page answers carry no account and are never stored.
+        const answer = await page.evaluate(async () => {
+            const id = document.getElementById('organization-list-config')!.dataset.currentAlgorithmId;
+            const res = await fetch(`/api/rankings/${id}/revision/`);
+            return {status: res.status, cache: res.headers.get('cache-control'), body: await res.json()};
+        });
+        expect(answer.status).toBe(200);
+        expect(answer.cache).toContain('no-store');
+        expect(Object.keys(answer.body).sort()).toEqual(['poll_after_seconds', 'revision']);
+    });
+
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
+        for (const anchoring of ['on', 'off'] as const) {
+            for (const position of ['top', 'heading-at-top', 'mid-list'] as ReaderPosition[]) {
+                test(`the row being read does not move when the notice arrives or is applied: ${position}, scroll anchoring ${anchoring}, ${width}px`, async ({page}) => {
+                    await page.setViewportSize({width, height});
+                    // Sixteen rows: a page long enough to scroll to mid-list and to lose a
+                    // notice's height without the document running out below the reader.
+                    rankingsFixture('pad');
+                    await openRankings(page);
+                    if (anchoring === 'off') {
+                        // Safari has no scroll anchoring: stand in for it.
+                        await page.addStyleTag({content: '*, *::before, *::after { overflow-anchor: none !important; }'});
+                    }
+                    await placeRankingsReader(page, position);
+                    const reading = (await readingOrg(page))!;
+                    expect(reading).not.toBeNull();
+                    // A row that starts under the phone's Assistant button is not being read:
+                    // nothing is held for it, and the page must not move for it either.
+                    const underDock = await page.evaluate((top) => {
+                        const dock = document.querySelector<HTMLElement>('.assistant-dock');
+                        const rect = dock?.getBoundingClientRect();
+                        return !!rect && rect.height > 0 && top >= rect.top - 48;
+                    }, reading.top);
+                    const scrolled = await page.evaluate(() => window.scrollY);
+
+                    raiseGamma();
+                    await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+                    await expect(notice(page)).toBeVisible();
+                    if (underDock) {
+                        expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
+                    } else {
+                        await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+                    }
+
+                    // Pressed from off screen (browse-mode activation): the page does not jump to the heading.
+                    const before = await rowTops(page);
+                    await notice(page).getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+                    await expect(notice(page)).toHaveCount(0);
+                    await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
+                    // The row held is a row that kept its place in the list, not the first row in
+                    // view (which moved up the list): it is the one that has focus, and it stays put.
+                    const held = await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset?.organizationId ?? null);
+                    if (held) {
+                        await expect.poll(async () => Math.abs((await rowTops(page))[held] - before[held])).toBeLessThanOrEqual(2);
+                    } else {
+                        // Nothing was in view to hold: the heading has focus, on screen.
+                        await expect(page.locator('#rankings-heading')).toBeFocused();
+                        expect(await page.evaluate(() => {
+                            const rect = document.getElementById('rankings-heading')!.getBoundingClientRect();
+                            return rect.bottom > 0 && rect.top < window.innerHeight;
+                        })).toBe(true);
+                    }
+                    await expectNoHorizontalOverflow(page);
+                });
+            }
+        }
+    }
+
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
+        test(`the company at the top of the screen falling down the list is not followed: the rows around it stay put at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            rankingsFixture('pad');
+            await openRankings(page);
+            const alphaId = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('[data-organization-id]'))
+                .find((row) => row.getBoundingClientRect().height > 0 && /E2E Alpha Corp/.test(row.textContent ?? ''))!.dataset.organizationId!);
+            // Alpha, rank 1, falls below the other seeded companies (the padding rows score lower
+            // but the fall must stay on page 1).
+            rankingsFixture('set', {ORG: 'E2E Alpha Corp', VALUE: '2.0'});
+            await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+            await expect(notice(page)).toBeVisible();
+            const before = await rowTops(page);
+            const scrolledBefore = await page.evaluate(() => window.scrollY);
+            await notice(page).getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+            await expect(notice(page)).toHaveCount(0);
+            await expect.poll(async () => (await rowNames(page))[0]).not.toBe('E2E Alpha Corp');
+            // The page never carries the reader down the list after the company that fell.
+            expect(await page.evaluate(() => window.scrollY)).toBeLessThanOrEqual(scrolledBefore);
+            expect(await rowNames(page)).toContain('E2E Alpha Corp');
+            const held = await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset?.organizationId ?? null);
+            // The held row is a neighbour that moved one place, never the company that jumped.
+            expect(held).not.toBe(alphaId);
+            if (held) {
+                // The row holds still, unless the page is already at its top and cannot scroll further up.
+                await expect.poll(async () => (await page.evaluate(() => window.scrollY)) === 0
+                    || Math.abs((await rowTops(page))[held] - before[held]) <= 2).toBe(true);
+            }
+        });
+    }
+
+    test('a hidden tab sends nothing, and a return finds the change', async ({page}) => {
+        const seen = countRankingsRequests(page);
+        await openRankings(page);
+        await setTabVisibility(page, 'hidden');
+        await page.clock.runFor(10 * 60_000);
+        expect(seen.revision).toBe(0);
+        raiseGamma();
+        await page.evaluate(() => {
+            window.scrollTo({top: 200, left: 0, behavior: 'instant'});
+        });
+        await setTabVisibility(page, 'visible');
+        await expect(notice(page)).toBeVisible();
+        expect(seen.revision).toBe(1);
+        // Scrolled, so the idle rule does not apply it.
+        expect(await firstThree(page)).toEqual(SEEDED_ORDER);
+    });
+
+    test('over 10 simulated visible minutes the page sends at most 10 polls', async ({page}) => {
+        const seen = countRankingsRequests(page);
+        await openRankings(page);
+        // Each answer arms the next ask, so the minutes are stepped, not jumped.
+        for (let minute = 1; minute <= 10; minute += 1) {
+            await page.clock.runFor(POLL_INTERVAL_MS);
+            await expect.poll(() => seen.revisionDone).toBe(minute);
+        }
+        expect(seen.revision).toBeLessThanOrEqual(10);
+        await expect(notice(page)).toHaveCount(0);
+    });
+
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
+        test(`a list shorter than the screen keeps its row still when the notice arrives and when it goes at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            await openRankings(page, '/?search=Gamma');
+            expect(await rowNames(page)).toEqual(['E2E Gamma Works']);
+            const reading = (await readingOrg(page))!;
+            expect(reading).not.toBeNull();
+            // A card that shows less than a line above the phone's Assistant button is not being read.
+            const sliver = await page.evaluate((top) => {
+                const rect = document.querySelector<HTMLElement>('.assistant-dock')?.getBoundingClientRect();
+                return !!rect && rect.height > 0 && top >= rect.top - 48;
+            }, reading.top);
+            const scrolled = await page.evaluate(() => window.scrollY);
+            raiseGamma();
+            await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+            await expect(notice(page)).toBeVisible();
+            if (sliver) {
+                expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
+            } else {
+                await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            }
+            await notice(page).getByRole('button', {name: 'Refresh results'}).dispatchEvent('click');
+            await expect(notice(page)).toHaveCount(0);
+            if (!sliver) {
+                await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            }
+            await expectNoHorizontalOverflow(page);
+        });
+    }
+
+    test('idle at the top after a return: the rows are swapped without a press and an "Updated" mark follows the reader\u2019s input', async ({page}) => {
+        await openRankings(page);
+        await page.evaluate(() => {
+            window.scrollTo({top: 0, left: 0, behavior: 'instant'});
+            (document.activeElement as HTMLElement | null)?.blur();
+        });
+        await setTabVisibility(page, 'hidden');
+        await page.clock.runFor(5 * 60_000);
+        raiseGamma();
+        await setTabVisibility(page, 'visible');
+        await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
+        // The page stays at the top: the heading is where it was.
+        expect(await page.evaluate(() => window.scrollY)).toBe(0);
+        await expect(notice(page)).toHaveCount(0);
+        await expect(page.getByTestId('rankings-updated-badge')).toBeVisible();
+        const count = (await page.locator('.organization-results-count').boundingBox())!;
+        await page.mouse.wheel(0, 40);
+        await expect(page.getByTestId('rankings-updated-badge')).toHaveCount(0);
+        // Its box stays, so the count line does not reflow.
+        expect(Math.abs((await page.locator('.organization-results-count').boundingBox())!.height - count.height)).toBeLessThanOrEqual(1);
+    });
+
+    // Away, then back at the top with nothing focused: the first check finds the change.
+    const returnIdle = async (page: Page) => {
+        await page.evaluate(() => {
+            window.scrollTo({top: 0, left: 0, behavior: 'instant'});
+            (document.activeElement as HTMLElement | null)?.blur();
+        });
+        await setTabVisibility(page, 'hidden');
+        await page.clock.runFor(5 * 60_000);
+        raiseGamma();
+    };
+
+    // A three-digit total (4 seeded + 122 padding = 126 organizations) is what made the
+    // count long enough to meet the mark; the short 16-row list fits on the old CSS as well.
+    for (const [width, height] of [[320, 640], [375, 667], [412, 915]] as const) {
+        for (const [path, count] of [
+            ['/', 'Showing 1-15 of 126 organizations'],
+            ['/?page=8', 'Showing 106-120 of 126 organizations'],
+        ] as const) {
+            test(`the "Updated" mark sits under a long count on a phone without moving the toolbar at ${width}px, ${count}`, async ({page}) => {
+                await page.setViewportSize({width, height});
+                rankingsFixture('pad', {COUNT: '122'});
+                await openRankings(page, path);
+                await expect(page.getByText(count)).toBeVisible();
+                // The labels have loaded: the status line is empty, so the mark takes the reserved line.
+                await expect(page.locator('.rankings-toolbar-count .choices-status-slot')).toBeEmpty();
+                const toolbarHeight = () => page.locator('.rankings-toolbar-count').evaluate((node) => node.getBoundingClientRect().height);
+                const before = await toolbarHeight();
+                await returnIdle(page);
+                await setTabVisibility(page, 'visible');
+                const badge = page.getByTestId('rankings-updated-badge');
+                await expect(badge).toBeVisible();
+                const geometry = await page.evaluate(() => {
+                    const count = document.querySelector<HTMLElement>('.organization-results-count')!;
+                    const mark = count.querySelector<HTMLElement>('.badge')!;
+                    const range = document.createRange();
+                    range.selectNodeContents(count);
+                    range.setEndBefore(mark);
+                    const text = Array.from(range.getClientRects()).filter((rect) => rect.width > 0);
+                    const box = mark.getBoundingClientRect();
+                    const overlaps = text.some((rect) => box.left < rect.right && box.right > rect.left
+                        && box.top < rect.bottom && box.bottom > rect.top);
+                    return {
+                        box: {left: box.left, right: box.right, top: box.top, bottom: box.bottom},
+                        textRects: text.length,
+                        overlaps,
+                        viewport: {width: window.innerWidth, height: window.innerHeight},
+                    };
+                });
+                expect(geometry.textRects).toBeGreaterThan(0);
+                expect(geometry.overlaps).toBe(false);
+                expect(geometry.box.left).toBeGreaterThanOrEqual(0);
+                expect(geometry.box.right).toBeLessThanOrEqual(geometry.viewport.width);
+                expect(geometry.box.top).toBeGreaterThanOrEqual(0);
+                expect(geometry.box.bottom).toBeLessThanOrEqual(geometry.viewport.height);
+                // Its arrival and its going move nothing.
+                expect(Math.abs((await toolbarHeight()) - before)).toBeLessThanOrEqual(1);
+                await page.mouse.wheel(0, 40);
+                await expect(badge).toHaveCount(0);
+                expect(Math.abs((await toolbarHeight()) - before)).toBeLessThanOrEqual(1);
+                await expectNoHorizontalOverflow(page);
+            });
+        }
+    }
+
+    for (const [width, height] of [[1280, 800], [375, 667]] as const) {
+        test(`a scroll while the idle read is out gets the notice, and no row moves at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            rankingsFixture('pad');
+            await openRankings(page);
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            await page.route(/\/api\/rankings\/\d+\/$/, async (route) => {
+                await held;
+                await route.continue();
+            });
+            const seen = countRankingsRequests(page);
+            await returnIdle(page);
+            await setTabVisibility(page, 'visible');
+            // The poll answered at the top of an untouched page and the list read is out.
+            await expect.poll(() => seen.list).toBe(1);
+            await page.mouse.wheel(0, 180);
+            await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+            const before = await rowTops(page);
+            const names = await rowNames(page);
+            release();
+            await expect(notice(page)).toBeVisible();
+            expect(await rowNames(page)).toEqual(names);
+            await expect(page.getByTestId('rankings-updated-badge')).toHaveCount(0);
+            // The notice is above the rows and the page makes up for its height: the rows stay put.
+            await expect.poll(async () => {
+                const after = await rowTops(page);
+                return Math.max(...Object.keys(before).map((id) => Math.abs(after[id] - before[id])));
+            }).toBeLessThanOrEqual(2);
+        });
+    }
+
+    test('a press on Refresh results while an idle read is out is answered by that read', async ({page}) => {
+        await openRankings(page);
+        // A timed check at the top finds the change: the notice is up.
+        raiseGamma();
+        await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+        await expect(notice(page)).toBeVisible();
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        await page.route(/\/api\/rankings\/\d+\/$/, async (route) => {
+            await held;
+            await route.continue();
+        });
+        const seen = countRankingsRequests(page);
+        // Away and back, idle: the first check starts an idle read with the notice still on screen.
+        await returnIdle(page);
+        await setTabVisibility(page, 'visible');
+        await expect.poll(() => seen.list).toBe(1);
+        await notice(page).getByRole('button', {name: 'Refresh results'}).click();
+        await expect(notice(page)).toHaveAttribute('aria-busy', 'true');
+        expect(await firstThree(page)).toEqual(SEEDED_ORDER);
+        release();
+        await expect.poll(() => firstThree(page)).toEqual(RAISED_ORDER);
+        expect(seen.list).toBe(1);
+        await expect(notice(page)).toHaveCount(0);
+        await expect(page.getByTestId('rankings-updated-badge')).toHaveCount(0);
+        await expect(page.getByTestId('rankings-announcement')).toHaveText('Showing updated rankings.');
+        // A press moves focus onto the row that was held.
+        await expect(page.locator('.organization-row:focus, #rankings-heading:focus')).toHaveCount(1);
+    });
+
+    test('a list on page 2 that shrinks to one page lands on page 1 and the URL says so', async ({page}) => {
+        rankingsFixture('pad');
+        await openRankings(page, '/?page=2');
+        await expect(page.getByText('Showing 16-16 of 16 organizations')).toBeVisible();
+        rankingsFixture('unpad');
+        await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+        await expect(notice(page)).toBeVisible();
+        await notice(page).getByRole('button', {name: 'Refresh results'}).click();
+        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        expect(new URL(page.url()).searchParams.get('page')).toBe('1');
+        // A stale ?page=2 would be a 404 on reload.
+        const reloaded = await page.reload();
+        expect(reloaded!.status()).toBe(200);
+    });
+
+    test('with a company open nothing is applied; the notice is waiting after Back to results', async ({page}) => {
+        await openRankings(page);
+        await page.locator('.organization-row, .organization-card').filter({visible: true}).first().click();
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        raiseGamma();
+        await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+        await expect(notice(page)).toBeHidden();
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await expect(notice(page)).toBeVisible();
+        expect(await firstThree(page)).toEqual(SEEDED_ORDER);
     });
 });
