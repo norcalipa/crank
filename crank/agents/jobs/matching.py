@@ -603,37 +603,68 @@ _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
 _NUMBER = r"(?:one|two|three|four|five|[1-5])"
 _OFFICE_WORD = re.compile(r"office|on-?site|on site|in-?person|\brto\b|hybrid|return")
 _RANGE = re.compile(rf"\b{_NUMBER}\s*(?:-|to|or)\s*{_NUMBER}\s*(?:days?|x)\b")
-_COUNT = re.compile(rf"\b({_NUMBER})[ -]?(?:days?|x)\b")
+_COUNT = re.compile(rf"\b({_NUMBER})[ -]?(?:(?:in[ -]?office |on-?site |on site )?days?|x)\b")
 _REMOTE_DAYS = re.compile(
-    r"\s*(?:(?:a|per|each) week |/?wk |week )?(?:remote(?! (?:mon|tue|wed|thu|fri|not|never|by|on|only|is|allowed|permitted|except))|from home|at home|wfh)"
+    r"\s*(?:(?:a|per|each) week |/?wk |week )?(?:of )?(?:work(?:ing)? )?"
+    r"(?:remote(?! (?:mon|tue|wed|thu|fri|not|never|by|on|for|only|is|allowed|permitted|except))|from home|at home|wfh)"
 )
+# A remote word up to three words before a count ("WFH 2 days", "remotely up to
+# two days"): the count is of remote days.
+_REMOTE_BEFORE = re.compile(
+    r"(?:remote(?:ly)?|from home|at home|wfh)(?: (?!not\b|never\b|no\b|office\b)[\w-]+){0,3} $"
+)
+# Without an office word only an explicit "work remotely / from home" counts.
+_REMOTE_WORK_BEFORE = re.compile(r"(?:remotely|from home|at home|wfh)(?: (?!not\b|never\b|no\b)[\w-]+){0,3} $")
 _FULL_WEEK = re.compile(
     r"\bmon(?:day)?\s*(?:-|to|through|thru)?\s*fri(?:day)?\b|\bfull[ -]time (?:in|at|on)\b|\bevery day\b|\ball week\b"
 )
+_FLEXIBLE = re.compile(r"\bflexib")
 _MIXED = re.compile(
-    r"\bflexib|\bdepends\b|\bvaries\b|\bvary\b|\bcase by case\b|\bby team\b|\bper team\b|\bup to the team\b|"
+    r"\bdepends\b|\bvaries\b|\bvary\b|\bcase by case\b|\bby team\b|\bper team\b|\bup to the team\b|"
     r"\b(?:remote|hybrid) (?:or|and) (?:remote|hybrid)\b|\bhybrid remote\b|\bremote hybrid\b|"
     r"\b(?:remote|hybrid) (?:or|and) (?:in[ -])?office\b|\b(?:in[ -])?office (?:or|and) (?:remote|hybrid)\b"
 )
-_OFFICE = r"(?:in[ -]?office|office|on-?site|on site)"
+_OFFICE = r"(?:in[ -]?office|office|on-?site|on site|in[ -]?person|rto)"
 _OPTIONAL_OFFICE = re.compile(
-    rf"\boptional {_OFFICE}\b|\b{_OFFICE}(?: \w+)? (?:is |are )?(?:optional|voluntary|not (?:required|needed|mandatory))\b|"
-    rf"\bno {_OFFICE}(?: (?:is |are )?(?:required|needed|mandatory|requirement|attendance|mandate|expected|obligation|policy|days)|$)"
+    rf"\boptional {_OFFICE}\b|"
+    rf"\b{_OFFICE}(?: (?:attendance|presence|work|days?|policy|time|visits?))? (?:is |are )?"
+    r"(?:optional|voluntary|not (?:required|needed|mandatory))\b|"
+    rf"\bno {_OFFICE}(?: (?:is |are )?(?:required|needed|mandatory|requirement|attendance|mandate|expected|obligation|policy|plans?|days)|$)"
 )
 _OCCASIONAL = re.compile(
     r"\bquarterly\b|\boccasional|\bmonthly\b|\bannual|\boffsites?\b|\boff-sites?\b|\bonboarding\b|\bkick-?off\b|"
-    r"\bretreats?\b|\bfew times a year\b|\btwice a year\b|\bonce a (?:month|quarter|year)\b"
+    r"\bretreats?\b|\bat least (?:once|twice)\b|\bfew times a year\b|\btwice a year\b|\bonce a (?:month|quarter|year)\b"
 )
 _IN_OFFICE = re.compile(
-    r"\boffice[ -]first\b|\bin[ -]office\b|\bon-?site\b|\bon site\b|\breturn[ -]to[ -](?:the[ -])?office\b|\brto\b|"
-    r"\boffice[ -]based\b|\boffice attendance\b|\bin[ -]person\b|\bat the office\b|^(?:the )?office$"
+    r"\boffice[ -]first\b|\bin[ -]office\b|\bon-?site\b|\bon site\b|\breturn[ -]to[ -](?:the[ -])?office\b|"
+    r"\boffice[ -]based\b|\boffice attendance\b|\bat the office\b|^(?:the )?office$|"
+    rf"\b{_OFFICE}(?: is| are)? (?:not|never) (?:optional|voluntary)\b"
 )
+_IN_PERSON = re.compile(r"\bin[ -]person\b|\brto\b")
+# Wording that states attendance is required (or remote is the exception).
+_REQUIRED = re.compile(
+    r"\brequire[ds]?\b|\bmandatory\b|\bmandate\b|\bmust\b|\bexpect(?:ed|s)?\b|\bexceptions?\b|\bonly\b|"
+    r"\brarely\b|\bemergenc|\bapprov|\bnot standard\b|\bevery day\b|\bfull[ -]time\b"
+)
+_STATES_OFFICE = re.compile(
+    rf"{_IN_OFFICE.pattern}|{_IN_PERSON.pattern}|{_REQUIRED.pattern}|\b(?:in|from|at) (?:the|our)(?: [\w-]+)? offices?\b"
+)
+_INCIDENTAL_OFFICE = re.compile(
+    r"\b(?:an?|our|small) office in\b|\boffices in\b|\boffice (?:hubs?|space)\b|\bhubs\b"
+)
+_ATTENDANCE_WORD = re.compile(r"office|on-?site|on site|in-?person|\brto\b|return")
 _NEGATED_REMOTE = re.compile(
-    r"\b(?:not|no|non)[ -]remote\b|\bremote (?:work )?(?:is |are )?(?:not|never) (?:permitted|allowed|available|offered|an option)\b|"
-    r"\bremote (?:work )?unavailable\b"
+    r"\b(?:not|no|non)[ -](?:fully )?remote\b|\b(?:not|never|\w+n t)(?: (?:a|an|to|fully|offer|hire|support|allow|provide|have|permit|accept)){1,2} remote\b|"
+    r"\bremote(?: work| positions?| roles?)? (?:is |are )?(?:not|never|(?:is|are)n t) "
+    r"(?:permitted|allowed|available|offered|an option|supported|possible)\b|"
+    r"\bremote(?: work| positions?| roles?)? (?:is )?(?:prohibited|unavailable|banned)\b|"
+    r"\bremote(?:-friendly)?(?: work)? (?:no|none|never)\b"
 )
 _NEGATED_HYBRID = re.compile(r"\b(?:not|no|non)[ -]hybrid\b")
-_WEEKDAYS = re.compile(r"\b(?:mon|tue|tues|wed|thu|thur|thurs|fri|monday|tuesday|wednesday|thursday|friday)\b")
+_DAY = r"(?:mon|tue|tues|wed|thu|thur|thurs|fri|monday|tuesday|wednesday|thursday|friday)s?"
+_WEEKDAYS = re.compile(rf"\b{_DAY}\b")
+# "office required Tuesdays": attendance on some days only, a count we do not read.
+_REQUIRED_DAYS = re.compile(rf"\b(?:required|mandatory|expected)\s+(?:on\s+)?{_DAY}\b")
 
 
 def _rto_days(value: Any) -> int | None:
@@ -646,35 +677,97 @@ def _rto_days(value: Any) -> int | None:
     text = _normalized(value).replace("_", " ")
     if text in _EXACT:
         return _EXACT[text]
-    # 1. Mixed or conditional wording is unknown.
-    if _MIXED.search(text):
+    # "Optional" has to sit in the clause of the office word it relaxes
+    # ("Onsite, optional remote Fridays" is not an optional office).
+    optional = None
+    if isinstance(value, str):
+        clauses = [_normalized(c) for c in _SOFT_CLAUSES.split(value)]
+        optional = any(_OPTIONAL_OFFICE.search(c) for c in clauses) and not any(
+            _OFFICE_WORD.search(c) and _STATES_OFFICE.search(c) and not _OPTIONAL_OFFICE.search(c) for c in clauses
+        )
+    days = _rto_days_of(text, optional)
+    if days is None and isinstance(value, str) and not _MIXED.search(text):
+        # A count in one clause stands even when another clause says
+        # "flexible" or "occasional" (the safe unknown only when no clause counts).
+        counted = {
+            c for c in (_clause_count(_normalized(clause)) for clause in _CLAUSES.split(value)) if c is not None
+        }
+        if len(counted) == 1:
+            return counted.pop()
+    return days
+
+
+_CLAUSES = re.compile(r"[;.\n]+")
+_SOFT_CLAUSES = re.compile(r"[;,.()\n]+")
+
+
+def _clause_count(text: str) -> int | None:
+    """The in-office count of one clause that has an office word and a plain count."""
+    if not _OFFICE_WORD.search(text) or _MIXED.search(text) or _RANGE.search(text):
         return None
+    counts = list(_COUNT.finditer(text))
+    if len(counts) != 1 or _remote_count(text, counts[0]):
+        return None
+    word = counts[0].group(1)
+    return _NUMBER_WORDS.get(word) or int(word)
+
+
+def _remote_count(text: str, match: re.Match[str]) -> bool:
+    """Whether a count is of remote days ("remote 2 days", "WFH 2 days a week")."""
+    return bool(_REMOTE_DAYS.match(text, match.end()) or _REMOTE_BEFORE.search(text[: match.start()]))
+
+
+def _has_stated_attendance(text: str) -> bool:
+    """Whether in-person / RTO wording is a requirement rather than an extra."""
+    return "remote" not in text or bool(_REQUIRED.search(text) or _NEGATED_REMOTE.search(text))
+
+
+def _rto_days_of(text: str, optional_office: bool | None = None) -> int | None:
+    # 1. Mixed or conditional wording is unknown.
+    if _MIXED.search(text) or _FLEXIBLE.search(text):
+        return None
+    has_count = bool(_COUNT.search(text) or _WEEKDAYS.search(text) or _FULL_WEEK.search(text))
     # 2. Negated or optional office, with no attendance count, is remote.
-    if _OPTIONAL_OFFICE.search(text):
+    if (_OPTIONAL_OFFICE.search(text) if optional_office is None else optional_office) and not has_count:
         return 0
     # 3. Occasional attendance (offsites, onboarding, quarterly) is unknown.
     if _OCCASIONAL.search(text):
         return None
     has_office_word = _OFFICE_WORD.search(text) is not None
-    # 4. An explicit day count next to an office word is that count.
+    # 4. An explicit day count next to an office word is that count; a count of
+    # remote days ("WFH 2 days a week") is unknown.
     if has_office_word:
         if _RANGE.search(text):
             return None
         counts = list(_COUNT.finditer(text))
         if counts:
             match = counts[0]
-            if _REMOTE_DAYS.match(text, match.end()):
-                return None  # the count is of remote days
+            if _remote_count(text, match):
+                return None
             word = match.group(1)
             return _NUMBER_WORDS.get(word) or int(word)
         if _FULL_WEEK.search(text):
             return 5
+    else:
+        match = _COUNT.search(text)
+        if match and _REMOTE_WORK_BEFORE.search(text[: match.start()]):
+            return None  # "can work remotely up to two days a week"
     # 5. Hybrid on named weekdays is unknown (matching does not count them).
     if "hybrid" in text and _WEEKDAYS.search(text):
         return None
     # 6. Office-first / return-to-office / in-office wording is five days.
     if _IN_OFFICE.search(text):
         return 5
+    if _IN_PERSON.search(text):
+        # "remote-first; in-person meetups" is not a requirement.
+        return 5 if _has_stated_attendance(text) else None
+    attendance = _ATTENDANCE_WORD.search(_INCIDENTAL_OFFICE.sub(" ", text)) is not None
+    if attendance and "remote" in text and "hybrid" not in text:
+        # A stated office requirement with a remote exception is five days; an
+        # unstated one, or one on named weekdays, is unknown.
+        if (_REQUIRED.search(text) or _NEGATED_REMOTE.search(text)) and not _REQUIRED_DAYS.search(text):
+            return 5
+        return None
     # 7. Negated remote says nothing about hybrid or in-office; negated hybrid
     # says nothing either unless the text goes on to say remote.
     negated_hybrid = _NEGATED_HYBRID.search(text) is not None

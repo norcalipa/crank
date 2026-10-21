@@ -33,6 +33,25 @@ produce ``proposed`` (frozen in ``rto_reading_report.proposed_rto_days``):
 9. Remote wording, including an incidental office mention (hubs, coworking, "an
    office in X"), is 0.
 10. Anything else is unknown.
+
+PR #602 review round 1 added rows at the end of ``CORPUS`` (source column
+"pr #602 review 1, category X"), with these owner-approved readings (2026-10-20):
+
+A. A stated office requirement with a remote exception ("Office required;
+   remote by exception") is 5.
+B. An office day count with an optional-office clause ("In-office 4 days a week
+   (office optional on Fridays)") is the stated count.
+C. A count of remote days ("Hybrid, WFH 2 days a week") is unknown.
+D. Remote with optional or negated in-person / RTO wording ("Remote-first; RTO
+   not required") is 0.
+E. A double negative ("Office not optional") is 5.
+F. Negated remote in any form ("Remote isn't an option", "We do not offer
+   remote work") is unknown.
+
+Category G holds the review's minor findings (the reading is the reader's, not
+an owner letter): a count in one clause stands over a "flexible" or "occasional"
+clause; two counts read the office count; in-person extras on a remote company
+are unknown.
 """
 
 CORPUS = [
@@ -257,4 +276,113 @@ CORPUS = [
     ('Offices worldwide', 5, None, 'other', 'phrasing'),
     ('Great culture', None, None, 'other', 'phrasing'),
     ('Not specified', None, None, 'other', 'phrasing'),
+    # PR #602 review round 1: owner-approved readings A-F (2026-10-20); G are the review's minor findings.
+    ('Office required; remote by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office required, remote only with VP approval', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Expected in the office; remote only by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Back in the office full time; remote exceptions for caregivers', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Work from the office, remote by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Employees work in the office; remote exceptions are rare', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office-centric; remote by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office; remote by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office (remote by exception)', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Based in the office; remote by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Work at our offices; remote by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office presence required; limited remote', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Mandatory office presence; remote exceptions', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Everyone works in the office. Remote work is approved case-by-case only for existing staff', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('In the office, with remote work as an exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Full time in the office; remotely only by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Work from office; remote only for approved exceptions', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office every day; remote not standard', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Our team works together in the office; we do not hire remote', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office required. Remote is not offered.', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office required; remote work rarely approved', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Return to office mandate; remote exceptions', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('In the office five days; remote for exceptions', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Onsite at HQ; remote by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office based; remote by exception', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('In office 5 days; remote work not permitted', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('In the office 5 days a week; remote for exceptions only', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Onsite 5 days, remote for emergencies', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('We are an in-person company. Employees work from our New York office five days a week. Remote work is considered only in exceptional circumstances.', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Employees are required to be in the office full-time. Remote work is not an option.', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ("Everyone works from our Austin office; we don't offer remote positions.", 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Our headquarters is in Seattle and we expect employees to work from the office. We do not support fully remote arrangements.', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office attendance: required. Remote work: by exception.', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Remote, office required', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Remote, office required, remote only for approved exceptions', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office required, optional remote Fridays', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Onsite, optional remote Fridays', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('Office required unless approved; remote optional', 5, 5, 'office-required-remote-exception', 'pr #602 review 1, category A'),
+    ('In-office 4 days a week (office optional on Fridays)', 5, 4, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('In office Monday-Thursday; office attendance is not required on Fridays', 5, 5, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('3 days in office required; office optional the other two days', 5, 3, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('Onsite 4 days; office optional Fridays', 5, 4, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('In-person 3 days a week; office not required on Mondays and Fridays', 5, 3, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('No in-office requirement during your first month; 3 days a week after that', 5, 3, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('5 days in office; office optional during the holidays', 5, 5, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('Return to office 3 days a week; office optional on other days', 5, 3, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('3 days in office, office optional on Fridays', 5, 3, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('This role requires working from our London office 4 days a week, with the option to work from home on Fridays.', 5, 4, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('Hybrid: in office Tuesday-Thursday, office optional Monday and Friday', 5, None, 'office-count-optional-clause', 'pr #602 review 1, category B'),
+    ('Hybrid: work from home 2 days per week', 3, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Hybrid (remote 2 days a week)', 3, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Hybrid, WFH 2 days a week', 3, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Hybrid - remote up to 2 days a week', 3, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Work from home 2 days, office 3 days', 5, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('2 days work from home, 3 days in office', 5, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Remote 2 days per week, in office the rest', 5, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Hybrid, with 2 days of remote work per week', 3, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Hybrid: employees may work from home up to one day a week', 3, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('In office by default; remote 1 day a week', 5, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Hybrid with 1 day remote per week', 3, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('2 days remote, 3 days in office', 5, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Office-first, but you can work remotely up to two days a week', 5, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Employees can work remotely up to two days per week', 0, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Employees can work remotely up to two days per week; the rest is in-office.', 5, None, 'remote-day-count', 'pr #602 review 1, category C'),
+    ('Remote, with optional in-person days', 0, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('Remote-first; RTO not required', 0, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('Remote (no in-person requirement)', 0, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('Remote-first; in-person attendance is optional', 0, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('Remote; in-person not required', 0, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('Remote, in-person optional', 0, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('Remote-first. In-person attendance is not required.', 0, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('Remote; no RTO plans', 0, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('No RTO mandate', None, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('In-person is optional', None, 0, 'remote-optional-in-person', 'pr #602 review 1, category D'),
+    ('Office not optional', 5, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('Onsite not optional', 5, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('On-site not optional', None, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('Office is not optional', 5, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('In-office not optional', 5, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('Office: not optional', 5, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('Office never optional', 5, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('Office not voluntary', 5, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('Remote not an option; office not optional', 5, 5, 'double-negative-office', 'pr #602 review 1, category E'),
+    ('Not a remote position', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('This is not a remote role', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote: no', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote? No.', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('No fully remote roles', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote work is not supported', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote not possible', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Does not offer remote work', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('We do not offer remote work', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote work is prohibited', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote: never', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote work: none', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote-friendly: no', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Fully remote: not available', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote positions are not available', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ("Remote work isn't permitted", 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Remote work is not permitted', 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ("Remote isn't an option", 0, None, 'negated-remote-contraction', 'pr #602 review 1, category F'),
+    ('Hybrid, 3 days in office, 2 days remote', 5, 3, 'review-minor', 'pr #602 review 1, category G'),
+    ('4 days in office; occasional remote Fridays', 5, 4, 'review-minor', 'pr #602 review 1, category G'),
+    ('3 days in office. Flexible hours.', 5, 3, 'review-minor', 'pr #602 review 1, category G'),
+    ('1 in-office day', 5, 1, 'review-minor', 'pr #602 review 1, category G'),
+    ('Remote OK, office required Tuesdays', 5, None, 'review-minor', 'pr #602 review 1, category G'),
+    ('Remote-first; in-person meetups', 0, None, 'review-minor', 'pr #602 review 1, category G'),
+    ('Remote; in-person collaboration encouraged', 0, None, 'review-minor', 'pr #602 review 1, category G'),
 ]
