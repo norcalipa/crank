@@ -140,11 +140,7 @@ function evidenceText(requirement: FitRequirement): string | null {
 // The first figure is a count of the rows below: how many of the reader's
 // priorities that a fact about the company can decide are confirmed met. The
 // server decides which priorities those are (`counted` on each row).
-export const PRIORITIES_MET_TERM = {
-    label: 'Priorities met',
-    meaning: 'How many of your priorities that a fact about the company can decide are confirmed for you. Unknown rows, '
-        + 'and rows whose fact covers only part of the company, count as not met; priorities checked for each job are not counted.',
-};
+export const PRIORITIES_MET_TERM = MATCH_TERMS.prioritiesMet;
 export const PRIORITIES_NONE_TEXT = 'No priority in the rows below can be decided from a fact about a company; '
     + 'each is checked for each job.';
 // Beside a count, the priorities it leaves out, so "of 3" can be checked against five rows without the legend.
@@ -154,11 +150,8 @@ export const perJobCountText = (count: number): string => (count === 1
 
 // The number the endpoint sends as `company_score` is the plain mean of the
 // company's rating types (`_company_score`); no preset weights enter it. The
-// job-match panel's own label (`MATCH_TERMS.companyScore`) is not true for it.
-export const COMPANY_SCORE_TERM = {
-    label: 'Average rating',
-    meaning: 'The plain average of its rating types, 0 to 5, whatever the ranking preset.',
-};
+// job-match panel prints it under the same term.
+export const COMPANY_SCORE_TERM = MATCH_TERMS.averageRating;
 
 const figure = (value: number | null, scale: string, digits = 1): string =>
     value === null || value === undefined ? '—' : `${value.toFixed(digits)}${scale}`;

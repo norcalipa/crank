@@ -1358,6 +1358,12 @@ body.app-nav-drawer-open {
     font-weight: 600;
 }
 
+/* The order note never leaves one word alone on its last line (issue #584). */
+#job-match-panel [data-testid="ranked-org-order-note"] {
+    text-wrap: balance;
+    text-wrap: pretty;
+}
+
 /* Score grid (r3 item 4, r4; issue #473): three labelled columns with legible
    xs uppercase labels and sm semibold values carrying explicit scales (/5,
    /100, %). The labels share one grid row and the values the next (subgrid),

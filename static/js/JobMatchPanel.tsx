@@ -53,6 +53,8 @@ interface RequirementOutcome {
     // Read-time status of the backing fact (issue #473). Absent on listing
     // data and on payloads cached before the field existed.
     evidence_status?: RequirementEvidenceStatus | null;
+    // Company rows only: false for a priority checked for each job, which "Priorities met" leaves out (issue #584).
+    counted?: boolean;
 }
 
 interface RequirementEvidenceStatus {
@@ -112,6 +114,8 @@ interface RankedJobMatch {
     revision?: RevisionBlock | null;
 }
 
+type PrioritiesMet = {met: number; counted: number};
+
 interface RankedOrgMatch {
     organization_id: number;
     name: string;
@@ -121,6 +125,7 @@ interface RankedOrgMatch {
     score: number;
     reasons: string[];
     fit_score?: number | null;
+    priorities_met?: PrioritiesMet | null;
     company_score?: number | null;
     coverage?: number;
     requirements?: RequirementOutcome[];
@@ -540,23 +545,62 @@ function requirementLabel(path: string): string {
     return REQUIREMENT_LABELS[path] || path.split('.').pop() || path;
 }
 
-/** Three separately labelled figures: company score (/5), fit (/100), and
+/** The list's one-line account of its order (issue #584). The priorities left
+ * out of "Priorities met" are the reader's own, so they are named once here,
+ * not on every row. An older server sends no figure at all, and then no
+ * claim is made about the order. */
+function orgOrderNote(orgs: RankedOrgMatch[]): string | null {
+    if (orgs.every((org) => org.priorities_met === undefined)) return null;
+    const counted = orgs.find((org) => org.priorities_met);
+    if (!counted) {
+        const perJob = orgs.some((org) => (org.requirements ?? []).some((r) => r.counted === false));
+        return perJob
+            ? 'None of your priorities can be decided from a fact about a company, so companies are listed by average rating.'
+            : 'Companies are listed by average rating.';
+    }
+    const names = (counted.requirements ?? []).filter((r) => r.counted === false).map((r) => requirementLabel(r.path));
+    const order = 'Most priorities met first, then the higher average rating.';
+    if (names.length === 0) return order;
+    const joined = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+    return `${order} Checked for each job, not counted: ${joined}.`;
+}
+
+/** Three separately labelled figures: the first (fit, /100, on a job; the
+ * priorities met, "n of m", on a company: issue #584), company score (/5) and
  * coverage (%) (AC-10). Round-3: explicit scales so each number reads on its
  * own, and a three-column grid with legible xs labels + sm semibold values. */
-function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | undefined; company: number | null | undefined; coverage: number | null | undefined; scope: string}) {
+function ThreeFigures({fit, priorities, company, coverage, scope}: {fit?: number | null | undefined; priorities?: PrioritiesMet | null; company: number | null | undefined; coverage: number | null | undefined; scope: string}) {
     const covText = coverage == null ? '—' : `${Math.round(coverage * 100)}%`;
     const fitText = fit == null ? '—' : `${fit.toFixed(1)} / 100`;
+    const prioritiesText = priorities ? `${priorities.met} of ${priorities.counted}` : '—';
     const companyText = company == null ? '—' : `${company.toFixed(1)} / 5`;
+    const isCompanyRow = priorities !== undefined;
+    // The plain average is "Average rating" on every row; a company row leads with the figure its list is sorted by, as the company view does.
+    const rating = (
+        <span role="listitem" className="job-match-figure">
+            <span className="job-match-figure-label" title={MATCH_TERMS.averageRating.meaning}>{MATCH_TERMS.averageRating.label}</span>
+            <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
+        </span>
+    );
     return (
         <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
-            <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label" title={MATCH_TERMS.companyScore.meaning}>{MATCH_TERMS.companyScore.label}</span>
-                <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
-            </span>
-            <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label" title={MATCH_TERMS.fit.meaning}>{MATCH_TERMS.fit.label}</span>
-                <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
-            </span>
+            {isCompanyRow ? (
+                <>
+                    <span role="listitem" className="job-match-figure">
+                        <span className="job-match-figure-label" title={MATCH_TERMS.prioritiesMet.meaning}>{MATCH_TERMS.prioritiesMet.label}</span>
+                        <strong className="job-match-figure-value" data-testid={`${scope}-priorities-met`}>{prioritiesText}</strong>
+                    </span>
+                    {rating}
+                </>
+            ) : (
+                <>
+                    {rating}
+                    <span role="listitem" className="job-match-figure">
+                        <span className="job-match-figure-label" title={MATCH_TERMS.fit.meaning}>{MATCH_TERMS.fit.label}</span>
+                        <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
+                    </span>
+                </>
+            )}
             <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label" title={MATCH_TERMS.requirementCoverage.meaning}>{MATCH_TERMS.requirementCoverage.label}</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-coverage`}>{covText}</strong>
@@ -811,16 +855,22 @@ const LEGEND_MARKS = ['match', 'mismatch', 'unknown'] as const;
 
 /** The job-card vocabulary in one place (issue #473): the same definitions
  * as "How ranking works" on the rankings page, which this page lacks. */
+// Which row type shows a figure that only one of them has.
+const LEGEND_WHERE: Record<string, string> = {
+    [MATCH_TERMS.fit.label]: 'On job rows.',
+    [MATCH_TERMS.prioritiesMet.label]: 'On company rows.',
+};
+
 function MatchLegend() {
     return (
         <details className="how-ranking-works job-match-legend" data-testid="job-match-legend">
             <summary className="how-ranking-works-summary">What these labels mean</summary>
             <div className="how-ranking-works-content">
                 <dl className="ranking-definitions mb-0">
-                    {[MATCH_TERMS.companyScore, MATCH_TERMS.fit, MATCH_TERMS.requirementCoverage].map((term) => (
+                    {[MATCH_TERMS.averageRating, MATCH_TERMS.fit, MATCH_TERMS.prioritiesMet, MATCH_TERMS.requirementCoverage].map((term) => (
                         <React.Fragment key={term.label}>
                             <dt>{term.label}</dt>
-                            <dd>{term.meaning}</dd>
+                            <dd>{LEGEND_WHERE[term.label] ? `${LEGEND_WHERE[term.label]} ` : ''}{term.meaning}</dd>
                         </React.Fragment>
                     ))}
                     <dt>Requirement chips</dt>
@@ -1816,6 +1866,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     if (hasRankedMatches) {
         const jobs = rankedMatches!.job_matches || [];
         const orgs = rankedMatches!.organization_matches || [];
+        const orderNote = orgOrderNote(orgs);
         // One consolidated stale flag and one generated-at timestamp for the
         // whole result set (a single computation stamps every row).
         const staleResults = [...jobs, ...orgs].some((m) => m.revision?.stale);
@@ -1899,6 +1950,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     {orgs.length > 0 && (
                         <div data-testid="ranked-org-matches">
                             <h3 className="job-match-section-heading mb-2">Ranked Organizations</h3>
+                            {orderNote && (
+                                <p className="text-muted small mb-2" data-testid="ranked-org-order-note">
+                                    {orderNote}
+                                </p>
+                            )}
                             {orgs.map((org) => (
                                 <div key={org.organization_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-org-${org.organization_id}`}>
@@ -1927,7 +1983,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                             ))}
                                         </div>
                                     )}
-                                    <ThreeFigures scope={`org-${org.organization_id}`} fit={org.fit_score ?? org.score} company={org.company_score} coverage={org.coverage} />
+                                    <ThreeFigures scope={`org-${org.organization_id}`} priorities={org.priorities_met ?? null} company={org.company_score} coverage={org.coverage} />
                                     <RequirementChips requirements={org.requirements} canRecheck={canRecheck} />
                                     <SuggestCorrectionButton organizationId={org.organization_id} companyName={org.name} />
                                 </div>

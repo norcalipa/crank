@@ -103,6 +103,13 @@ def _evidence_summary_text(summary: object) -> str:
     return text
 
 
+def _priorities_met_text(figure: object) -> str:
+    """The company list's "Priorities met" figure as ``<met> of <counted>``, or ``none``."""
+    if not isinstance(figure, dict):
+        return "none"
+    return f"{figure.get('met', 0)} of {figure.get('counted', 0)}"
+
+
 def _requirements_text(requirements: object) -> str:
     """Render a compact ``path=status[source]`` list for the model context.
 
@@ -247,10 +254,12 @@ class ModelContext:
             if org_matches:
                 org_lines = [
                     "organization_id={organization_id} name={name!r} score={score} "
+                    "priorities_met={priorities_met} "
                     "requirements={requirements} {reasons}".format(
                         organization_id=row.get("organization_id"),
                         name=bounded_name(row.get("name", "")),
                         score=row.get("score", 0.0),
+                        priorities_met=_priorities_met_text(row.get("priorities_met")),
                         requirements=_requirements_text(row.get("requirements")),
                         reasons=_reasons_text(row),
                     )
