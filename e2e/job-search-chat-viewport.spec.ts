@@ -410,6 +410,45 @@ test.describe('integrated suggest-company entry points (issue #471)', () => {
     });
 });
 
+test.describe('ranked organizations follow the priorities met (issue #584)', () => {
+    const PANEL_FIXTURE = '/e2e/fixtures/job-match-panel.html';
+
+    test('rows print "n of m" in the server order, a tie shows its rating, and nothing reads "/ 100"', async ({page}) => {
+        await page.goto(`${PANEL_FIXTURE}?state=org_ties`);
+        const orgs = page.getByTestId('ranked-org-matches');
+        await expect(orgs.locator('.job-match-card')).toHaveCount(3);
+        await expect(orgs.locator('.job-match-name')).toHaveText(['Acme Corp', 'Birch Labs', 'Cedar Works']);
+        await expect(page.getByTestId('org-7-priorities-met')).toHaveText('2 of 2');
+        await expect(page.getByTestId('org-8-priorities-met')).toHaveText('1 of 2');
+        await expect(page.getByTestId('org-9-priorities-met')).toHaveText('1 of 2');
+        await expect(page.getByTestId('org-8-company-score')).toHaveText('4.6 / 5');
+        await expect(page.getByTestId('org-9-company-score')).toHaveText('3.2 / 5');
+        await expect(orgs.locator('.job-match-figure-label', {hasText: 'Average rating'})).toHaveCount(3);
+        await expect(orgs.locator('.job-match-card').first().locator('.job-match-figure-label')).toHaveText(
+            ['Priorities met', 'Average rating', 'Requirement coverage']);
+        await expect(page.getByTestId('ranked-job-matches').locator('.job-match-card').first().locator('.job-match-figure-label')).toHaveText(
+            ['Average rating', 'Fit', 'Requirement coverage']);
+        await expect(page.getByTestId('ranked-org-order-note')).toContainText(
+            'Most priorities met first, then the higher average rating. Checked for each job, not counted: Minimum salary.');
+        await expect(orgs).not.toContainText('/ 100');
+        await expect(page.getByTestId('ranked-job-matches')).toContainText('/ 100');
+    });
+
+    test('the order note balances its lines so no word is left alone', async ({page}) => {
+        await page.goto(`${PANEL_FIXTURE}?state=org_ties`);
+        const wrap = await page.getByTestId('ranked-org-order-note').evaluate(
+            (el) => getComputedStyle(el).getPropertyValue('text-wrap') || getComputedStyle(el).getPropertyValue('text-wrap-style'),
+        );
+        expect(wrap).toMatch(/balance|pretty/);
+    });
+
+    test('a reader with only per-job priorities sees a dash and the reason for the order', async ({page}) => {
+        await page.goto(`${PANEL_FIXTURE}?state=org_per_job_only`);
+        await expect(page.getByTestId('org-7-priorities-met')).toHaveText('—');
+        await expect(page.getByTestId('ranked-org-order-note')).toContainText('companies are listed by average rating');
+    });
+});
+
 test.describe('200% zoom', () => {
     test.skip(({browserName}) => browserName !== 'chromium', 'page-scale zoom emulation is Chromium-only');
 

@@ -118,7 +118,8 @@ def test_match_terms_read_the_same_in_how_ranking_works():
     ).group("body") + "\n"
     terms = {key: (label, meaning) for key, label, meaning in _TERM_RE.findall(body)}
     assert set(terms) == {
-        "sourced", "changed", "unqualified", "companyScore", "fit", "requirementCoverage",
+        "sourced", "changed", "unqualified", "averageRating", "fit", "prioritiesMet",
+        "requirementCoverage",
     }
     assert _TERM_RE.sub("", body) == ""
     legend = RANKINGS_TEMPLATE.read_text(encoding="utf-8")
@@ -130,17 +131,25 @@ def test_match_terms_read_the_same_in_how_ranking_works():
     label, meaning = terms["unqualified"]
     assert f'<span class="evidence-badge">{label}</span>: {meaning}</li>' in legend
     for key, heading in (
-        ("companyScore", "Company score"),
         ("fit", "Fit"),
+        ("prioritiesMet", "Priorities met"),
         ("requirementCoverage", "Requirement coverage"),
     ):
         label, meaning = terms[key]
-        assert label.startswith(heading)
-        if label != heading:
-            assert f'<dd>Shown as "{label}" on job cards. {meaning}</dd>' in legend
+        assert label == heading
         assert re.search(
             r"<dt>%s</dt>\s*<dd>[^<]*%s</dd>" % (re.escape(heading), re.escape(meaning)), legend
         ), key
+    # The panel's plain average is one term on every row, so the rankings page
+    # does not announce a second name for its own preset score.
+    assert "Company score (preset)" not in legend
+    assert "companyScore" not in LABELS_TS.read_text(encoding="utf-8")
+    assert "<dt>Company score</dt>\n" in legend
+    # Coverage is printed in a company's view on this page, not only in Job Search.
+    assert re.search(
+        r"<dt>Requirement coverage</dt>\s*<dd>Shown in a company's view on this page and in Job Search matches\. ", legend
+    )
+    assert f"<dt>Requirement coverage</dt>\n                        <dd>{_JOBS_ONLY}" not in legend
 
 
 _DEFINITIONS_RE = re.compile(

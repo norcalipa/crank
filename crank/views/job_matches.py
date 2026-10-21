@@ -612,6 +612,7 @@ def job_match_ranked(request):
                 "rto_policy": r.rto_policy,
                 "score": r.score,
                 "fit_score": r.fit_score,
+                "priorities_met": r.priorities_met,
                 "company_score": r.company_score,
                 "coverage": r.coverage,
                 "requirements": requirements,
