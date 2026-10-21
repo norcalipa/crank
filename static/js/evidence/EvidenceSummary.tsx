@@ -7,10 +7,10 @@ import EvidenceBadge from './EvidenceBadge';
 // One sentence for assistive tech. Rows and cards are role="button" with an
 // aria-label, so their text is skipped in focus mode; aria-describedby points
 // here so the coverage, counts and freshness are announced with the name.
-export const evidenceDescription = (coverage: string, evidence?: EvidenceSummaryData | null): string => {
+export const evidenceDescription = (coverage: string, evidence?: EvidenceSummaryData | null, timeZone?: string): string => {
     if (!evidence) return `Rating coverage ${coverage}. Facts: ${EVIDENCE_STATUS_META.unknown.label}.`;
     const freshness = evidence.last_verified_at
-        ? `Last verified ${formatEvidenceDate(evidence.last_verified_at)}`
+        ? `Last verified ${formatEvidenceDate(evidence.last_verified_at, false, timeZone)}`
         : 'Never verified';
     const pending = evidence.pending_review > 0 ? ` ${EVIDENCE_STATUS_META.pending.label}.` : '';
     return `Rating coverage ${coverage}. Facts: ${evidence.verified} verified, ${evidence.stale} stale, `
@@ -24,12 +24,14 @@ interface EvidenceSummaryProps {
      * assistant reply). "Verified" is a claim about now that such a record
      * cannot keep, so it shows its counts and date without that verdict. */
     snapshot?: boolean;
+    /** Time zone of the printed "Last verified" day; the reader's own when left out. */
+    timeZone?: string;
 }
 
 // Facts, freshness and review state for one organization, shown separately
 // from rating coverage. Rows without a summary (old cache entries, fixtures)
 // read as Unknown rather than as verified.
-const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'row', snapshot = false}) => {
+const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'row', snapshot = false, timeZone}) => {
     if (!evidence) {
         return (
             <div className={`evidence-summary evidence-summary-${variant}`} data-testid="evidence-summary">
@@ -52,9 +54,10 @@ const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'r
                 <span className="text-nowrap">{evidence.stale} stale</span>{' · '}
                 <span className="text-nowrap">{evidence.unknown} unknown</span>
             </span>
-            <span className="evidence-summary-fresh" data-testid="evidence-last-verified">
+            <span className="evidence-summary-fresh" data-testid="evidence-last-verified"
+                title={timeZone === 'UTC' && evidence.last_verified_at ? 'Day in UTC' : undefined}>
                 {evidence.last_verified_at
-                    ? <>Last verified <span className="text-nowrap">{formatEvidenceDate(evidence.last_verified_at)}</span></>
+                    ? <>Last verified <span className="text-nowrap">{formatEvidenceDate(evidence.last_verified_at, false, timeZone)}</span></>
                     : 'Never verified'}
             </span>
             {evidence.pending_review > 0 && (

@@ -4,58 +4,16 @@
 //
 // All checks are geometric or behavioral (bounding boxes, DOM state after
 // reload) so they demonstrably fail against the pre-fix behavior and pass
-// against the integrated fix. Surfaces whose owning tickets have not merged
-// are implemented in full and gated behind an explicit, named `test.skip`.
+// against the integrated fix.
 import {expect, Page, test} from '@playwright/test';
 import {
     expectNoHorizontalOverflow,
     login,
-    pendingTicketMerge,
-    rectsIntersect,
     rectOf,
     requireDjangoTier,
 } from './support';
 
 requireDjangoTier();
-
-test.describe('modal z-order vs navigation shell', () => {
-    // (a) Old behavior: `.popup-overlay` (z-index 1000) paints under
-    // `.app-nav-rail` (1100) and the mobile nav toggle/overlay (1200+), so the
-    // dialog title/Close visually collide with navigation chrome. The
-    // bounding-box assertions below fail exactly when the dialog shares space
-    // with the rail/toggle; they are gated until the owning fix merges.
-    test.describe.configure({mode: 'serial'});
-
-    test('company dialog never intersects the nav rail or mobile toggle', async ({page}) => {
-        pendingTicketMerge(
-            500,
-            'the dialog paints under the nav rail (desktop) and the nav toggle (mobile); ' +
-            'unskip by deleting this call once #500 merges',
-        );
-
-        // Desktop (1280px): dialog title and Close must sit clear of the rail.
-        await page.setViewportSize({width: 1280, height: 800});
-        await login(page);
-        await page.locator('tr[aria-label="View details for E2E Alpha Corp"]').click();
-        await expect(page.getByRole('dialog')).toBeVisible();
-        const rail = await rectOf(page, '[data-nav-rail]');
-        const title = await rectOf(page, '#organization-details-title');
-        const close = await rectOf(page, '.popup-details button[aria-label="Close"]');
-        expect(rectsIntersect(title, rail), 'dialog title must not sit under the nav rail').toBe(false);
-        expect(rectsIntersect(close, rail), 'dialog Close must not sit under the nav rail').toBe(false);
-
-        // Mobile (375px): the rail is hidden; the toggle must not overlap the
-        // dialog header controls.
-        await page.setViewportSize({width: 375, height: 667});
-        await expect(page.locator('[data-nav-rail]')).toBeHidden();
-        await expect(page.getByRole('dialog')).toBeVisible();
-        const toggle = await rectOf(page, '[data-nav-toggle]');
-        const mobileTitle = await rectOf(page, '#organization-details-title');
-        const mobileClose = await rectOf(page, '.popup-details button[aria-label="Close"]');
-        expect(rectsIntersect(mobileTitle, toggle), 'dialog title must not sit under the nav toggle').toBe(false);
-        expect(rectsIntersect(mobileClose, toggle), 'dialog Close must not sit under the nav toggle').toBe(false);
-    });
-});
 
 test.describe('mobile width regression', () => {
     // (b) Old behavior: main content collapsed to ~150px at 320px width.
@@ -89,14 +47,9 @@ test.describe('failed assistant turn persistence @outage', () => {
 
     // (c) Old behavior: the optimistic user turn is rolled back client-side
     // while the server persists it, so the message vanishes from the live UI
-    // (JobSearchChat.tsx sendTurn catch path). The immediate-visibility and
-    // retry assertions are the #496 fix surface; the reload-survival
-    // assertion exercises the server-side persistence contract that already
-    // holds, and pins it so the fix cannot regress it either.
+    // (JobSearchChat.tsx sendTurn catch path). Failed turns accumulate in
+    // e2e_user's conversation, so every locator is scoped to this run's probe.
     test('failed turn keeps the persisted user message visible, with Retry, across reload', async ({page}) => {
-        test.skip(true, 'pending #496 merge: the optimistic turn is rolled back on failure until #496 lands; ' +
-            'unskip by deleting this call once #496 merges');
-
         await login(page);
         await page.goto('/chat/');
         await expect(page.getByTestId('job-search-chat')).toBeVisible();
@@ -112,20 +65,81 @@ test.describe('failed assistant turn persistence @outage', () => {
 
         // The user message stays visible immediately (no optimistic rollback)…
         const sent = page.locator('article[aria-label="Your message"]', {hasText: probe});
+        await expect(sent).toHaveCount(1);
         await expect(sent).toBeVisible();
 
         // …Retry is offered and re-issues the turn (outage persists → error
         // returns, message still present, no duplicate turn)…
-        await page.getByTestId('retry-button').click();
+        await sent.getByTestId('retry-response-button').click();
         await expect(error).toBeVisible();
         await expect(error).toHaveAttribute('data-error-type', 'assistant_unavailable');
-        await expect(sent).toBeVisible();
+        await expect(sent).toHaveCount(1);
+        await expect(sent.getByTestId('failed-turn')).toBeVisible();
 
-        // …and both survive a reload from the server-persisted history.
+        // …and the turn survives a reload from the server-persisted history
+        // with Retry still offered, and pressing it after the reload fails
+        // the same honest way without a duplicate turn.
         await page.reload();
-        await expect(
-            page.locator('article[aria-label="Your message"]', {hasText: probe}),
-        ).toBeVisible();
+        await expect(sent).toHaveCount(1);
+        const retry = sent.getByTestId('retry-response-button');
+        await expect(retry).toBeEnabled();
+        await retry.click();
+        await expect(page.getByTestId('chat-error')).toHaveAttribute('data-error-type', 'assistant_unavailable');
+        await expect(sent).toHaveCount(1);
+        await expect(sent.getByTestId('failed-turn')).toBeVisible();
+    });
+
+    // The server stops a turn after JOB_SEARCH_TURN_MAX_ATTEMPTS attempts and
+    // says so through `retry_available`; the test reads the cap from that
+    // field instead of hard-coding it, then recovers with "Edit as new message".
+    test('retry limit reached: Retry is exhausted and Edit as new message recovers the content', async ({page}) => {
+        await login(page);
+        await page.goto('/chat/');
+        await expect(page.getByTestId('job-search-chat')).toBeVisible();
+
+        const probe = `E2E retry limit probe ${Date.now()}`;
+        await page.locator('textarea[aria-label="Message"]').fill(probe);
+        await page.getByLabel('Send message').click();
+        const error = page.getByTestId('chat-error');
+        await expect(error).toBeVisible();
+        const sent = page.locator('article[aria-label="Your message"]', {hasText: probe});
+        const retry = sent.getByTestId('retry-response-button');
+        await expect(retry).toBeEnabled();
+
+        // Press Retry until the server reports the cap: the button turns into
+        // the disabled "Retry limit reached". The bound only guards the loop.
+        let presses = 0;
+        while (await retry.isEnabled()) {
+            expect(presses, 'the server never reported retry_available=false').toBeLessThan(20);
+            presses += 1;
+            await retry.click();
+            await expect(retry).toBeVisible();
+            await expect(error).toBeVisible();
+            await expect(retry).toHaveAttribute('aria-label', /Retry response|Retry limit reached/);
+        }
+        expect(presses, 'at least one retry was possible before the cap').toBeGreaterThanOrEqual(1);
+        await expect(retry).toBeDisabled();
+        await expect(retry).toHaveAttribute('aria-label', 'Retry limit reached');
+        await expect(sent).toHaveCount(1);
+        await expect(sent.getByTestId('failed-turn')).toContainText('after several retries');
+
+        // The server's own message states the cap: the first send and the
+        // accepted presses are the attempts, and the last press was refused.
+        await expect(error).toHaveAttribute('data-error-type', 'retry_limit_reached');
+        await expect(error).toContainText(`after ${presses} attempts`);
+
+        // The exhausted state is the persisted one: it survives a reload.
+        await page.reload();
+        await expect(sent.getByTestId('retry-response-button')).toBeDisabled();
+
+        // A failed send's draft survives a reload, so empty the composer
+        // first: only "Edit as new message" may put the content back.
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await composer.fill('');
+        await expect(composer).toHaveValue('');
+        await sent.getByTestId('edit-as-new-button').click();
+        await expect(composer).toHaveValue(probe);
+        await expect(composer).toBeFocused();
     });
 
     test('server persists the failed turn: it survives a reload', async ({page}) => {

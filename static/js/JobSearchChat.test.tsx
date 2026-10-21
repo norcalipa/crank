@@ -239,17 +239,18 @@ describe('JobSearchChat', () => {
             document.querySelectorAll('.assistant-panel-body').forEach((el) => el.remove());
         });
 
-        test('writes three custom properties and no height, and marks no scroll owner', async () => {
+        test('writes four custom properties and no height, and marks no scroll owner', async () => {
             await renderChat();
             await act(async () => { await flushRaf(); });
             const chat = screen.getByTestId('job-search-chat');
             const log = screen.getByRole('log');
             expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('96px');
+            expect(chat.style.getPropertyValue('--chat-stack-cover-max')).toBe('96px');
             expect(chat.style.getPropertyValue('--chat-notices-max')).toBe('64px');
             expect(chat.style.getPropertyValue('--chat-keyboard-inset')).toBe('0px');
             expect(chat.style.height).toBe('');
             expect(chat.style.minHeight).toBe('');
-            expect(chat.style.length).toBe(3);
+            expect(chat.style.length).toBe(4);
             // The transcript is always the scroller: its sizing lives in the stylesheet.
             expect(log.getAttribute('style')).toBeNull();
             expect(document.querySelector('[data-scroll-owner]')).toBeNull();
@@ -265,9 +266,11 @@ describe('JobSearchChat', () => {
             const header = chat.querySelector('.card-header') as HTMLElement;
             const form = chat.querySelector('form') as HTMLElement;
             jest.spyOn(header, 'getBoundingClientRect').mockReturnValue({bottom: 100} as DOMRect);
-            jest.spyOn(form, 'getBoundingClientRect').mockReturnValue({top: 400} as DOMRect);
+            jest.spyOn(form, 'getBoundingClientRect').mockReturnValue({top: 400, bottom: 520} as DOMRect);
             await remeasure();
             expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('288px');
+            // A confirmation may also cover the (inert) composer band: down to 4px above the form's bottom.
+            expect(chat.style.getPropertyValue('--chat-stack-cover-max')).toBe('416px');
         });
 
         test('caps footer notices at 40% of the card', async () => {
@@ -1361,6 +1364,299 @@ describe('JobSearchChat', () => {
         });
     });
 });
+describe('history actions: ended session, server word, busy composer, inert (issue #547)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+        window.localStorage.clear();
+    });
+
+    afterEach(() => {
+        resetWorkspaceForTests();
+        jest.restoreAllMocks();
+    });
+
+    const SESSION_ENDED = 'Your session has ended. Sign in again, then try again.';
+    const KEY_A = '123e4567-e89b-42d3-a456-426614174000';
+    const loginRedirect = (body = '<html>Sign in</html>', type = 'text/html') => {
+        const res = new Response(body, {status: 200, headers: {'Content-Type': type}});
+        Object.defineProperty(res, 'redirected', {value: true});
+        Object.defineProperty(res, 'url', {value: 'http://localhost/accounts/login/?next=/'});
+        return res;
+    };
+    const htmlOk = () => new Response('<html>Sign in</html>', {status: 200, headers: {'Content-Type': 'text/html'}});
+    const unreachable = (res: Response) => res;
+    const download = () => {
+        const createUrl = jest.fn().mockReturnValue('blob:x');
+        Object.defineProperty(URL, 'createObjectURL', {value: createUrl, configurable: true});
+        Object.defineProperty(URL, 'revokeObjectURL', {value: jest.fn(), configurable: true});
+        const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+        return {createUrl, click};
+    };
+    const heldFetch = () => {
+        let settle: (res: Response) => void = () => undefined;
+        const promise = new Promise<Response>((resolve) => { settle = resolve; });
+        (global.fetch as jest.Mock).mockReturnValueOnce(promise);
+        return (res: Response) => act(async () => { settle(res); await promise; });
+    };
+    const unchanged = (opts: {id: number}) => {
+        expect(screen.getByText('keep this message')).toBeInTheDocument();
+        expect(window.localStorage.getItem(`crank:jobsearch:draft:${opts.id}`)).toBe('keep this draft');
+        expect(window.localStorage.getItem(inflightKeyFor(opts.id, KEY_A))).not.toBeNull();
+    };
+    const seed = async () => {
+        await renderChat([userMessage('keep this message')]);
+        window.localStorage.setItem('crank:jobsearch:draft:42', 'keep this draft');
+        window.localStorage.setItem(
+            inflightKeyFor(42, KEY_A),
+            JSON.stringify({conversationId: 42, content: 'x', key: KEY_A, ts: Date.now()}),
+        );
+    };
+
+    describe.each([
+        ['an answer of 401', () => jsonResponse({}, 401)],
+        ['a followed redirect that ends on the sign-in page', () => loginRedirect()],
+    ])('with %s', (_name, ended) => {
+        test.each([
+            ['New conversation', startNewConversation],
+            ['Delete', deleteConversation],
+        ])('%s reports the ended session and changes nothing', async (_label, act_) => {
+            await seed();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(ended());
+            act_();
+            expect(await screen.findByRole('alert')).toHaveTextContent(SESSION_ENDED);
+            expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+            unchanged({id: 42});
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        });
+
+        test('Export reports the ended session in the export-error panel and downloads nothing', async () => {
+            await seed();
+            const {createUrl, click} = download();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(ended());
+            chooseMenuItem('conversation-export');
+            expect(await screen.findByTestId('export-error')).toHaveTextContent(SESSION_ENDED);
+            expect(createUrl).not.toHaveBeenCalled();
+            expect(click).not.toHaveBeenCalled();
+            expect(screen.getByTestId('conversation-status')).toBeEmptyDOMElement();
+            unchanged({id: 42});
+        });
+    });
+
+    test.each([
+        ['New conversation', startNewConversation, 'reset'],
+        ['Delete', deleteConversation, 'delete'],
+        ['Export', () => chooseMenuItem('conversation-export'), 'export'],
+    ])('%s answered with an ended session after an account switch shows nothing', async (_label, act_, path) => {
+        await seed();
+        const settle = heldFetch();
+        act_();
+        await waitFor(() => expect((global.fetch as jest.Mock).mock.calls.some(([url]) => String(url).includes(`/${path}/`))).toBe(true));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await settle(jsonResponse({}, 401));
+        expect(screen.queryByText(SESSION_ENDED)).not.toBeInTheDocument();
+        expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+    });
+
+    test('a redirect to some other page is not an ended session', async () => {
+        await seed();
+        const res = jsonResponse({}, 500);
+        Object.defineProperty(res, 'redirected', {value: true});
+        Object.defineProperty(res, 'url', {value: 'http://localhost/elsewhere/'});
+        (global.fetch as jest.Mock).mockResolvedValueOnce(res);
+        deleteConversation();
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete the conversation.');
+    });
+
+    test('an HTML 200 is not an export: nothing downloads and the failure is shown', async () => {
+        await seed();
+        const {createUrl, click} = download();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(unreachable(htmlOk()));
+        chooseMenuItem('conversation-export');
+        expect(await screen.findByTestId('export-error')).toHaveTextContent('Could not export your conversation.');
+        expect(createUrl).not.toHaveBeenCalled();
+        expect(click).not.toHaveBeenCalled();
+    });
+
+    test('an HTML 200 is not a New conversation', async () => {
+        await seed();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(htmlOk());
+        startNewConversation();
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not reset the conversation.');
+        unchanged({id: 42});
+    });
+
+    test.each([
+        ['an HTML 200', () => htmlOk()],
+        ['a JSON 200 without deleted', () => jsonResponse({})],
+        ['a JSON 200 with deleted false', () => jsonResponse({deleted: false})],
+        ['a JSON 200 null body', () => jsonResponse(null)],
+    ])('Delete answered with %s deletes nothing', async (_name, answer) => {
+        await seed();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(answer());
+        deleteConversation();
+        expect(await screen.findByRole('alert')).toHaveTextContent('Could not delete the conversation.');
+        unchanged({id: 42});
+        expect(screen.getByTestId('confirm-action')).toHaveTextContent('Try deleting again');
+    });
+
+    test('Delete answered {deleted: true} clears the conversation, its draft and its markers', async () => {
+        await seed();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
+        deleteConversation();
+        await waitFor(() => expect(screen.queryByText('keep this message')).not.toBeInTheDocument());
+        expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
+        expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
+    });
+
+    test.each([
+        ['a text/plain 200', () => new Response('{"messages": []}', {status: 200, headers: {'Content-Type': 'text/plain'}})],
+        ['a 200 without a Content-Type', () => new Response(null, {status: 200})],
+    ])('Export answered with %s downloads nothing and shows the failure', async (_name, answer) => {
+        await seed();
+        const {createUrl, click} = download();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(answer());
+        chooseMenuItem('conversation-export');
+        expect(await screen.findByTestId('export-error')).toHaveTextContent('Could not export your conversation.');
+        expect(createUrl).not.toHaveBeenCalled();
+        expect(click).not.toHaveBeenCalled();
+    });
+
+    test('the sign-in link on the pinned /chat/ page is the server-built address, company included', async () => {
+        const given = '/accounts/login/?next=%2Fchat%2F%3Fcompany%3D5';
+        window.history.pushState({}, '', '/chat/?company=5');
+        try {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [userMessage('hello')])));
+            render(<JobSearchChat isAuthenticated signInUrl={given}/>);
+            await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 401));
+            deleteConversation();
+            expect((await screen.findByTestId('confirm-sign-in')).getAttribute('href')).toBe(given);
+        } finally {
+            window.history.pushState({}, '', '/');
+        }
+    });
+
+    test('a Send waiting in its status check disables New and Delete and withdraws an open confirmation', async () => {
+        await renderChat([userMessage('hello')]);
+        const mock = global.fetch as jest.Mock;
+        chooseMenuItem('conversation-delete');
+        expect(screen.getByTestId('confirm-panel')).toBeInTheDocument();
+        const settleStatus = heldFetch();
+        mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(80, 'Answered.'), preferences_changed: false}, 201));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'my question'}});
+        fireEvent.click(screen.getByRole('button', {name: /send/i}));
+        await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+        openMore();
+        expect(screen.getByTestId('conversation-new')).toBeDisabled();
+        expect(screen.getByTestId('conversation-delete')).toBeDisabled();
+        const deleteCalls = () => mock.mock.calls.filter(([url, init]) => init?.method === 'POST' && /\/delete\/$/.test(String(url)));
+        expect(deleteCalls()).toHaveLength(0);
+        await settleStatus(statusResponse('ready'));
+        await screen.findByText('Answered.');
+        await waitFor(() => expect(screen.getByTestId('conversation-delete')).toBeEnabled());
+        expect(deleteCalls()).toHaveLength(0);
+    });
+
+    test('Export answered with JSON downloads the file', async () => {
+        await seed();
+        const {createUrl, click} = download();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({messages: []}));
+        chooseMenuItem('conversation-export');
+        await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+        expect(createUrl).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('conversation-status')).toHaveTextContent('Conversation exported');
+    });
+
+    describe('the composer while New conversation or Delete is in flight', () => {
+        test.each([
+            ['New conversation', startNewConversation, () => jsonResponse(emptyConversation(43), 201)],
+            ['Delete', deleteConversation, () => jsonResponse({deleted: true})],
+        ])('%s disables the textarea and Send, sends nothing on Enter, and restores them', async (_label, act_, answer) => {
+            await renderChat([userMessage('hello')]);
+            const callsBefore = (global.fetch as jest.Mock).mock.calls.length;
+            const settle = heldFetch();
+            // The draft is typed before the press; the confirmation is open while it is held.
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'typed first'}});
+            act_();
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeDisabled());
+            expect(screen.getByRole('button', {name: /send/i})).toBeDisabled();
+            fireEvent.keyDown(screen.getByLabelText('Message'), {key: 'Enter'});
+            fireEvent.submit(screen.getByLabelText('Message').closest('form')!);
+            expect((global.fetch as jest.Mock).mock.calls.length).toBe(callsBefore + 1);
+            await settle(answer());
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        });
+
+        test('a failed action gives the composer back too', async () => {
+            await renderChat([userMessage('hello')]);
+            const settle = heldFetch();
+            deleteConversation();
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeDisabled());
+            await settle(jsonResponse({}, 500));
+            await screen.findByRole('alert');
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        });
+
+        test('a signed-out composer is disabled the same way while the action is held', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [userMessage('hello')])));
+            setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+            render(<JobSearchChat/>);
+            await screen.findByLabelText('Message');
+            const settle = heldFetch();
+            startNewConversation();
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeDisabled());
+            await settle(jsonResponse(emptyConversation(43), 201));
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        });
+    });
+
+    describe('nothing beneath an open confirmation can be reached', () => {
+        const wraps = () => ({
+            transcript: document.querySelector('.chat-transcript-wrap')!,
+            footer: document.querySelector('.chat-footer')!,
+        });
+
+        test('the transcript wrap and the footer are inert while New or Delete confirms and not otherwise', async () => {
+            await renderChat([userMessage('hello')]);
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            expect(wraps().footer).not.toHaveAttribute('inert');
+            chooseMenuItem('conversation-delete');
+            expect(wraps().transcript).toHaveAttribute('inert');
+            expect(wraps().footer).toHaveAttribute('inert');
+            fireEvent.click(screen.getByTestId('confirm-cancel'));
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            expect(wraps().footer).not.toHaveAttribute('inert');
+            chooseMenuItem('conversation-new');
+            expect(wraps().transcript).toHaveAttribute('inert');
+        });
+
+        test('About and the export-error panel stay non-modal', async () => {
+            await renderChat([userMessage('hello')]);
+            chooseMenuItem('conversation-about-history');
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
+            chooseMenuItem('conversation-export');
+            await screen.findByTestId('export-error');
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            expect(wraps().footer).not.toHaveAttribute('inert');
+        });
+
+        test('a failed Delete keeps the confirmation, so it stays inert; success lifts it', async () => {
+            await renderChat([userMessage('hello')]);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
+            deleteConversation();
+            await screen.findByRole('alert');
+            expect(wraps().transcript).toHaveAttribute('inert');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
+            confirmPanelAction();
+            await waitFor(() => expect(screen.queryByTestId('confirm-panel')).not.toBeInTheDocument());
+            expect(wraps().transcript).not.toHaveAttribute('inert');
+            expect(wraps().footer).not.toHaveAttribute('inert');
+        });
+    });
+});
 describe('additional JobSearchChat coverage', () => {
     beforeEach(() => {
         global.fetch = jest.fn();
@@ -1568,7 +1864,7 @@ describe('additional JobSearchChat coverage', () => {
             Object.defineProperty(URL, 'createObjectURL', {value: createUrl, configurable: true});
             Object.defineProperty(URL, 'revokeObjectURL', {value: revoke, configurable: true});
             const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-            (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(new Blob(['{}'], {type: 'application/json'})));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(new Blob(['{}']), {headers: {'Content-Type': 'application/json'}}));
 
             chooseMenuItem('conversation-export');
             await waitFor(() => expect(click).toHaveBeenCalled());
@@ -4107,7 +4403,7 @@ describe('an account switch leaves the previous account nothing to act with (iss
             const exported = hold(when('GET', `${CONVERSATIONS_URL}42/export/`));
             chooseMenuItem('conversation-export');
             await exported.arrived;
-            await act(async () => { exported.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            await act(async () => { exported.settle(new Response(new Blob(['{}']), {headers: {'Content-Type': 'application/json'}})); });
             await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
             expect(createUrl).toHaveBeenCalledTimes(1);
             expect(screen.getByTestId('conversation-status')).toHaveTextContent('Conversation exported');
@@ -4216,7 +4512,7 @@ describe('an account switch leaves the previous account nothing to act with (iss
             fireEvent.click(item);
             await held.arrived;
             await switchAccount();
-            await act(async () => { held.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            await act(async () => { held.settle(new Response(new Blob(['{}']), {headers: {'Content-Type': 'application/json'}})); });
             expect(screen.getByTestId('conversation-more')).toHaveFocus();
             expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
         });
@@ -4235,7 +4531,7 @@ describe('an account switch leaves the previous account nothing to act with (iss
             await switchAccount();
             const composer = screen.getByLabelText('Message');
             composer.focus();
-            await act(async () => { held.settle(new Response(new Blob(['{}'], {type: 'application/json'}))); });
+            await act(async () => { held.settle(new Response(new Blob(['{}']), {headers: {'Content-Type': 'application/json'}})); });
             expect(composer).toHaveFocus();
         });
 
@@ -4405,7 +4701,7 @@ describe('an account switch leaves the previous account nothing to act with (iss
             const body = new Promise((resolve) => { release = resolve; });
             let arrive: () => void = () => undefined;
             const reading = new Promise<void>((resolve) => { arrive = resolve; });
-            const res = {ok: true, status: 200, headers: new Headers(),
+            const res = {ok: true, status: 200, headers: new Headers({'Content-Type': 'application/json'}),
                 [kind]: () => { arrive(); return body; }} as unknown as Response;
             return {res, reading, release};
         }
@@ -6157,7 +6453,7 @@ describe('validated page context and assistant actions (issue #484)', () => {
 
     test.each([
         ['start a new conversation', startNewConversation, () => jsonResponse(emptyConversation(7))],
-        ['delete the conversation', deleteConversation, () => jsonResponse({}, 200)],
+        ['delete the conversation', deleteConversation, () => jsonResponse({deleted: true})],
     ])('%s clears the sent-context snapshots', async (_label, act_, response) => {
         const snapshotMaps = new Set<Map<string, unknown>>();
         const realSet = Map.prototype.set;

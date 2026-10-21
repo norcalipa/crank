@@ -10,9 +10,10 @@
 ## Purpose
 
 Decide whether the app may trust a client network address, turn that on, check
-it, and turn it off again. The address is used for one thing: per-address
-limits on company corrections, so that one person cannot multiply the
-per-account limits by creating accounts (issue #538).
+it, and turn it off again. The address is used for per-address limits on
+company corrections and for allauth's per-address sign-up, sign-in and
+password-reset limits, so that one person cannot multiply the per-account
+limits by creating accounts (issue #538).
 
 **The switch is off by default and this runbook is the only supported way to
 turn it on.** While it is off, production keeps the per-account limits only, exactly
@@ -63,6 +64,17 @@ The table says who is supposed to; the gate below is what makes it true.
   corrections and make at most `COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR`
   (120) rejected attempts an hour, across all accounts. The per-account limits
   (10 and 60) are checked first and are not loosened.
+- With the source on and an address identified, allauth's per-address limits
+  (a minute for each address: sign-up 20, sign-in 30, failed sign-in 10,
+  password reset 20, and password reset from the e-mailed link,
+  `reset_password_from_key`, 20; allauth 65.3.0 defaults, see
+  `allauth/account/app_settings.py`) key on that address, an IPv6 /64 as its network, instead of the leftmost
+  `X-Forwarded-For`. A request with no identified address keeps allauth's own
+  value. A tripped limit answers a `429` page ("Too many attempts"), except
+  failed sign-ins: those re-render the sign-in form with the error "Too many
+  failed login attempts" (status 200), not the `429` page. While the switch is
+  off, these limits key on the leftmost `X-Forwarded-For`, which a client
+  behind Cloudflare chooses.
 - A request whose header is missing, duplicated or malformed is not refused and
   is not put in a shared bucket: it gets the per-account limits only, and the
   app logs `client address unavailable` with the reason (`missing`,
@@ -96,7 +108,10 @@ The table says who is supposed to; the gate below is what makes it true.
   busy the account or address is. A request that runs longer than a minute
   may stop being counted as in flight before it ends.
 - The limiter keeps a keyed digest of the address in the cache for up to one
-  hour. No address is written to the database, logs or telemetry.
+  hour. No address is written to the database, logs or telemetry. This
+  describes the correction limiter only: with the switch on, allauth's own
+  rate-limit cache keys hold the trusted address in clear text for up to a
+  minute, as they already did for honest clients before this change.
 
 ## The gate
 
@@ -395,6 +410,46 @@ per-address layer stays off and production keeps the per-account limits.
   have no `client address unavailable` warning. The warning is written by one
   pod, at most once every 10 minutes for each reason, so one pod's logs are
   not enough.
+- **V6.** On the sign-in page (`https://crank.fyi/accounts/login/`), in the
+  browser console, send 40 sign-in attempts from this machine, each with a
+  different `X-Forwarded-For` value and a fresh throwaway login (the `login`
+  limit is 30 a minute for each address):
+
+  ```js
+  (async () => {
+    const token = document.querySelector('[name=csrfmiddlewaretoken]').value;
+    const codes = [];
+    for (let i = 1; i <= 40; i++) {
+      const r = await fetch('/accounts/login/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Forwarded-For': `198.51.100.${i}`,
+        },
+        body: new URLSearchParams({
+          csrfmiddlewaretoken: token,
+          login: `v6-${Date.now()}-${i}@example.invalid`,
+          password: 'not-a-real-password',
+        }),
+      });
+      codes.push(r.status);
+    }
+    console.log(codes.join(' '));
+  })();
+  ```
+
+  Judge by status code only. **Pass:** attempts 31 to 40 answer `429` (the
+  earlier ones answer `200`, the form with its error). **Fail, roll back:** no
+  `429` at all, which means the limits still key on the forwarded header. Any
+  `403` means the check did not run (the CSRF check refused the request before
+  allauth's limiter): reload the sign-in page and repeat.
+
+  Run it in the console, not as a `curl` loop: a POST without the form's CSRF
+  cookie and token answers `403` (over HTTPS, also without an `Origin` or
+  `Referer` header) whatever the switch says. Use a new login name for every
+  attempt: with one name, allauth's per-login limit (5 in 5 minutes) answers
+  "Too many failed login attempts" on the form from the sixth attempt, with the
+  switch off as well, and that looks like a held burst but is not.
 
 ## Roll back
 

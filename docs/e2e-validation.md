@@ -24,19 +24,21 @@ The Django tier is reached at `http://local.crank.fyi:4174` (Chromium
 `--host-resolver-rules` maps it to 127.0.0.1 so dev settings' `.crank.fyi` cookies are
 accepted without settings or hosts-file changes).
 
-## Commands and results (this implementation run)
+## Commands and results (last updated by #492c)
 
-All commands executed locally from the repository root, `ENV=dev`, SQLite, Redis on
-localhost:6379.
+All commands executed locally from the repository root, `ENV=dev`, SQLite (a fresh
+file per run), Redis private to the run. The Django rows are re-measured by #492c
+(`CI=1`, so retries are on and no server is reused); the other rows are from the
+implementation run and are re-run by CI.
 
 | Command | Result |
 | --- | --- |
 | `npx webpack` | compiled successfully (webpack 5.95.0, both `main` and `jobsearch`/`jobmatch` bundles) |
-| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **32 passed, 12 skipped (40.3s)** — every skip carries an explicit named reason (pending #500/#496/#471/#464 merges, the eight AC7 ticket-owned skips, capture-pass-only) |
-| `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **1 passed, 3 skipped (8.6s)** — the server-persistence assertion passes against the real outage server (stable `AssistantUnavailable` via the env-gated, **dev-only** hook); the cancel/direct-edit and retry-flow assertions stay skipped pending #496/#501 |
-| `npx playwright test --project=chromium` (fixture tier, unchanged files) | **49 passed, 0 failed**; 48 skipped (all named-reason skips: Django-tier specs collected by the fixture config, including the 8 new AC7 specs). Full-run webkit `browserType.launch` errors remain host environment issues (missing system libraries for WebKit), unrelated to this branch |
-| `npx jest` | **180 passed (7 suites)** |
-| `ENV=dev DJANGO_SETTINGS_MODULE=crank.settings SECRET_KEY=… REDIS_MASTER_URL=redis://localhost:6379/0 python3 -m pytest -q` | **1891 passed, 36 subtests passed in 169.17s** (review-round delta: +5 — two seeder determinism tests, three provider-hook inertness tests) |
+| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **546 passed, 4 skipped, 1 flaky (26.4m)** — the skips are the #490 test (named below) and the three capture-pass-only tests; the flaky test (`assistant-actions.spec.ts` "Open, return to results, then Apply…") passed on its retry |
+| `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **7 passed, 0 skipped (32.2s)**, started right after the normal pass on the same Redis, so the assistant-status notice test waits out the 30 s cache the normal pass left behind |
+| `npx playwright test --project=chromium --project=firefox` (fixture tier) | **402 passed, 971 skipped (Django-tier specs collected by the fixture config, named-reason skips), 1 flaky** (Firefox, `job-search-chat-viewport.spec.ts` double press on Delete; passed on retry). WebKit cannot launch on the local host; CI runs it |
+| `npx jest` | **2285 passed (50 suites)** |
+| `coverage run -m pytest -q` (`ENV=dev`, private Redis) | **4979 passed, 18 skipped** |
 | `.github/workflows/playwright-django.yml` YAML lint | `pull_request` trigger mirrors `push` paths exactly (parsed + asserted via PyYAML `safe_load`) |
 | `git diff --check` | clean |
 | trailing-newline / license-header check on all new files | clean |
@@ -68,31 +70,46 @@ the workflow executes. Artifacts: `playwright-report/` (on failure) and
 
 ## Skip ledger (named, greppable)
 
-Every skip names its owning ticket. Tickets with an in-flight PR carry that PR's
-number (review-disposition round: PRs #496, #497, #500, #501, #502, #503, #504);
-#471 (shared request form) and #490 (comparison) are owning tickets whose PRs have
-not been opened yet. **Unskip mechanism:** each skip is a single
-`pendingTicketMerge(ticket, …)` call in the spec file listed below — delete that
-call when the owning PR merges and the executable assertions turn on. The
-implementation behind every skip is already written; nothing passes silently.
+Every skip names why it is skipped. Ticket-owned skips are a single
+`pendingTicketMerge(ticket, …)` call in the spec file listed below; only tickets
+that are still open appear here. A ticket-owned skip whose PR has merged is
+re-enabled (re-targeted where the product moved) or deleted in favour of a named
+successor, never left in place. Skips that depend on the run, not on a ticket,
+are listed after them.
 
 | Surface | Owning ticket / PR | Reason (greppable) | Where |
 | --- | --- | --- | --- |
-| #500 dialog z-order vs nav rail/toggle | #500 | `pending #500 merge: the dialog paints under the nav rail…` | `e2e/django/regression.spec.ts` |
-| #496 failed-turn immediate-visibility + Retry | #496 | `pending #496 merge: the optimistic turn is rolled back on failure…` | `e2e/django/regression.spec.ts` |
-| #471/#477 assistant sidebar open/closed | #471 | `pending #471 merge: the desktop assistant sidebar…` | `e2e/django/viewport-zoom.spec.ts` |
-| #464 SuggestCompanyModal Escape hardening | #500 (fixes #464) | `pending #464 merge: SuggestCompanyModal Escape/focus-return hardening…` | `e2e/django/a11y-keyboard.spec.ts` |
-| AC7: failed-turn cancel | #496 | `pending #496 merge: the persisted failed-turn delivery state…` (selectors verified at head fa8714d — Retry / "Edit as new message" / Stop; no `cancel-button`) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: independent direct action during outage | #501 | `pending #501 merge: the typed-action fail-closed and stale-patch/late-reply guards…` (head eec6baf ships no preference-editor UI; the test pins that an independent direct action never clobbers a failed turn) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: shared request form from the rankings Suggest action | #471 (PR pending) | `pending #471 merge: the shared company-request form…` (pins the rankings entry point; extend to the remaining Suggest actions when the form lands) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: company comparison vs saved priorities | #490 (PR pending) | `pending #490 merge: the 2–4 company comparison surface…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: jobs availability states (refresh progress + honest result states) | #502 | `pending #502 merge: the distinct match-panel availability states…` (selectors verified at head c971eb9: job-match-refresh / refresh-notice / empty-state-*; the genuine-zero and partial-coverage variants need data-dependent fixtures) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: assistant availability disclosed before submission (healthy + outage) | #503 | `pending #503 merge: pre-submission availability disclosure…` (selectors verified at head 96390aa: assistant-status-notice / assistant-status-retry) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: ingestion outcome visibility (queued runs) | #497 | `pending #497 merge: single-owner ingestion with queued-run consumption…` (head ed4ee0e: job-match-refresh, job-reasons-<listing_id>) | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: update-revision race (post-commit cache) | #504 | `pending #504 merge: post-commit cache invalidation…` — **explicitly non-executable from the browser harness**: no browser-reachable seam can create a score revision (head 2f130e8 has no Score-mutating view), so deleting the skip without wiring a real revision trigger fails loudly instead of passing vacuously | `e2e/django/ac7-surfaces.spec.ts` |
-| Non-outage pass outage specs | — | `provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1…` | `e2e/django/regression.spec.ts`, `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: company comparison vs saved priorities | #490 (open) | `pending #490 merge: the 2–4 company comparison surface…` | `e2e/django/ac7-surfaces.spec.ts` |
+| Outage-only specs, in the normal pass | — | `provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1…` | `e2e/django/regression.spec.ts`, `e2e/django/ac7-surfaces.spec.ts`, `e2e/django/priorities.spec.ts` (the outage describe at the end of the file) |
+| Specs that need assistant replies, in the outage pass | — | `needs assistant replies: not part of the provider-outage pass` | `e2e/django/priorities.spec.ts`, `e2e/django/conversation-controls.spec.ts`, `e2e/django/chat-layout.spec.ts` (three describes) |
+| Touch input outside Chromium | — | `touch is emulated in Chromium only` | `e2e/django/priorities.spec.ts` (two loops) |
 | Fixture-tier collection of Django specs | — | `Django tier only: requires the seeded Django server…` | `e2e/django/support.ts` (`requireDjangoTier`) |
 | Capture pass in normal runs | — | `evidence capture pass only: set PW_CAPTURE_DIR…` | `e2e/django/captures.spec.ts` |
+
+Skips removed for merged tickets (#471, #496, #497, #500, #501, #502, #503):
+
+- Re-enabled as written: the two rankings "Suggest a company" tests (#471).
+- Re-enabled and re-targeted where the product moved: the composer test of the
+  healthy pass (#503), which waits for the history to load before it counts
+  replies; failed-turn cancel (#496)
+  and the independent direct action (#501), which now check their own probe's
+  turn and, after a reload, its enabled Retry (the footer error is client state);
+  the jobs refresh test (#502), which holds the ranked read and checks the busy
+  state and the hidden announcement; the outage notice test (#503), which expects
+  `role="alert"`; and the failed-turn reload test (#496), which also presses Retry
+  after the reload. A new outage test presses Retry until the server reports
+  the retry cap and recovers with "Edit as new message".
+- Deleted, with the test that already covers it: the dialog and nav rail test
+  (#500; the dialog is gone) is covered by `e2e/organization-popup.spec.ts` and
+  `e2e/django/company-view.spec.ts`; the queued-ingestion card test (#497) by
+  `e2e/django/journey.spec.ts::match panel shows the ranked seeded listing with reasons`;
+  the sidebar open/closed test (#471) by `e2e/django/workspace.spec.ts::no horizontal overflow at ${width}px with the panel open and closed`.
+  The deleted #500 test also checked, at 375 px, that the mobile nav toggle does
+  not overlap the company heading. That rectangle-intersection check is dropped:
+  `e2e/navigation.spec.ts::topbar band pushes content below it without overlap`
+  (the toggle sits inside the reserved band above the content) and
+  `e2e/organization-popup.spec.ts::heading and Back to results are fully visible in the first screen and at least 44px tall`
+  (the heading is whole in the first screen) cover its neighbours, not the intersection itself.
 
 The zoom scenarios are no longer skipped for non-Chromium browsers: the 200%
 text-zoom scenario uses root font-size scaling and the 400% browser-zoom

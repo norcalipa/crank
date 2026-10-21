@@ -2707,7 +2707,7 @@ class FailureRetryMatrixTests(SimpleTestCase):
                     skipped = "test.skip(" in body or "pendingTicketMerge(" in body
                     before = row[4].split(f"`{path}::{name}`", 1)[0]
                     marked = before.rstrip().endswith(
-                        "Browser evidence pending 492c:"
+                        "Browser evidence pending:"
                     )
                     self.assertEqual(skipped, marked)
 
