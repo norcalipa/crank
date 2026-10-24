@@ -231,6 +231,9 @@ def test_weekday_count_rule(words, days):
         "tuesday ish thursday",  # not a connector
         "tuesday and or thursday",  # two connectors
         "tuesday - and thursday",
+        "friday monday",  # a bare gap, and backwards
+        "wednesday monday-friday",  # a bare gap beside a span
+        "monday-tuesday thursday",
     ],
 )
 def test_weekday_count_rule_refuses_what_it_cannot_count(words):

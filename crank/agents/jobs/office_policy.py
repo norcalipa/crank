@@ -387,9 +387,10 @@ def _weekday_days(text: str) -> int | None:
     """Days named by a weekday span or list: 1-3 as stated, four or more is 5.
 
     "Mon-Thu" and "Monday through Thursday" are spans; "Tues/Wed/Thurs" and
-    "Tuesdays and Thursdays" are lists. Two weekdays with nothing but a space
-    between them read as a span or a list, which differ unless they are adjacent
-    ("Tuesday - Thursday" and "Tuesday, Thursday" normalize alike): unknown.
+    "Tuesdays and Thursdays" are lists. Weekdays with nothing but a space
+    between them are a list of three or more, or two adjacent days; two apart
+    ("Tuesday - Thursday" and "Tuesday, Thursday" normalize alike) and a bare gap
+    beside a span are unknown.
     """
     words = re.findall(r"[a-z]+|-", text.lower())
     if words[0] == "on":
@@ -421,7 +422,7 @@ def _weekday_days(text: str) -> int | None:
             days.update(range(weekdays[index], day + 1))
         else:
             days.add(day)
-    if gaps == ["bare"] and weekdays[1] - weekdays[0] > 1:
+    if "bare" in gaps and ("span" in gaps or (gaps == ["bare"] and abs(weekdays[1] - weekdays[0]) > 1)):
         return None
     return 5 if len(days) >= 4 else len(days)
 
