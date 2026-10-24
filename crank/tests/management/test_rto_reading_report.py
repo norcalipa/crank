@@ -51,6 +51,10 @@ class RtoReadingReportTests(TestCase):
         text = run()
         assert "distinct_values=0 organizations=0" in text
         assert "values_changed=0" in text
+        assert (
+            "values_unknown_today=0 values_unknown_proposed=0 "
+            "organizations_unknown_today=0 organizations_unknown_proposed=0"
+        ) in text
         assert "readers_with_work_location_requirement=0" in text
 
     def test_reports_each_distinct_accepted_value_once_with_both_readings(self):
@@ -66,6 +70,19 @@ class RtoReadingReportTests(TestCase):
         assert 'value="Hybrid, 3 days in office" organizations=1 today=5 proposed=3 CHANGED' in text
         assert "Fully remote" not in text
         assert "values_changed=2" in text
+
+    def test_counts_unknown_values_and_organizations_before_and_after(self):
+        a, b, c, d = (Organization.objects.create(name=n) for n in ("Alpha", "Beta", "Gamma", "Delta"))
+        evidence(a, "Not remote")  # today 0, proposed unknown
+        evidence(b, "Not remote")
+        evidence(b, "Hybrid, 3 days in office")  # one organization, two values
+        evidence(c, "Berlin, Germany")  # unknown both ways
+        evidence(d, "On-site, Tuesday-Thursday")  # today unknown, proposed 3
+        text = run()
+        assert (
+            "values_unknown_today=2 values_unknown_proposed=2 "
+            "organizations_unknown_today=2 organizations_unknown_proposed=3"
+        ) in text
 
     def test_unchanged_value_is_marked_same(self):
         evidence(Organization.objects.create(name="Alpha"), "Remote")
