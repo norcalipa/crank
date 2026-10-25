@@ -479,9 +479,22 @@ class IsStaleTests(TestCase):
         pref = UserPreference.objects.create(user=self.user, revision=0, schema_version=3)
         state = MatchResultState.objects.create(
             user=self.user, current_generation=1, preference_revision=0,
+            preference_version=3, ranker_version=match_results.DEFAULT_CONFIG.version,
+        )
+        self.assertFalse(match_results.is_stale(state, pref, ranker_version=match_results.DEFAULT_CONFIG.version))
+
+    def test_generations_stamped_before_the_office_policy_reader_are_stale(self):
+        """Ranker 1.1.0 reads office-policy prose by the reviewed corpus (issue #537), so a
+        generation stamped 1.0.0 is stale-by-ranker and is recomputed."""
+        self.assertEqual(match_results.DEFAULT_CONFIG.version, "1.1.0")
+        pref = UserPreference.objects.create(user=self.user, revision=0, schema_version=3)
+        state = MatchResultState.objects.create(
+            user=self.user, current_generation=1, preference_revision=0,
             preference_version=3, ranker_version="1.0.0",
         )
-        self.assertFalse(match_results.is_stale(state, pref, ranker_version="1.0.0"))
+        self.assertTrue(
+            match_results.is_stale(state, pref, ranker_version=match_results.DEFAULT_CONFIG.version)
+        )
 
     def test_greater_stamped_preference_revision_is_stale(self):
         """A stamped revision *ahead* of the current preference (shouldn't
@@ -490,9 +503,9 @@ class IsStaleTests(TestCase):
         pref = UserPreference.objects.create(user=self.user, revision=0, schema_version=3)
         state = MatchResultState.objects.create(
             user=self.user, current_generation=1, preference_revision=1,
-            preference_version=3, ranker_version="1.0.0",
+            preference_version=3, ranker_version=match_results.DEFAULT_CONFIG.version,
         )
-        self.assertTrue(match_results.is_stale(state, pref, ranker_version="1.0.0"))
+        self.assertTrue(match_results.is_stale(state, pref, ranker_version=match_results.DEFAULT_CONFIG.version))
 
     def test_missing_stamped_tags_are_stale_when_current_value_exists(self):
         """A generation with no stamped tags (e.g. pre-#475) must not read

@@ -2033,8 +2033,9 @@ def matching_reading(field_key: str, value_text: str) -> str:
         days = matching._rto_days(value_text)
         if days is None:
             return "matching cannot read this (unknown)"
-        label = {0: "remote", 3: "hybrid", 5: "in-office"}[days]
-        return f"matching reads this as: {label} ({days} in-office days)"
+        label = matching._mode_for_days(days)
+        unit = "in-office day" if days == 1 else "in-office days"
+        return f"matching reads this as: {label} ({days} {unit})"
     if field_key == CompanyFieldEvidence.FieldKey.PUBLIC_STATUS:
         public = matching._public_status(value_text)
         if public is None:
