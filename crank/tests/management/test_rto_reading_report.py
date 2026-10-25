@@ -75,15 +75,19 @@ class RtoReadingReportTests(TestCase):
         a, b, c, d = (Organization.objects.create(name=n) for n in ("Alpha", "Beta", "Gamma", "Delta"))
         evidence(a, "Not remote")  # today 0, proposed unknown
         evidence(b, "Not remote")
-        evidence(b, "Hybrid, 3 days in office")  # one organization, two values
+        evidence(b, "No remote")  # a second unknown value for one organization
+        evidence(b, "Hybrid, 3 days in office")
         evidence(c, "Berlin, Germany")  # unknown both ways
         evidence(d, "On-site, Tuesday-Thursday")  # today unknown, proposed 3
+        evidence(d, "In person")  # today unknown, proposed 5
+        evidence(d, "RTO")  # today unknown, proposed 5
         text = run()
+        # unknown today: Berlin and Delta's three values (4 values, 2 organizations);
+        # unknown proposed: both "remote" values and Berlin (3 values, 3 organizations).
         assert (
-            "values_unknown_today=2 values_unknown_proposed=2 "
+            "values_unknown_today=4 values_unknown_proposed=3 "
             "organizations_unknown_today=2 organizations_unknown_proposed=3"
         ) in text
-
     def test_unchanged_value_is_marked_same(self):
         evidence(Organization.objects.create(name="Alpha"), "Remote")
         assert 'value="Remote" organizations=1 today=0 proposed=0 same' in run()
@@ -108,6 +112,15 @@ class RtoReadingReportTests(TestCase):
         assert "readers_with_work_location_requirement=4" in text
         assert "readers_with_different_excluded_set=3" in text
         assert "readers_with_different_matched_count=2" in text
+
+    def test_counts_a_reader_whose_hybrid_requirement_a_one_to_four_day_value_now_meets(self):
+        evidence(Organization.objects.create(name="Alpha"), "Hybrid, 2 days in office")  # today 5, proposed 2
+        # a hard hybrid mode: the earlier reader read in-office (excluded), the new one hybrid (matched)
+        prefs_for("r1", modes=["hybrid"], importance={"work_location.modes": 1.0})
+        text = run()
+        assert "readers_with_work_location_requirement=1" in text
+        assert "readers_with_different_excluded_set=1" in text
+        assert "readers_with_different_matched_count=1" in text
 
     def test_prints_no_user_identifier_or_preference_value(self):
         evidence(Organization.objects.create(name="Alpha"), "Remote")

@@ -33,10 +33,12 @@ _WS = re.compile(r"\s+")
 
 
 def _normalize(value: str) -> str:
-    """N1-N4: NFKC, hidden characters dropped, punctuation and lone hyphens to
-    spaces, whitespace collapsed. Case is kept (only PLACE looks at it)."""
+    """N1-N4: NFKC, hidden characters dropped, a dash between two weekday names
+    kept as "-" (a span marker), other punctuation and lone hyphens to spaces,
+    whitespace collapsed. Case is kept (only PLACE looks at it)."""
     value = unicodedata.normalize("NFKC", value)
     value = "".join(c for c in value if c in "\t\n\r" or not is_hidden_character(c))
+    value = _WEEKDAY_DASH.sub(r"\1-", value)
     text = _NON_WORD.sub(" ", value).replace("_", " ")
     return _WS.sub(" ", _LONE_HYPHENS.sub(" ", text)).strip()
 
@@ -95,7 +97,7 @@ that these those there here per each every other rest near nearby around within 
 out up down over under via plus
 """.split())
 _STOP_RE = _alt(*(re.escape(w) for w in STOP_WORDS))
-_PLACE_TOKEN = rf"(?!{_STOP_RE}(?:\s|$))[^\W\d_]{{2,}}(?=\s|$)"
+_PLACE_TOKEN = rf"(?!{_STOP_RE}(?:\s|$))(?u:[^\W\d_]){{2,}}(?=\s|$)"
 _PLACE_ONE = rf"{_PLACE_TOKEN}(?: {_PLACE_TOKEN}){{0,2}}"
 _GROUP_IDS = iter(range(1, 100_000))
 TEMPLATE_WORDS.update(["cities", "countries", "locations", "states", "time", "zones", "and", "or", "the"])
@@ -214,10 +216,21 @@ O_SUF = _phrases(
     "mandate", "attendance required", "presence required", "collaboration required", "is required",
     "is mandatory",
 )
-FULL_WEEK = _phrases(
-    "monday friday", "monday to friday", "monday through friday", "monday thru friday", "mon fri",
-    "mon to fri", "every day", "daily", "all week", "full time", "five days a week", "5 days a week",
-    "five days", "5 days",
+
+
+def _dash_span(first: str, last: str) -> str:
+    """A weekday span written with a dash only: a bare gap is a two-day list."""
+    TEMPLATE_WORDS.update([first, last])
+    return f"{first}-{last}"
+
+
+FULL_WEEK = _alt(
+    _phrases(
+        "monday to friday", "monday through friday", "monday thru friday", "mon to fri", "every day", "daily",
+        "all week", "full time", "five days a week", "5 days a week", "five days", "5 days",
+    ),
+    _dash_span("monday", "friday"),
+    _dash_span("mon", "fri"),
 )
 SUBJECT = _phrases(
     "everyone", "employees", "all employees", "our team", "our teams", "staff", "the team", "we", "you",
@@ -237,8 +250,9 @@ ATTEND_WHERE = _alt(
 )
 ATTEND_ADV = _phrases(
     "full time", "daily", "every day", "together", "five days a week", "5 days a week", "monday to friday",
-    "monday through friday", "monday friday",
+    "monday through friday",
 )
+ATTEND_ADV = _alt(ATTEND_ADV, _dash_span("monday", "friday"))
 ATTEND = f"{_opt(SUBJECT)}{ATTEND_VERB} {ATTEND_WHERE}(?: {ATTEND_ADV})?"
 REQUIREMENT = _alt(
     f"{_phrases('office', 'in office', 'onsite', 'on site', 'in person', 'office attendance', 'office presence', 'in office attendance', 'onsite attendance', 'in person attendance', 'in person collaboration')}"
@@ -258,6 +272,11 @@ WEEKDAY_NAMES = {
     "fri": 4, "friday": 4, "fridays": 4,
 }
 WEEKDAY = _phrases(*WEEKDAY_NAMES)
+# A dash run (hyphen, U+2010-2015, minus sign) between two weekday names is a span marker.
+_WEEKDAY_NAME_RE = _alt(*WEEKDAY_NAMES)
+_WEEKDAY_DASH = re.compile(
+    rf"\b({_WEEKDAY_NAME_RE})\s*[-\u2010-\u2015\u2212]+\s*(?=(?:{_WEEKDAY_NAME_RE})\b)", re.IGNORECASE | re.ASCII
+)
 WEEKDAYS = f"(?:{_phrase('on')} )?{WEEKDAY}(?: (?:and )?{WEEKDAY})?"
 _SPAN_WORDS = ("to", "through", "thru")
 TEMPLATE_WORDS.update(_SPAN_WORDS)
@@ -268,7 +287,7 @@ TEMPLATE_WORDS.update(_SPAN_WORDS)
 def _weekday_set() -> str:
     return (
         rf"(?P<wd{next(_GROUP_IDS)}>(?:{_phrase('on')} )?{WEEKDAY}"
-        rf"(?:(?:-| (?:{'|'.join(_SPAN_WORDS)}|{_phrases('and', 'or')}) | ){WEEKDAY}){{0,4}})"
+        rf"(?:(?:-| (?:{'|'.join(_SPAN_WORDS)}|{_phrase('and')}) | ){WEEKDAY}){{0,4}})"
     )
 
 
@@ -377,7 +396,7 @@ _TEMPLATE_SOURCES = [
     ("hybrid", 3, HYBRID_T),
 ]
 TEMPLATES = [
-    (name, reading, re.compile(rf"(?:{LABEL} )?(?:{pattern})", re.IGNORECASE))
+    (name, reading, re.compile(rf"(?:{LABEL} )?(?:{pattern})", re.IGNORECASE | re.ASCII))
     for name, reading, pattern in _TEMPLATE_SOURCES
 ]
 
@@ -386,11 +405,10 @@ TEMPLATES = [
 def _weekday_days(text: str) -> int | None:
     """Days named by a weekday span or list: 1-3 as stated, four or more is 5.
 
-    "Mon-Thu" and "Monday through Thursday" are spans; "Tues/Wed/Thurs" and
-    "Tuesdays and Thursdays" are lists. Weekdays with nothing but a space
-    between them are a list of three or more, or two adjacent days; two apart
-    ("Tuesday - Thursday" and "Tuesday, Thursday" normalize alike) and a bare gap
-    beside a span are unknown.
+    "Mon-Thu", "Mon \u2013 Thu" and "Monday through Thursday" are spans (normalization
+    keeps a dash between weekday names as "-"); "Tues/Wed/Thurs", "Monday, Friday",
+    "Mon & Fri" and "Tuesdays and Thursdays" are lists. Anything else between
+    two weekdays ("or", a backwards or chained span) is unknown.
     """
     words = re.findall(r"[a-z]+|-", text.lower())
     if words[0] == "on":
@@ -403,16 +421,18 @@ def _weekday_days(text: str) -> int | None:
             if len(gap) > 1:
                 return None
             if not gap:
-                gaps.append("bare")
+                gaps.append("list")
             elif gap[0] in ("-", *_SPAN_WORDS):
                 gaps.append("span")
-            elif gap[0] in ("and", "or"):
+            elif gap[0] == "and":
                 gaps.append("list")
             else:
                 return None
             gap = []
         else:
             gap.append(word)
+    if gap:  # text after the last weekday that is not a weekday
+        return None
     gaps = gaps[1:]
     days = {weekdays[0]}
     for index, (kind, day) in enumerate(zip(gaps, weekdays[1:])):
@@ -422,8 +442,6 @@ def _weekday_days(text: str) -> int | None:
             days.update(range(weekdays[index], day + 1))
         else:
             days.add(day)
-    if "bare" in gaps and ("span" in gaps or (gaps == ["bare"] and abs(weekdays[1] - weekdays[0]) > 1)):
-        return None
     return 5 if len(days) >= 4 else len(days)
 
 
@@ -446,9 +464,9 @@ def _match_days(match: re.Match, reading: Any) -> int | None:
         if not value:
             continue
         if key.startswith("n"):
-            return NUM[value.lower()]
+            return NUM.get(value.lower())
         if key.startswith("t"):
-            return TIMES[value.lower()]
+            return TIMES.get(value.lower())
         if key.startswith("wd"):
             return _weekday_days(value)
     return None  # pragma: no cover - every COUNT template captures one of the groups

@@ -61,7 +61,9 @@ def test_reader_never_reads_stated_in_office_policies_as_remote():
         "office-required-remote-exception", "office-count-optional-clause", "double-negative-office",
     }
     never_office = {"office-optional", "remote-incidental-office", "remote-optional-in-person"}
-    unknown = {"mixed", "occasional", "empty", "remote-day-count", "negated-remote-contraction"}
+    unknown = {
+        "mixed", "occasional", "empty", "remote-day-count", "negated-remote-contraction", "negated-remote",
+    }
     assert (never_remote | never_office | unknown) <= {row[3] for row in CORPUS}
     for text, _today, _proposed, category, _source in CORPUS:
         days = _rto_days(text)
@@ -268,7 +270,11 @@ WEEKDAY_SPANS = [
 WEEKDAY_LISTS = [
     ("Tuesdays", 1), ("Tuesdays and Thursdays", 2), ("Tues/Wed/Thurs", 3), ("Mon/Wed/Fri", 3),
     ("Mon, Tue, Wed and Thu", 5), ("Monday Tuesday Wednesday Thursday Friday", 5),
-    ("Mondays, Wednesdays or Fridays", 3), ("Monday-Wednesday and Friday", 5),
+    ("Mondays, Wednesdays and Fridays", 3), ("Monday-Wednesday and Friday", 5),
+    ("Mon/Fri", 2), ("Monday, Friday", 2), ("Mon & Fri", 2), ("Monday Friday", 2), ("Tuesday Thursday", 2),
+    ("Mon\u2013Wed & Fri", 5), ("Monday \u2013 Wednesday and Friday", 5), ("Tue\u2013Thu, Fri", 5),
+    ("Mon, Wed\u2014Fri", 5), ("Tuesday - Thursday", 3), ("Monday\u2013Friday", 5), ("Tuesday\u2013Thursday", 3),
+    ("Monday\u2013Thursday", 5),
 ]
 WEEKDAY_LEADS = ["In office", "On-site", "Office required", "In person", "Hybrid: in office"]
 
@@ -298,6 +304,67 @@ def test_every_span_length_reads_as_its_weekday_count(days):
         assert _rto_days(f"In office {'/'.join(n[:3] for n in names[start:last + 1])}") == expected
 
 
+WEEKDAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+LIST_CONNECTORS = ["/", ", ", " & ", " and ", " "]
+RANGE_DASHES = ["-", "\u2013", "\u2014", " - ", " \u2013 ", " \u2014 ", " to ", " through "]
+OWNER_RULE = {1: 1, 2: 2, 3: 3, 4: 5, 5: 5}
+
+
+def _weekday_runs(subset):
+    """The runs of consecutive weekday indexes in a sorted subset."""
+    runs = []
+    for index in subset:
+        if runs and runs[-1][-1] == index - 1:
+            runs[-1].append(index)
+        else:
+            runs.append([index])
+    return runs
+
+
+def _weekday_spellings(subset):
+    """Every spelling of a weekday subset: lists of single days, and consecutive runs as ranges."""
+    for names in (WEEKDAY_FULL, WEEKDAY_SHORT):
+        for connector in LIST_CONNECTORS:
+            yield connector.join(names[i] for i in subset)
+            runs = _weekday_runs(subset)
+            if any(len(run) > 1 for run in runs):
+                for dash in RANGE_DASHES:
+                    parts = [names[run[0]] if len(run) == 1 else f"{names[run[0]]}{dash}{names[run[-1]]}" for run in runs]
+                    yield connector.join(parts)
+
+
+WEEKDAY_SUBSETS = [
+    subset for size in range(1, 6) for subset in itertools.combinations(range(5), size)
+]
+
+
+@pytest.mark.parametrize("lead", WEEKDAY_LEADS)
+def test_every_weekday_subset_in_every_spelling_reads_the_owner_rule(lead):
+    """Every non-empty subset of Mon-Fri, as lists and ranges, reads four or more as 5, else its count."""
+    wrong = []
+    checked = 0
+    for subset in WEEKDAY_SUBSETS:
+        for spelling in _weekday_spellings(subset):
+            checked += 1
+            text = f"{lead} {spelling}"
+            if _rto_days(text) != OWNER_RULE[len(subset)]:
+                wrong.append((text, _rto_days(text)))
+    assert checked > 1000
+    assert wrong == []
+
+
+@pytest.mark.parametrize("lead", WEEKDAY_LEADS)
+def test_weekdays_joined_by_or_read_unknown(lead):
+    """"Tuesday or Thursday" is a choice, not a list: no subset of two or more is read with "or"."""
+    for size in range(2, 6):
+        for subset in itertools.combinations(range(5), size):
+            for names in (WEEKDAY_FULL, WEEKDAY_SHORT):
+                days = [names[i] for i in subset]
+                for spelling in (" or ".join(days), ", ".join(days[:-1]) + " or " + days[-1]):
+                    assert _rto_days(f"{lead} {spelling}") is None, spelling
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -307,8 +374,10 @@ def test_every_span_length_reads_as_its_weekday_count(days):
         "Remote, in office Tuesdays",
         "In office Thursday-Tuesday",  # a backwards span
         "In office Tuesday-Wednesday-Thursday",  # a chained span
-        "In office Tuesday Thursday",  # a span or a list after punctuation is dropped
-        "In office Tuesday - Thursday",
+        "In office Tuesday or Thursday",  # "or" is a choice, not a list
+        "In office Mon, Tue, Wed or Thu",
+        "In office Mon or Fri",
+        "In office Mondays, Wednesdays or Fridays",
         "In office Saturday-Sunday",
         "In office Tuesday-Thursday-ish",
         "In office most Tuesdays",
@@ -322,6 +391,8 @@ def test_a_weekday_span_outside_the_office_templates_is_unknown(text):
 
 def test_an_adjacent_pair_of_weekdays_with_only_a_space_is_two_days_either_way():
     assert _rto_days("In office Tuesday Wednesday") == 2
+    assert _rto_days("In office Monday Friday") == 2  # a list; Monday-Friday with a dash is the full week
+    assert _rto_days("In office Monday-Friday") == 5
 
 
 def test_weekday_tails_keep_the_stated_count():

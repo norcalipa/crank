@@ -29,8 +29,8 @@ value is one of its anchored templates, and unknown for everything else:
 6. Office-first / return-to-office / in-office wording, with or without remote
    exceptions, is 5.
 7. Negated remote ("not remote", "no remote", "remote not permitted") says
-   nothing about hybrid or in-office: unknown. A negated hybrid is unknown
-   unless the text goes on to say remote.
+   nothing about hybrid or in-office: unknown. A negated hybrid on its own is
+   unknown; in front of an office template it reads as that template.
 8. Hybrid without a count is 3; bare "Office", "In person" and "RTO" are 5;
    "Remote friendly" is 0 (rough readings the owner kept on 2026-10-24).
 9. Remote wording, including an incidental office mention (hubs, coworking, "an

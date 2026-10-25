@@ -9,6 +9,7 @@ differently, joined).
 """
 import itertools
 import random
+import time
 
 import pytest
 
@@ -62,6 +63,10 @@ def test_hidden_characters_cannot_split_or_hide_a_word():
     assert office_days("Hy​brid, 3 days") == 3
     assert office_days("Ｒemote") == 0
     assert office_days("Remote\n") == 0
+    # tab, newline and carriage return are whitespace, not hidden characters
+    assert office_days("Fully\nremote") == 0
+    assert office_days("In office\n3 days a week") == 3
+    assert office_days("Hybrid\t3 days in office") == 3
 
 
 # ------------------------------------------------------------ T1 remote (0)
@@ -179,6 +184,8 @@ def test_zero_days_in_office_reads_zero():
         ("In office 3 days, office optional the other days", 3),
         ("Return-to-office 4 days a week, remote Fridays", 4),
         ("In office 3 days a week; remote Mon and Fri", 3),
+        ("Return-to-office 4 days a week, remote Mon Fri", 4),  # a bare pair of weekdays in the tail
+        ("In office 4 days a week, office optional Mondays, Fridays", 4),
         ("Not remote; in office 4 days a week", 4),
         ("No remote work. Office attendance required 5 days a week", 5),
         ("Hybrid with 2 days in office", 2),
@@ -215,7 +222,10 @@ def test_day_count_near_misses_are_unknown(text):
         ("tuesday", 1), ("tuesday-thursday", 3), ("monday-thursday", 5), ("monday through friday", 5),
         ("mon to thu", 5), ("mon thru wed", 3), ("tuesdays and thursdays", 2), ("tues wed thurs", 3),
         ("mon wed fri", 3), ("on tuesday and thursday", 2), ("monday-wednesday and friday", 5),
-        ("monday or tuesday", 2), ("tuesday wednesday", 2), ("mon tue wed thu", 5),
+        ("tuesday wednesday", 2), ("mon tue wed thu", 5),
+        ("tuesday thursday", 2), ("friday monday", 2), ("monday friday", 2),  # a bare gap is a list
+        ("wednesday monday-friday", 5), ("monday-tuesday thursday", 3), ("mon-wed fri", 5),
+        ("monday-wednesday friday", 5), ("tuesday-thursday friday", 5),
     ],
 )
 def test_weekday_count_rule(words, days):
@@ -227,13 +237,12 @@ def test_weekday_count_rule(words, days):
     [
         "thursday-tuesday",  # backwards
         "monday-wednesday-friday",  # chained span
-        "tuesday thursday",  # a bare gap is a span or a list
+        "monday or tuesday",  # "or" names a choice, not a list
+        "monday tuesday wednesday or thursday",
         "tuesday ish thursday",  # not a connector
         "tuesday and or thursday",  # two connectors
         "tuesday - and thursday",
-        "friday monday",  # a bare gap, and backwards
-        "wednesday monday-friday",  # a bare gap beside a span
-        "monday-tuesday thursday",
+        "tuesday-fr\u0131day",  # text after the last weekday that is not a weekday
     ],
 )
 def test_weekday_count_rule_refuses_what_it_cannot_count(words):
@@ -317,6 +326,27 @@ def test_a_lone_hyphen_is_dropped_but_a_word_hyphen_is_kept():
     assert office_days("Hybrid - one day a week in the office") == 1
     assert office_days("Hybrid -- 3 days in office") == 3
     assert office_days("on-site") == 5
+    assert office_days("Hybrid -3 days in office") == 3  # a hyphen touching a word on one side only
+    assert office_days("Remote-") == 0
+    assert office_days("-Remote") == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hybrid, f\u0131ve days in office", "Hybrid, F\u0130VE days in office", "\u0130n office Friday",
+        "In office tw\u0131ce a week", "In office Fr\u0131day", "In office Tuesday-Fr\u0131day", "\u0130n office",
+        "Remote f\u0131rst",
+    ],
+)
+def test_turkish_dotless_and_dotted_i_read_unknown_and_never_raise(text):
+    """re.IGNORECASE alone folds U+0131 and U+0130 onto i; the templates are ASCII-only."""
+    assert office_days(text) is None
+    assert office_template(text) is None
+
+
+def test_a_place_name_may_use_non_ascii_letters():
+    assert office_days("Remote first with an office in S\u00e3o Paulo") == 0
 
 
 def test_a_value_longer_than_the_cap_is_unknown():
@@ -344,6 +374,32 @@ def test_adversarial_long_values_stay_unknown_and_finish():
         text = unit * (500 // len(unit))
         assert office_days(text) is None
         assert office_days(text + "Remote") is None
+
+
+def test_the_length_cap_and_the_place_bounds_are_pinned():
+    assert MAX_CHARS == 240
+    lead = "Remote first with an office in "
+    assert office_days(f"{lead}Aa Bb Cc") == 0  # three tokens in a group, one group
+    assert office_days(f"{lead}Aa Bb Cc Dd") is None
+    assert office_days(f"{lead}Aa and Bb and Cc") == 0  # three groups
+    assert office_days(f"{lead}Aa and Bb and Cc and Dd") is None
+
+
+def test_adversarial_values_at_the_cap_reach_the_patterns_and_finish_fast():
+    """Values at or under the cap are matched by every template; each read stays well under a second."""
+    units = ["Remote ", "in office ", "Austin ", "3 days ", "optional office ", "Ab ", "and ", "Mon-", "Tue/", "a "]
+    values = [(unit * 120)[:MAX_CHARS] for unit in units]
+    values += [
+        "Remote, with an office in " + "Ab " * 70 + "3",
+        "Remote first with an office in " + "Ab and " * 30,
+        "In office " + "Monday and " * 20 + "Friday",
+        "Hybrid " + "Ab " * 77,
+    ]
+    for value in values:
+        assert len(office_policy._normalize(value)) <= MAX_CHARS, value
+        started = time.perf_counter()
+        assert office_days(value) is None, value
+        assert time.perf_counter() - started < 1.0, value
 
 
 def test_families_that_disagree_read_unknown(monkeypatch):
