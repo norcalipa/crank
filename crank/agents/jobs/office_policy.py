@@ -39,6 +39,7 @@ def _normalize(value: str) -> str:
     value = unicodedata.normalize("NFKC", value)
     value = "".join(c for c in value if c in "\t\n\r" or not is_hidden_character(c))
     value = _WEEKDAY_DASH.sub(r"\1-", value)
+    value = _WEEKDAY_GAP.sub(_weekday_gap, value)
     text = _NON_WORD.sub(" ", value).replace("_", " ")
     return _WS.sub(" ", _LONE_HYPHENS.sub(" ", text)).strip()
 
@@ -274,9 +275,26 @@ WEEKDAY_NAMES = {
 WEEKDAY = _phrases(*WEEKDAY_NAMES)
 # A dash run (hyphen, U+2010-2015, minus sign) between two weekday names is a span marker.
 _WEEKDAY_NAME_RE = _alt(*WEEKDAY_NAMES)
+WEEKDAY_DASH_CLASS = r"-\u2010-\u2015\u2212"  # the body of the dash class below; tests read it
 _WEEKDAY_DASH = re.compile(
-    rf"\b({_WEEKDAY_NAME_RE})\.?\s*[-\u2010-\u2015\u2212]+\s*(?=(?:{_WEEKDAY_NAME_RE})\b)", re.IGNORECASE | re.ASCII
+    rf"\b({_WEEKDAY_NAME_RE})\.?\s*[{WEEKDAY_DASH_CLASS}]+\s*(?=(?:{_WEEKDAY_NAME_RE})\b)", re.IGNORECASE | re.ASCII
 )
+# What may sit between two weekday names once the dash pass has run: the "-" it left, or a list gap
+# (an optional period, then only whitespace, ",", "/", "&", ";" or "+"). Any other mark (a tilde, an
+# arrow, an ellipsis, a stray sign beside a dash) is neither a span marker nor a list separator, so
+# it is rewritten to " or ", which the weekday rule reads as unknown. The reader never invents a span.
+_WEEKDAY_GAP = re.compile(
+    rf"\b({_WEEKDAY_NAME_RE})([\W_]+?)(?=(?:{_WEEKDAY_NAME_RE})\b)", re.IGNORECASE | re.ASCII
+)
+_LIST_GAP = re.compile(r"-|\.?[\s,/&;+]*")
+
+
+def _weekday_gap(match: re.Match) -> str:
+    if _LIST_GAP.fullmatch(match.group(2)):
+        return match.group(0)
+    return f"{match.group(1)} or "
+
+
 WEEKDAYS = f"(?:{_phrase('on')} )?{WEEKDAY}(?: (?:and )?{WEEKDAY})?"
 _SPAN_WORDS = ("to", "through", "thru")
 TEMPLATE_WORDS.update(_SPAN_WORDS)

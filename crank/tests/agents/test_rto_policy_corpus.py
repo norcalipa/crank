@@ -8,6 +8,7 @@ the report command keeps a frozen copy of the earlier reader and this module
 checks it still reproduces that column.
 """
 import itertools
+import re
 
 import pytest
 
@@ -360,12 +361,49 @@ def test_every_weekday_subset_in_every_spelling_reads_the_owner_rule(lead):
     assert wrong == []
 
 
+def _dashes_the_reader_accepts():
+    """The characters of the reader's own dash class, read from the module's constant."""
+    return {chr(c) for c in range(0x20, 0x3000) if re.fullmatch(f"[{office_policy.WEEKDAY_DASH_CLASS}]", chr(c))}
+
+
 def test_the_range_dashes_cover_every_dash_the_reader_accepts():
-    """Dropping a dash from the reader's class must be visible to the property above."""
-    accepted = [chr(c) for c in range(0x2010, 0x2016)] + ["-", "\u2212"]
-    assert all(dash in RANGE_DASHES for dash in accepted)
+    """The reader's dash class is exactly the hyphen, U+2010-U+2015 and U+2212, and every one is generated."""
+    accepted = _dashes_the_reader_accepts()
+    assert accepted == {"-", *(chr(c) for c in range(0x2010, 0x2016)), "\u2212"}
+    assert accepted <= set(RANGE_DASHES)
     for dash in accepted:
         assert _rto_days(f"In office Tue{dash}Thu") == 3, hex(ord(dash))
+
+
+@pytest.mark.parametrize(
+    "mark",
+    ["~", " ~ ", "\u301c", "\uff5e", "\u2192", "\u2026", "...", "\u00a7-", "-\u00a7", "..-", ".. - ", " . - ", ".-.", "-.", "_", "\u2e3a"],
+)
+@pytest.mark.parametrize("lead", WEEKDAY_LEADS)
+@pytest.mark.parametrize("names", [WEEKDAY_FULL, WEEKDAY_SHORT, *WEEKDAY_DOTTED])
+def test_an_unrecognised_mark_between_weekdays_reads_unknown(lead, names, mark):
+    """A tilde, arrow, ellipsis or a stray sign beside a dash is no span marker and no list separator."""
+    for first, last in itertools.combinations(range(5), 2):
+        text = f"{lead} {names[first]}{mark}{names[last]}"
+        assert _rto_days(text) is None, text
+
+
+@pytest.mark.parametrize(
+    "text, days",
+    [
+        ("In office Mon/Fri", 2),
+        ("In office Mon, Fri", 2),
+        ("In office Monday, Friday", 2),
+        ("In office Mon. Fri.", 2),
+        ("In office Mon.; Fri.", 2),
+        ("In office Mon + Fri", 2),
+        ("In office Mon\u2013Wed & Fri", 5),
+        ("In office Mon.-Fri.", 5),
+        ("In office Mon or Fri", None),
+    ],
+)
+def test_the_odd_mark_rule_leaves_lists_spans_and_or_alone(text, days):
+    assert _rto_days(text) == days
 
 
 @pytest.mark.parametrize(
