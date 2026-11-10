@@ -275,7 +275,7 @@ WEEKDAY = _phrases(*WEEKDAY_NAMES)
 # A dash run (hyphen, U+2010-2015, minus sign) between two weekday names is a span marker.
 _WEEKDAY_NAME_RE = _alt(*WEEKDAY_NAMES)
 _WEEKDAY_DASH = re.compile(
-    rf"\b({_WEEKDAY_NAME_RE})\s*[-\u2010-\u2015\u2212]+\s*(?=(?:{_WEEKDAY_NAME_RE})\b)", re.IGNORECASE | re.ASCII
+    rf"\b({_WEEKDAY_NAME_RE})\.?\s*[-\u2010-\u2015\u2212]+\s*(?=(?:{_WEEKDAY_NAME_RE})\b)", re.IGNORECASE | re.ASCII
 )
 WEEKDAYS = f"(?:{_phrase('on')} )?{WEEKDAY}(?: (?:and )?{WEEKDAY})?"
 _SPAN_WORDS = ("to", "through", "thru")

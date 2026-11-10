@@ -11,6 +11,7 @@ import itertools
 
 import pytest
 
+from crank.agents.jobs import office_policy
 from crank.agents.jobs.matching import _mode_for_days, _mode_from_rto, _rto_days
 from crank.management.commands.rto_reading_report import legacy_rto_days
 from crank.services.company_evidence import matching_reading
@@ -307,7 +308,12 @@ def test_every_span_length_reads_as_its_weekday_count(days):
 WEEKDAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 LIST_CONNECTORS = ["/", ", ", " & ", " and ", " "]
-RANGE_DASHES = ["-", "\u2013", "\u2014", " - ", " \u2013 ", " \u2014 ", " to ", " through "]
+WEEKDAY_DOTTED = [["Mon.", "Tue.", "Wed.", "Thu.", "Fri."], ["Mon.", "Tues.", "Wed.", "Thurs.", "Fri."]]
+# Every dash office_policy._WEEKDAY_DASH accepts: hyphen, U+2010-U+2015 and the minus sign U+2212.
+_ACCEPTED_DASHES = ["-", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212"]
+RANGE_DASHES = [
+    *_ACCEPTED_DASHES, *(f" {d} " for d in _ACCEPTED_DASHES), " to ", " through ",
+]
 OWNER_RULE = {1: 1, 2: 2, 3: 3, 4: 5, 5: 5}
 
 
@@ -324,7 +330,7 @@ def _weekday_runs(subset):
 
 def _weekday_spellings(subset):
     """Every spelling of a weekday subset: lists of single days, and consecutive runs as ranges."""
-    for names in (WEEKDAY_FULL, WEEKDAY_SHORT):
+    for names in (WEEKDAY_FULL, WEEKDAY_SHORT, *WEEKDAY_DOTTED):
         for connector in LIST_CONNECTORS:
             yield connector.join(names[i] for i in subset)
             runs = _weekday_runs(subset)
@@ -352,6 +358,31 @@ def test_every_weekday_subset_in_every_spelling_reads_the_owner_rule(lead):
                 wrong.append((text, _rto_days(text)))
     assert checked > 1000
     assert wrong == []
+
+
+def test_the_range_dashes_cover_every_dash_the_reader_accepts():
+    """Dropping a dash from the reader's class must be visible to the property above."""
+    accepted = [chr(c) for c in range(0x2010, 0x2016)] + ["-", "\u2212"]
+    assert all(dash in RANGE_DASHES for dash in accepted)
+    for dash in accepted:
+        assert _rto_days(f"In office Tue{dash}Thu") == 3, hex(ord(dash))
+
+
+@pytest.mark.parametrize(
+    "text, days",
+    [
+        ("In office Mon.-Fri.", 5),
+        ("Office required Mon.-Fri.", 5),
+        ("On-site Tues.\u2013Thurs.", 3),
+        ("Hybrid: Mon.\u2013Wed. in office", 3),
+        ("In office Mon.\u2212Thu., remote Fri.", 5),
+        ("In office Mon. - Wed.", 3),
+        ("In office Mon./Fri.", 2),
+        ("In office Mon., Fri.", 2),
+    ],
+)
+def test_dotted_weekday_abbreviations_keep_their_span_or_list_meaning(text, days):
+    assert _rto_days(text) == days
 
 
 @pytest.mark.parametrize("lead", WEEKDAY_LEADS)

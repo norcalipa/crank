@@ -88,6 +88,7 @@ class RtoReadingReportTests(TestCase):
             "values_unknown_today=4 values_unknown_proposed=3 "
             "organizations_unknown_today=2 organizations_unknown_proposed=3"
         ) in text
+
     def test_unchanged_value_is_marked_same(self):
         evidence(Organization.objects.create(name="Alpha"), "Remote")
         assert 'value="Remote" organizations=1 today=0 proposed=0 same' in run()

@@ -281,6 +281,7 @@ def test_a_double_negative_near_miss_is_unknown():
         "Office required; remote only with VP approval", "In office, no exceptions",
         "Everyone works in our San Francisco office five days a week",
         "Employees are expected to be in the San Francisco office daily",
+        "We work in the office Monday-Friday", "Employees are in the office Monday\u2013Friday",
     ],
 )
 def test_in_office_statements_read_five(text):
@@ -374,6 +375,40 @@ def test_adversarial_long_values_stay_unknown_and_finish():
         text = unit * (500 // len(unit))
         assert office_days(text) is None
         assert office_days(text + "Remote") is None
+
+
+class _TooSlow(Exception):
+    pass
+
+
+def _raise_too_slow(signum, frame):
+    raise _TooSlow()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Remote, with an office in " + "Ab" * 106 + " 3",
+        "Hybrid in " + "Ab" * 114 + " x",
+        "Everyone works from our " + "Ab" * 100 + " office 3",
+        "Remote first with an office in " + "Ab" * 50 + " and " + "Cd" * 30,
+        "In office " + "Mon" * 70 + " Fri",
+        "Hybrid " + "Ab" * 110 + " 3 days",
+    ],
+)
+def test_unbroken_runs_cannot_backtrack_catastrophically(value):
+    """A run with no spaces is one token: a nested quantifier on it is exponential, spaced tokens hide it."""
+    import signal
+
+    assert len(office_policy._normalize(value)) <= MAX_CHARS
+    office_policy._read.cache_clear()
+    previous = signal.signal(signal.SIGALRM, _raise_too_slow)
+    signal.setitimer(signal.ITIMER_REAL, 2.0)
+    try:
+        office_days(value)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def test_the_length_cap_and_the_place_bounds_are_pinned():
