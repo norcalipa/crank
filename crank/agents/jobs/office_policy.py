@@ -277,14 +277,16 @@ WEEKDAY = _phrases(*WEEKDAY_NAMES)
 _WEEKDAY_NAME_RE = _alt(*WEEKDAY_NAMES)
 WEEKDAY_DASH_CLASS = r"-\u2010-\u2015\u2212"  # the body of the dash class below; tests read it
 _WEEKDAY_DASH = re.compile(
-    rf"\b({_WEEKDAY_NAME_RE})\.?\s*[{WEEKDAY_DASH_CLASS}]+\s*(?=(?:{_WEEKDAY_NAME_RE})\b)", re.IGNORECASE | re.ASCII
+    rf"(?<![A-Za-z0-9])({_WEEKDAY_NAME_RE})\.?\s*[{WEEKDAY_DASH_CLASS}]+\s*(?=(?:{_WEEKDAY_NAME_RE})(?![A-Za-z0-9]))", re.IGNORECASE | re.ASCII
 )
+# Both passes bound the names with letters and digits, not \b: an underscore is a word character until
+# the last step of _normalize, so "_Mon~Fri_" (Markdown italics, a stray "_") must still be seen.
 # What may sit between two weekday names once the dash pass has run: the "-" it left, or a list gap
 # (an optional period, then only whitespace, ",", "/", "&", ";" or "+"). Any other mark (a tilde, an
 # arrow, an ellipsis, a stray sign beside a dash) is neither a span marker nor a list separator, so
 # it is rewritten to " or ", which the weekday rule reads as unknown. The reader never invents a span.
 _WEEKDAY_GAP = re.compile(
-    rf"\b({_WEEKDAY_NAME_RE})([\W_]+?)(?=(?:{_WEEKDAY_NAME_RE})\b)", re.IGNORECASE | re.ASCII
+    rf"(?<![A-Za-z0-9])({_WEEKDAY_NAME_RE})([\W_]+?)(?=(?:{_WEEKDAY_NAME_RE})(?![A-Za-z0-9]))", re.IGNORECASE | re.ASCII
 )
 _LIST_GAP = re.compile(r"-|\.?[\s,/&;+]*")
 

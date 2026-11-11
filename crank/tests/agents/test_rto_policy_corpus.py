@@ -9,6 +9,7 @@ checks it still reproduces that column.
 """
 import itertools
 import re
+import sys
 
 import pytest
 
@@ -362,8 +363,10 @@ def test_every_weekday_subset_in_every_spelling_reads_the_owner_rule(lead):
 
 
 def _dashes_the_reader_accepts():
-    """The characters of the reader's own dash class, read from the module's constant."""
-    return {chr(c) for c in range(0x20, 0x3000) if re.fullmatch(f"[{office_policy.WEEKDAY_DASH_CLASS}]", chr(c))}
+    """Every character the compiled dash pass takes as a span marker, probed over all of Unicode."""
+    return {
+        chr(c) for c in range(sys.maxunicode + 1) if office_policy._WEEKDAY_DASH.match(f"Tue{chr(c)}Thu")
+    }
 
 
 def test_the_range_dashes_cover_every_dash_the_reader_accepts():
@@ -386,6 +389,32 @@ def test_an_unrecognised_mark_between_weekdays_reads_unknown(lead, names, mark):
     for first, last in itertools.combinations(range(5), 2):
         text = f"{lead} {names[first]}{mark}{names[last]}"
         assert _rto_days(text) is None, text
+
+
+@pytest.mark.parametrize("wrap", ["_{}_", "{}_", "_{}", "__{}__", "*{}*"])
+@pytest.mark.parametrize("mark", ["~", "\u2192", "\u2026", "\u00a7-", "..-", " . - "])
+@pytest.mark.parametrize("lead", WEEKDAY_LEADS)
+@pytest.mark.parametrize("names", [WEEKDAY_FULL, WEEKDAY_SHORT, *WEEKDAY_DOTTED])
+def test_an_unrecognised_mark_between_underscore_wrapped_weekdays_reads_unknown(lead, names, mark, wrap):
+    """An underscore beside a name (Markdown italics, a stray "_") hides nothing from the weekday passes."""
+    for first, last in itertools.combinations(range(5), 2):
+        text = f"{lead} {wrap.format(names[first] + mark + names[last])}"
+        assert _rto_days(text) is None, text
+
+
+@pytest.mark.parametrize("wrap", ["_{}_", "{}_", "_{}", "__{}__", "*{}*"])
+@pytest.mark.parametrize("dash", [*_ACCEPTED_DASHES, " - ", " \u2013 ", " \u2212 "])
+@pytest.mark.parametrize("lead", ["In office", "Office required:", "On-site"])
+@pytest.mark.parametrize("names", [WEEKDAY_FULL, WEEKDAY_SHORT, *WEEKDAY_DOTTED])
+def test_a_dash_span_between_underscore_wrapped_weekdays_reads_the_span(lead, names, dash, wrap):
+    for first, last in itertools.combinations(range(5), 2):
+        text = f"{lead} {wrap.format(names[first] + dash + names[last])}"
+        assert _rto_days(text) == OWNER_RULE[last - first + 1], text
+
+
+def test_an_underscore_between_two_weekdays_reads_unknown():
+    assert _rto_days("In office Mon_Fri") is None
+    assert _rto_days("In office Monday_Friday") is None
 
 
 @pytest.mark.parametrize(
