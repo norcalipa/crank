@@ -610,18 +610,19 @@ def test_rto_evidence_uses_prose_value():
         ("Office-first; remote by exception", 5),
         ("No remote work. Office attendance required 5 days a week", 5),
         ("Return to office 5 days a week; remote not permitted", 5),
-        ("Five days in office; no office in Europe", 5),
+        ("Five days in office; no office in Europe", None),
         ("In office Monday-Friday; no in-office exceptions", 5),
-        ("Return-to-office 4 days a week, remote Fridays", 5),
-        ("Not remote", 0),
-        ("No remote", 0),
+        ("Return-to-office 4 days a week, remote Fridays", 4),
+        ("Not remote", None),
+        ("No remote", None),
         ("Remote first", 0),
         ("Hybrid 3 days", 3),
     ],
 )
 def test_rto_prose_reads_in_office_when_office_is_named(value, days):
     """Pins ``_rto_days`` to its reviewed behaviour: explicit office wording is never
-    resolved to the more permissive remote reading (parser changes are tracked in #537)."""
+    resolved to the more permissive remote reading, and a negated remote is unknown
+    (the full table is ``rto_policy_corpus.py``, issue #537)."""
     from crank.agents.jobs.matching import _rto_days
 
     assert _rto_days(value) == days
@@ -720,3 +721,42 @@ def test_normalized_strips_hidden_characters_from_non_string_values():
             return "Re\u200bmote"
 
     assert _normalized(Label()) == "remote"
+
+
+@pytest.mark.parametrize(
+    "prefs,text,modes_status,days_status",
+    [
+        ({"modes": ["remote"]}, "No office required", "match", None),
+        ({"modes": ["remote"]}, "Remote-first with optional office hubs", "match", None),
+        ({"modes": ["remote"]}, "Office-first; remote by exception", "mismatch", None),
+        ({"modes": ["remote"]}, "Not remote", "unknown", None),
+        ({"modes": ["remote"]}, "remote or hybrid", "unknown", None),
+        ({"modes": ["remote"]}, "Hybrid, 2 days in office", "mismatch", None),
+        ({"max_in_office_days": 2}, "Hybrid, 2 days in office", None, "match"),
+        ({"max_in_office_days": 2}, "In office 4 days a week", None, "mismatch"),
+        ({"max_in_office_days": 2}, "No office required", None, "match"),
+        ({"max_in_office_days": 2}, "Not remote", None, "unknown"),
+    ],
+)
+def test_requirement_outcomes_from_office_policy_prose(prefs, text, modes_status, days_status):
+    from crank.agents.jobs.matching import evaluate_requirements
+
+    criteria = project_criteria(preferences(work_location=dict(prefs)), 3)
+    outcomes = evaluate_requirements(
+        listing(organization=org()), criteria, evidence=_evidence("rto_policy", text),
+    )
+    by_path = {o.path: o.status for o in outcomes}
+    assert by_path.get("work_location.modes") == modes_status
+    assert by_path.get("work_location.max_in_office_days") == days_status
+
+
+def test_not_remote_prose_excludes_a_remote_only_hard_reader_as_unverified():
+    from crank.agents.jobs.matching import ExclusionReason, evaluate_requirements, hard_exclusion_reasons
+
+    criteria = project_criteria(
+        preferences(work_location={"modes": ["remote"]}, importance={"work_location.modes": 1.0}), 3,
+    )
+    outcomes = evaluate_requirements(
+        listing(organization=org()), criteria, evidence=_evidence("rto_policy", "Not remote"),
+    )
+    assert hard_exclusion_reasons(outcomes, criteria) == [ExclusionReason.REQUIREMENT_UNVERIFIED]

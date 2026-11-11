@@ -541,10 +541,13 @@ class TestMixedFreshnessGoldenConversation:
         assert "ORGANIZATION CATALOG" in self._system(user, cited)
 
     def test_a_reason_matching_inferred_from_prose_is_not_given_as_fact(self):
-        """Round-2 MINOR 2: "Not remote" reads "Remote"; the model is told so."""
+        """Round-2 MINOR 2: prose the matcher reads as "Remote" is not a stated fact; the model is told so.
+
+        Was "Not remote", which read as remote until #537 made it unknown; the prose below
+        still reads as remote only by inference."""
         FieldKey = CompanyFieldEvidence.FieldKey
         org, user = self._org([
-            (FieldKey.RTO_POLICY, "Not remote", 2),
+            (FieldKey.RTO_POLICY, "Remote-first with optional office hubs", 2),
             (FieldKey.FUNDING_ROUND, "Series B", 5),
         ])
         rto = self.rows[FieldKey.RTO_POLICY]

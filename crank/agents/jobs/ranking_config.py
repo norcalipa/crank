@@ -54,7 +54,7 @@ class RankingConfig:
 
 
 DEFAULT_CONFIG = RankingConfig(
-    version="1.0.0",
+    version="1.1.0",
     weights={factor: 1.0 / len(FACTOR_NAMES) for factor in FACTOR_NAMES},
     max_score=100.0,
     missing_data_penalty=0.0,

@@ -166,6 +166,26 @@ levers differ in speed:
 A poll-only switch that acts without a deploy, or a server-side throttle, is
 tracked in #596 and should land before the read gate is enabled.
 
+## Reader changes
+
+Changing how the matcher reads a stored value (for example the office-policy
+reader, issue #537) is a ranker change, and bumps `RankingConfig.version`
+(`1.1.0` for that reader). Where committed reads are on, every stored
+generation is then stale-by-ranker and the drain rebuilds it when
+`MATCH_RECOMPUTE_ENABLED` is on; nothing is rewritten at deploy. Live reads
+(committed reads off, injected `match_service` calls) change at deploy: the
+first request after it reads every accepted value by the new rules. Before
+shipping such a change, run the read-only `manage.py rto_reading_report` (or
+its sibling for the reader in question) against real data: it lists every
+changed value and how many readers see a different set of companies. Rolling
+back restores the earlier version, and generations built under the new one
+go stale again.
+
+The office-policy reader is fail-closed: it reads a number only for the
+anchored templates in `crank/agents/jobs/office_policy.py` and treats every
+other value as unknown, so a hard work-location requirement excludes a company
+whose value is unknown as unverified.
+
 ## Rollout order
 
 1. Migrate `0039_match_result_generation` — additive; old pods ignore the

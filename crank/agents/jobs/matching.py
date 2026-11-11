@@ -13,6 +13,7 @@ from enum import Enum
 from functools import lru_cache
 from typing import Any
 
+from crank.agents.jobs import office_policy
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
 from crank.models.organization import Organization
 from crank.services.hidden_characters import is_hidden_character
@@ -594,30 +595,23 @@ def _evidence_in_scope(evidence_row: Any, listing: Any) -> bool:
 
 
 def _rto_days(value: Any) -> int | None:
-    """Map an RTO policy (code, label, or producer prose) to in-office days."""
-    normalized = _normalized(value).replace("_", " ")
-    mapping = {
-        "r": 0, "remote": 0,
-        "h": 3, "hybrid": 3,
-        "o": 5, "in-office": 5, "in office": 5, "onsite": 5,
-    }
-    if normalized in mapping:
-        return mapping[normalized]
-    # CompanyFieldEvidence stores prose (e.g. "Remote first", "Hybrid 3 days",
-    # "Five days in office, no exceptions"). Match the strongest explicit
-    # signal; an explicit office term wins, then hybrid, then remote.
-    if any(token in normalized for token in ("in-office", "in office", "onsite", "office")):
-        return 5
-    if "hybrid" in normalized:
-        return 3
-    if "remote" in normalized:
-        return 0
-    return None
+    """Map an RTO policy (code, label, or producer prose) to in-office days.
+
+    Fail-closed: a number only for the anchored templates of ``office_policy``;
+    every other value is unknown (``None``)."""
+    return office_policy.office_days(value)
+
+
+def _mode_for_days(days: int | None) -> str | None:
+    """remote (0), hybrid (1-4), in-office (5); unknown stays unknown."""
+    if days is None:
+        return None
+    return "remote" if days == 0 else "in-office" if days == 5 else "hybrid"
 
 
 def _mode_from_rto(value: Any) -> str | None:
     """Map a normalized RTO value to a work mode."""
-    return {0: "remote", 3: "hybrid", 5: "in-office"}.get(_rto_days(value))
+    return _mode_for_days(_rto_days(value))
 
 
 def _public_status(value: Any) -> bool | None:

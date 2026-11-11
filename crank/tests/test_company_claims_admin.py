@@ -253,6 +253,14 @@ class ClaimReviewTests(TestCase):
         audit = OperationalChangeAudit.objects.get(target_type="company_profile_observation")
         self.assertEqual(audit.action, "review_rejected")
 
+    def test_changelist_renders_a_claim_with_turkish_dotless_and_dotted_i(self):
+        for value in ("Hybrid, f\u0131ve days in office", "\u0130n office Fr\u0131day", "In office tw\u0131ce a week"):
+            CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(value_text=value)
+            for params in ({}, {"queue": "all"}):
+                response = self.client.get(self.url, params)
+                self.assertEqual(response.status_code, 200, value)
+                self.assertIn("matching cannot read this (unknown)", response.content.decode("utf-8"), value)
+
     def test_confirmation_page_describes_the_claim_and_escapes_hostile_text(self):
         CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(
             value_text="<script>alert(1)</script> Remote first"
