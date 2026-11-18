@@ -197,6 +197,34 @@ test.describe('company view (issue #486b)', () => {
             .then((response) => response.json()).then((body) => body.authenticated)).catch(() => null)).toBe(false);
     });
 
+    test('a sign-out seen from another tab leaves the rankings and the company view with signed-out controls (issue #574)', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/');
+        await expect(page.getByTestId('suggest-company-btn')).toBeVisible();
+        const corrections: string[] = [];
+        await page.route('**/api/company-corrections/**', async (route) => {
+            corrections.push(route.request().url());
+            await route.continue();
+        });
+
+        const other = await context.newPage();
+        await other.goto('/');
+        const signedOut = other.waitForResponse((response) => response.request().method() === 'POST'
+            && new URL(response.url()).pathname === '/accounts/logout/');
+        await other.locator('form[data-nav-logout-form] button[type="submit"]').locator('visible=true').first().click();
+        await signedOut;
+
+        // The first tab hears the epoch change, purges and asks who is signed in.
+        await expect(page.getByTestId('suggest-company-btn')).toHaveCount(0);
+        await opener(page).click();
+        await expect(view(page)).toBeVisible();
+        await expect(page.getByTestId('company-sign-in-cta')).toBeVisible();
+        await expect(page.getByTestId('company-chat-cta')).toHaveCount(0);
+        await expect(view(page).getByRole('button', {name: /Suggest a correction/})).toHaveCount(0);
+        expect(corrections).toEqual([]);
+    });
+
     // Hands out the pending list from memory and stores nothing: the POST is stubbed
     // (corrections.spec.ts spends the seeded user's hourly allowance).
     async function stubCorrections(page: Page, initial: Array<Record<string, unknown>> = []) {

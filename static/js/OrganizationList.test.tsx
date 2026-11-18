@@ -4106,4 +4106,93 @@ describe('OrganizationList', () => {
             expect(new Set(ids).size).toBe(ids.length);
         });
     });
+
+    describe('signed-in controls follow the observed account (issue #574)', () => {
+        let uninstall: (() => void) | null = null;
+        const purge = () => act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        const hydrate = (detail: Record<string, unknown>) => act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail}));
+        });
+        const settle = () => act(async () => { await Promise.resolve(); });
+        const correctionCalls = () => (global.fetch as jest.Mock).mock.calls
+            .filter(([url]) => String(url).includes('/api/company-corrections/'));
+
+        beforeEach(() => {
+            window.sessionStorage.clear();
+        });
+
+        afterEach(() => {
+            uninstall?.();
+            uninstall = null;
+            window.sessionStorage.clear();
+        });
+
+        test('the toolbar and company view controls follow a known account', async () => {
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'ann'}));
+            render(<OrganizationList organizations={organizations} isAuthenticated={false} />);
+            expect(screen.getByTestId('suggest-company-btn')).toBeInTheDocument();
+            act(() => setWorkspaceAccount({status: 'anonymous', key: ''}));
+            expect(screen.queryByTestId('suggest-company-btn')).not.toBeInTheDocument();
+        });
+
+        test('a purge hides the controls before any hydration, and a different observed user brings them back', async () => {
+            uninstall = installWorkspacePersistence();
+            hydrate({authenticated: true, username: 'ann'});
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            expect(screen.getByTestId('suggest-company-btn')).toBeInTheDocument();
+
+            purge();
+            expect(screen.queryByTestId('suggest-company-btn')).not.toBeInTheDocument();
+
+            hydrate({authenticated: true, username: 'bob'});
+            expect(screen.getByTestId('suggest-company-btn')).toBeInTheDocument();
+        });
+
+        test('a purge followed by an unobserved answer stays signed out', async () => {
+            uninstall = installWorkspacePersistence();
+            hydrate({authenticated: true, username: 'ann'});
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            purge();
+            hydrate({unobserved: true});
+            await settle();
+            expect(screen.queryByTestId('suggest-company-btn')).not.toBeInTheDocument();
+        });
+
+        test('a company opened after the sign-out shows the sign-in prompt and requests no corrections', async () => {
+            uninstall = installWorkspacePersistence();
+            hydrate({authenticated: true, username: 'ann'});
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} signInUrlTemplate="/accounts/login/?next=/c/__COMPANY_ID__/" />);
+            purge();
+            hydrate({authenticated: false});
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('company-view');
+            expect(await screen.findByTestId('company-sign-in-cta')).toBeInTheDocument();
+            expect(screen.queryByTestId('company-chat-cta')).not.toBeInTheDocument();
+            expect(screen.queryByRole('button', {name: /Suggest a correction/})).not.toBeInTheDocument();
+            expect(correctionCalls()).toHaveLength(0);
+        });
+
+        test('an account never observed here keeps the mount value, signed in or not', () => {
+            const first = render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            expect(screen.getByTestId('suggest-company-btn')).toBeInTheDocument();
+            first.unmount();
+            render(<OrganizationList organizations={organizations} isAuthenticated={false} />);
+            expect(screen.queryByTestId('suggest-company-btn')).not.toBeInTheDocument();
+        });
+
+        test('the empty-state link follows the account once the store knows it', () => {
+            window.history.replaceState({}, '', '/?search=zzz-no-match');
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'ann'}));
+            render(<OrganizationList organizations={organizations} isAuthenticated={false} canSuggestCompany={false} />);
+            expect(screen.getByTestId('suggest-company-empty-btn')).toBeInTheDocument();
+            act(() => setWorkspaceAccount({status: 'anonymous', key: ''}));
+            expect(screen.queryByTestId('suggest-company-empty-btn')).not.toBeInTheDocument();
+        });
+
+        test('the empty-state link uses canSuggestCompany while the account was never observed', () => {
+            window.history.replaceState({}, '', '/?search=zzz-no-match');
+            render(<OrganizationList organizations={organizations} isAuthenticated={false} canSuggestCompany={true} />);
+            expect(screen.getByTestId('suggest-company-empty-btn')).toBeInTheDocument();
+        });
+    });
 });
