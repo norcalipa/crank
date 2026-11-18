@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import yaml
 from django.core.management import call_command
+from django.db import migrations
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -727,7 +728,7 @@ class SourceRefreshMigrationShapeTests(TestCase):
         self.assertEqual(len(leaves), 1)
         self.assertIn(("crank", self.NAMES[-1]), loader.graph.forwards_plan(leaves[0]))
         self.assertEqual(
-            leaves, [("crank", "0048_jobsearchconversation_first_result_at")]
+            leaves, [("crank", "0049_crawlrun_job_source_time_idx")]
         )
         self.assertEqual(
             loader.disk_migrations[("crank", "0046_alter_companyfieldevidence_state")].dependencies,
@@ -748,6 +749,17 @@ class SourceRefreshMigrationShapeTests(TestCase):
             [dep for dep in first_result.dependencies if dep[0] == "crank"],
             [("crank", "0047_companycorrection")],
         )
+        crawl_index = loader.disk_migrations[("crank", "0049_crawlrun_job_source_time_idx")]
+        self.assertEqual(
+            [dep for dep in crawl_index.dependencies if dep[0] == "crank"],
+            [("crank", "0048_jobsearchconversation_first_result_at")],
+        )
+        self.assertEqual(len(crawl_index.operations), 1)
+        operation = crawl_index.operations[0]
+        self.assertIsInstance(operation, migrations.AddIndex)
+        self.assertEqual(operation.model_name, "crawlrun")
+        self.assertEqual(operation.index.fields, ["job_source", "-started_at", "-id"])
+        self.assertEqual(operation.index.name, "crank_crawl_jobsrc_time_idx")
         self.assertEqual(len(first_result.operations), 1)
         # Issue #482: a single nullable AddField with no default and no index
         # is exactly one ADD COLUMN ... NULL on MySQL.

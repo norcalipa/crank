@@ -235,9 +235,10 @@ class ReadinessBaselineCommandTests(TestCase):
         # of 0038, and 0040-0045 (#468, one DDL statement each) stack on top
         # of 0039, 0046 (#474, choices-only AlterField) stacks on 0045, and
         # 0047 (#477, one CreateModel) stacks on 0046, and 0048 (#482, one
-        # nullable AddField) stacks on 0047.
+        # nullable AddField) stacks on 0047, and 0049 (#535, one AddIndex)
+        # stacks on 0048.
         self.assertIn(
-            "crank.0048_jobsearchconversation_first_result_at",
+            "crank.0049_crawlrun_job_source_time_idx",
             leaves["applied"],
         )
         self.assertEqual(leaves["applied_count"], len(leaves["applied"]))

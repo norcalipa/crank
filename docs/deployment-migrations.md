@@ -487,3 +487,26 @@ numbered merge migration if a head split remains, keeping
   0048_jobsearchconversation_first_result_at --fake`; otherwise rerun `migrate`.
 - **Rollback.** The nullable column persists harmlessly; older pods never read
   it. Rollout is migrate, then deploy.
+
+## Allocation: 0049 (issue #535)
+
+- **0049 → #535**, `0049_crawlrun_job_source_time_idx`, parent
+  `0048_jobsearchconversation_first_result_at`, single leaf; the exact-leaf
+  list in `test_readiness_baseline` and the shape test in
+  `test_source_freshness` name 0049. Exactly one operation: `AddIndex` on
+  `CrawlRun` over `(job_source, -started_at, -id)`, named
+  `crank_crawl_jobsrc_time_idx`. On MySQL that is one `CREATE INDEX` statement
+  (`job_source_id, started_at DESC, id DESC`). It supports the per-source
+  "newest runs first" reads: the window query in `check_inventory_health` and
+  the latest-run subquery in `operations_readiness.source_rows`.
+- **Why its own migration.** One DDL statement per migration, as for 0041 and
+  0044, so an interrupted `migrate` cannot leave a half-applied migration.
+- **Expected behaviour.** Online, in-place `CREATE INDEX` on InnoDB with brief
+  metadata locks; `crank_crawlrun` is a small operational table. Rollout is
+  migrate, then deploy.
+- **Recovery if `migrate` is interrupted inside 0049.** `showmigrations crank`
+  lists 0049 unapplied. Run `SHOW INDEX FROM crank_crawlrun WHERE Key_name =
+  'crank_crawl_jobsrc_time_idx'`. If the index exists, run `migrate crank
+  0049_crawlrun_job_source_time_idx --fake`; otherwise rerun `migrate`.
+- **Rollback.** Older pods ignore the index. `migrate crank
+  0048_jobsearchconversation_first_result_at` drops it.

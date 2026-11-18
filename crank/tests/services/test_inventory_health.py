@@ -207,6 +207,30 @@ class InventoryHealthTests(TestCase):
         result = inventory_health.check_inventory_health(now=now)
         self.assertEqual(result["repeated_failure_sources"], 1)
 
+    def test_pending_run_without_start_does_not_mask_repeated_failures(self):
+        # Issue #535: NULL started_at sorts last under ORDER BY started_at DESC, so a
+        # newer pending run (no start yet) neither hides nor displaces the failures.
+        now = timezone.now()
+        source = make_source("Pending Tail", last_crawl_at=now)
+        for i in range(3):
+            make_crawl_run(
+                source, CrawlRun.Outcome.FAILURE, now - timedelta(minutes=i + 1)
+            )
+        CrawlRun.objects.create(
+            source_type=CrawlRun.SourceType.JOB,
+            source_key=source.adapter_key,
+            job_source=source,
+            outcome=CrawlRun.Outcome.RUNNING,
+            started_at=None,
+        )
+        result = inventory_health.check_inventory_health(now=now)
+        self.assertEqual(result["repeated_failure_sources"], 1)
+        ordered = list(
+            CrawlRun.objects.filter(job_source=source).order_by("-started_at", "-id")
+        )
+        self.assertIsNone(ordered[-1].started_at)
+        self.assertTrue(all(run.started_at for run in ordered[:-1]))
+
     def test_partial_crawl_with_ingested_listings_counts_as_produced(self):
         now = timezone.now()
         source = make_source("Partial", last_crawl_at=now)

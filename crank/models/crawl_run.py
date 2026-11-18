@@ -83,6 +83,7 @@ class CrawlRun(TimeStampedModel):
         ]
         indexes = [
             models.Index(fields=["source_type", "source_key", "started_at"], name="crank_crawl_source_time_idx"),
+            models.Index(fields=["job_source", "-started_at", "-id"], name="crank_crawl_jobsrc_time_idx"),
         ]
 
     def __str__(self):

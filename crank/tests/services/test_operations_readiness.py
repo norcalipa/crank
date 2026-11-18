@@ -956,6 +956,30 @@ class BacklogAndProgressTests(TestCase):
         self.assertEqual(row["latest_outcome"], "")
         self.assertEqual(row["latest_error"], "")
 
+    def test_source_row_latest_outcome_ignores_pending_run_without_start(self):
+        # Issue #535: a newer-created pending run with no start sorts after every
+        # started run, so the row reports the latest started run's outcome.
+        now = timezone.now()
+        source = make_source("pending-tail", adapter_key="usajobs")
+        CrawlRun.objects.create(
+            source_type=CrawlRun.SourceType.JOB,
+            source_key="usajobs",
+            job_source=source,
+            outcome=CrawlRun.Outcome.FAILURE,
+            started_at=now - timedelta(minutes=5),
+            error_summary="boom",
+        )
+        CrawlRun.objects.create(
+            source_type=CrawlRun.SourceType.JOB,
+            source_key="usajobs",
+            job_source=source,
+            outcome=CrawlRun.Outcome.RUNNING,
+            started_at=None,
+        )
+        row = ops.source_rows(now=now)["rows"][0]
+        self.assertEqual(row["latest_outcome"], "failure")
+        self.assertEqual(row["latest_error"], "boom")
+
     def test_run_progress_empty(self):
         progress = ops.run_progress()
         self.assertIsNone(progress["latest"])
