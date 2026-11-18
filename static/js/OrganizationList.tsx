@@ -22,7 +22,7 @@ import {
     setWorkspaceEntity,
     subscribeWorkspace,
 } from './workspace/store';
-import {RtoPolicyCode, WORKSPACE_FOCUS_EVENT, WorkspaceFilters} from './workspace/types';
+import {AccountStatus, RtoPolicyCode, WORKSPACE_FOCUS_EVENT, WorkspaceFilters} from './workspace/types';
 
 // The day "Last verified" prints is the UTC day: the same day the server
 // digests into the rankings revision, so a change the revision calls new is a
@@ -126,6 +126,9 @@ const RESULT_ANCHOR_SELECTOR = '.organization-row[data-organization-id], .organi
 const INSTANT = 'instant' as ScrollBehavior;
 
 interface OrganizationListState {
+    // The workspace store's observed account, and whether it was dropped (known, then unknown) by a purge; `signedIn` derives from them.
+    accountStatus: AccountStatus;
+    accountDropped: boolean;
     organizations: Organization[];
     filteredOrganizations: Organization[];
     fundingRoundChoices: Record<string, string>;
@@ -209,6 +212,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting: urlState.acceleratedVesting,
             rtoPolicy: urlState.rtoPolicy,
             searchTerm: urlState.searchTerm,
+            accountStatus: getWorkspaceSnapshot().account.status,
+            accountDropped: false,
             view: null,
             choicesStatus: 'loading',
             shownRevision: props.revision ?? null,
@@ -759,6 +764,28 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             : {surface: 'rankings', searchTerm, page: currentPage, ...view});
     };
 
+    // Re-render when the observed account changes. A purge leaves the account
+    // unknown after it was known: fail closed (signed out) until it is observed.
+    private syncAccount = (status: AccountStatus) => {
+        this.setState(prev => {
+            const accountDropped = status !== 'unknown' ? false : prev.accountDropped || prev.accountStatus !== 'unknown';
+            return prev.accountStatus === status && prev.accountDropped === accountDropped
+                ? null
+                : {accountStatus: status, accountDropped};
+        });
+    };
+
+    // The reader's signed-in state: the store's account when known, signed out
+    // after a purge, else the mount value (account never observed here).
+    private isSignedIn = (): boolean => {
+        const {accountStatus, accountDropped} = this.state;
+        if (accountStatus === 'authenticated') return true;
+        if (accountStatus === 'anonymous' || accountDropped) return false;
+        return !!this.props.isAuthenticated;
+    };
+
+    private accountKnown = (): boolean => this.state.accountStatus !== 'unknown' || this.state.accountDropped;
+
     handleWorkspaceChange = () => {
         this.restoreAfterHydration();
         const {account} = getWorkspaceSnapshot();
@@ -768,6 +795,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             this.privateStateDropped = true;
         }
         this.lastAccountStatus = account.status;
+        this.syncAccount(account.status);
         const shown = this.state.view?.organization;
         if (shown
             && !this.closedAfterPurge
@@ -1343,7 +1371,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     status={view.status}
                     organization={view.organization as CompanyDetailsOrganization | null}
                     name={view.name}
-                    isAuthenticated={this.props.isAuthenticated}
+                    isAuthenticated={this.isSignedIn()}
                     signInUrlTemplate={this.props.signInUrlTemplate}
                     onBack={this.closeView}
                     onRetry={this.retryView}
@@ -1407,7 +1435,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     </div>
                     {pageCount > 1 && <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>}
                 </div>
-                {this.props.isAuthenticated && !isEmpty && (
+                {this.isSignedIn() && !isEmpty && (
                     <button type="button" className="btn btn-outline-primary btn-sm"
                             data-testid="suggest-company-btn"
                             onClick={() => this.handleOpenSuggestModal('rankings')}>
@@ -1439,7 +1467,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     ? 'There are no organizations that match your search or filters.'
                     : 'No companies are ranked with this preset right now.'}</p>
                 {(searchTerm || acceleratedVesting || rtoPolicy) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
-                {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
+                {(this.accountKnown() ? this.isSignedIn() : (this.props.canSuggestCompany || this.props.isAuthenticated)) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
                 <div className="organization-results">
                 <div className="organization-table-wrap" role="region" aria-label="Organization rankings" tabIndex={0}>

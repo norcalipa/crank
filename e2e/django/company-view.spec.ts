@@ -197,6 +197,69 @@ test.describe('company view (issue #486b)', () => {
             .then((response) => response.json()).then((body) => body.authenticated)).catch(() => null)).toBe(false);
     });
 
+    test('a sign-out seen from another tab leaves the rankings and the company view with signed-out controls (issue #574)', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/');
+        await expect(page.getByTestId('suggest-company-btn')).toBeVisible();
+        const corrections: string[] = [];
+        await page.route('**/api/company-corrections/**', async (route) => {
+            corrections.push(route.request().url());
+            await route.continue();
+        });
+
+        const other = await context.newPage();
+        await other.goto('/');
+        const signedOut = other.waitForResponse((response) => response.request().method() === 'POST'
+            && new URL(response.url()).pathname === '/accounts/logout/');
+        await other.locator('form[data-nav-logout-form] button[type="submit"]').locator('visible=true').first().click();
+        await signedOut;
+
+        // The first tab hears the epoch change, purges and asks who is signed in.
+        await expect(page.getByTestId('suggest-company-btn')).toHaveCount(0);
+        await opener(page).click();
+        await expect(view(page)).toBeVisible();
+        await expect(page.getByTestId('company-sign-in-cta')).toBeVisible();
+        await expect(page.getByTestId('company-chat-cta')).toHaveCount(0);
+        await expect(view(page).getByRole('button', {name: /Suggest a correction/})).toHaveCount(0);
+        expect(corrections).toEqual([]);
+    });
+
+    test('an evidence row without evidence keeps its height and even spacing whether or not "Suggest a value" is shown (issue #574)', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        const measure = async () => {
+            await opener(page).click();
+            await expect(page.getByTestId('evidence-details')).toBeVisible();
+            return page.locator('[data-testid^="field-unverified-"]').evaluateAll((rows) => rows.map((row) => {
+                const box = row.getBoundingClientRect();
+                const badge = (row.querySelector('[class*="badge"]') as HTMLElement).getBoundingClientRect();
+                return {
+                    link: row.querySelector('.correction-action') !== null,
+                    height: box.height,
+                    above: badge.top - box.top,
+                    below: box.bottom - badge.bottom,
+                };
+            }));
+        };
+        await login(page);
+        await page.goto('/');
+        const signedIn = await measure();
+        expect(signedIn.length).toBeGreaterThan(0);
+        expect(signedIn.every((row) => row.link)).toBe(true);
+
+        await page.context().clearCookies();
+        await page.goto('/');
+        const signedOut = await measure();
+        expect(signedOut.length).toBe(signedIn.length);
+        for (const row of signedOut) {
+            expect(row.link).toBe(false);
+            expect(Math.abs(row.height - signedIn[0].height)).toBeLessThan(1.5);
+            // The badge sits in the middle of the row: the divider is never on it.
+            expect(Math.abs(row.above - row.below)).toBeLessThan(3);
+            expect(row.above).toBeGreaterThan(12);
+        }
+    });
+
     // Hands out the pending list from memory and stores nothing: the POST is stubbed
     // (corrections.spec.ts spends the seeded user's hourly allowance).
     async function stubCorrections(page: Page, initial: Array<Record<string, unknown>> = []) {
