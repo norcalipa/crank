@@ -19,7 +19,7 @@ from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
 from crank.services import job_matching, match_results
-from crank.services.match_recompute import recompute_user
+from crank.services.match_recompute import RecomputeStatus, recompute_user
 from crank.services.organization_visibility import (
     is_visible_organization,
     visible_employer_q,
@@ -226,19 +226,34 @@ class LiveMatchingTests(HiddenEmployerFixture):
         recompute_user(self.user, reason="preference")
         before = match_results.current_match_count(self.user)
         self.assertGreaterEqual(before, 1)
-        # Hide the employer, then a recompute runs while it is hidden.
+        first_generation = MatchResultState.objects.get(user=self.user).current_generation
+        # Hide the employer, then force a recompute that really runs while hidden.
         Organization.objects.filter(pk=self.visible_org.pk).update(public=False)
-        recompute_user(self.user, reason="preference")
+        outcome = recompute_user(self.user, reason="preference", force=True)
+        self.assertEqual(outcome.status, RecomputeStatus.PUBLISHED)
+        generation = MatchResultState.objects.get(user=self.user).current_generation
+        self.assertGreater(generation, first_generation)
         self.assertEqual(
             match_results.current_generation_queryset(self.user)
             .filter(listing=self.visible)
             .count(),
             0,
         )
-        generation = MatchResultState.objects.get(user=self.user).current_generation
+        # The visible listing's raw row was written at the new generation.
+        self.assertTrue(
+            JobMatch.objects.filter(
+                user=self.user, listing=self.visible, result_generation=generation
+            ).exists()
+        )
         writes = JobMatch.objects.filter(user=self.user).count()
-        # Visible again: the committed rows come back with no further write.
+        # Visible again: the unhide itself writes nothing and the row comes back.
         Organization.objects.filter(pk=self.visible_org.pk).update(public=True)
+        self.assertEqual(
+            match_results.current_generation_queryset(self.user)
+            .filter(listing=self.visible)
+            .count(),
+            1,
+        )
         self.assertEqual(match_results.current_match_count(self.user), before)
         self.assertEqual(
             MatchResultState.objects.get(user=self.user).current_generation, generation
