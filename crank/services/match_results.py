@@ -17,7 +17,7 @@ import logging
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Subquery
+from django.db.models import Q, Subquery
 
 from crank.agents.jobs.matching import (
     _decimal,
@@ -29,6 +29,7 @@ from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
+from crank.services.organization_visibility import visible_employer_q
 from crank.services.preferences import unsupported_criteria
 from crank.services.publication import data_watermark
 
@@ -77,6 +78,21 @@ def _company_score_of(organization):
     return max(0.0, min(5.0, sum(values) / len(values)))
 
 
+def presentable_match_q() -> Q:
+    """Which ``JobMatch`` rows may be presented or counted.
+
+    The listing is active and neither the match's stored organization nor the
+    listing's current organization is hidden (see
+    ``crank.services.organization_visibility``). Every match read uses this one
+    predicate so list, detail, status count and ranked agree.
+    """
+    return (
+        Q(listing__status=JobListing.Status.ACTIVE)
+        & visible_employer_q("listing__")
+        & visible_employer_q()
+    )
+
+
 def current_generation_queryset(user, *, generation=None):
     """The current, committed generation's rows for *user* — one statement.
 
@@ -90,8 +106,8 @@ def current_generation_queryset(user, *, generation=None):
     COMMITTED or REPEATABLE READ without extra locks (used when there is no
     already-read state to pin to). Returns ``none()`` when the user has no
     ``UserPreference`` (preserving today's "no preferences -> no matches"
-    behavior) or has no committed generation yet. Excludes dismissed rows
-    and inactive listings.
+    behavior) or has no committed generation yet. Excludes dismissed rows,
+    inactive listings and hidden employers.
     """
     if user is None or getattr(user, "pk", None) is None:
         return JobMatch.objects.none()
@@ -105,9 +121,9 @@ def current_generation_queryset(user, *, generation=None):
         )
     return (
         JobMatch.objects.filter(
+            presentable_match_q(),
             user=user,
             dismissed=False,
-            listing__status=JobListing.Status.ACTIVE,
             result_generation=result_generation,
         )
         .select_related("listing", "organization")
