@@ -1676,12 +1676,14 @@ class RolloutDocReleaseSectionTests(SimpleTestCase):
             "Populate a phase's credential first",
         ):
             self.assertIn(phrase, opening)
+        self.assertNotIn("The deploy workflow now fails", rule)
         for stale in ("not currently safe", "which is open", "until #555 is fixed"):
             self.assertNotIn(stale, rule)
         for phrase in (
             "makes `GET /healthz/ready/` return **503**",
             "**new web pods never become Ready**",
-            "**The deploy workflow now fails**",
+            "usually replaces none, so the run stays green with the flag on and the key blank",
+            "Do not read a green run as proof",
             "Never put a credential in a ConfigMap or in the repository",
             "**Procedure.**",
             "an approving review is not the sign-off",

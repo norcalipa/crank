@@ -185,9 +185,11 @@ procedure and the post-merge check.
 
 ## Production override and rollback
 
-The checked-in organization schedule is `0 */6 * * *`. Override
-`ORGANIZATION_CRAWL_CRON` in deployment configuration, then update the CronJob
-`spec.schedule` explicitly; Kubernetes does not interpolate Django environment
+The checked-in organization schedule is `0 */6 * * *`. Override it by a
+commit: change `ORGANIZATION_CRAWL_CRON` in `k8s/crank-agent-config.yml` and
+the CronJob `spec.schedule` in `k8s/crank-crawl-cron.yaml` together. Both
+files are re-applied on every deploy, so a schedule edited only in the
+cluster is reverted. Kubernetes does not interpolate Django environment
 variables into a CronJob schedule. Keep `concurrencyPolicy: Forbid`, the
 database-backed `crawl_schedule` singleton guard, source limits, and deadline
 guardrails. (The former `JOB_CRAWL_CRON` override is obsolete: job freshness is
@@ -198,11 +200,11 @@ To pause without deleting resources, disable the database `CapabilitySwitch`
 ingestion) in Django admin: it takes effect on the next run and no deploy
 overwrites it. Then make the pause durable in the repository: commit
 `spec.suspend: true` in `k8s/crank-crawl-cron.yaml` and/or
-`CRAWL_CRON_ENABLED: "false"` (`JOB_PIPELINE_ENABLED: "false"` for job
+`deploy/cronjob-job-pipeline.yaml` and/or `CRAWL_CRON_ENABLED: "false"` (`JOB_PIPELINE_ENABLED: "false"` for job
 ingestion) in `k8s/crank-agent-config.yml`; the command then exits without
 claiming work. A `kubectl patch` or flag edit made only in the cluster is
-reverted by the next deploy, except on `crank-job-pipeline`, whose manifest
-is not re-applied. When reverting flags, leave the master flag
+reverted by the next deploy, on `crank-job-pipeline` as on the other
+CronJobs. When reverting flags, leave the master flag
 `AGENT_RUN_ENABLED` until every flag that depends on it is `"false"`: with
 `CRAWL_CRON_ENABLED` or `JOB_PIPELINE_ENABLED` still true and the master flag
 off, `GET /healthz/ready/` returns 503 and new web pods fail their readiness

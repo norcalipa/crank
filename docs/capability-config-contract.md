@@ -53,9 +53,10 @@ dropping the others and keeps the value off the command line and out of
 shell history. Never use `kubectl apply` on this Secret, and never put a
 credential in a ConfigMap or in the repository.
 
-1. Write a merge patch to a private file. The value is base64-encoded in
-   `data`; type it into your editor or pipe it from a password manager, not
-   onto a command line:
+1. Write a merge patch to a private file. Write the plain value under
+   `stringData` (Kubernetes encodes it; do not base64-encode it yourself).
+   Type it into your editor or pipe it from a password manager, not onto a
+   command line:
 
    ```sh
    umask 077
@@ -96,7 +97,6 @@ credential in a ConfigMap or in the repository.
 | Migration Job | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Agent No-op CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Crawl Organizations CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
-| Crawl Jobs CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Healthcheck CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Gather Scores CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Job Pipeline CronJob (`deploy/cronjob-job-pipeline.yaml`) | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
@@ -111,7 +111,7 @@ deterministic order:
 2. ConfigMaps (`crank-config`, `crank-agent-config`)
 3. Secrets (`db-connect-credentials` out-of-band, `crank-capability-secrets` created only if absent, never overwritten)
 4. Migration Job (wait for completion)
-5. CronJobs (agent-noop, crawl-organizations, crawl-jobs, healthcheck, gather-scores, and from `deploy/` job-pipeline and match-recompute; all apply with the image tag of the deploy)
+5. CronJobs (agent-noop, crawl-organizations, healthcheck, gather-scores, and from `deploy/` job-pipeline and match-recompute; all apply with the image tag of the deploy)
 6. Web Deployment, then `rollout status deployment/crank --timeout=300s`; the run fails, with diagnostics, if the new pods do not become Ready
 
 ## Fail-Closed Readiness

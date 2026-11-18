@@ -73,6 +73,13 @@ spec:
                     name: crank-capability-secrets
           imagePullSecrets:
             - name: ghcr-credentials
+          # `fats` is the k3s host (192.168.0.10) that runs MySQL on :3306; it is
+          # not a Kubernetes Service, so inject it into /etc/hosts (same as
+          # k8s/crank-cronjob.yml).
+          hostAliases:
+            - ip: "192.168.0.10"
+              hostnames:
+                - "fats"
           volumes:
             - name: tmp
               emptyDir: {}

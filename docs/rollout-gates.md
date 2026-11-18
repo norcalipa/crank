@@ -376,7 +376,7 @@ which also holds the single list of
 | Capabilities reported by production | `interactive_agent`, `job_pipeline` and `crawl` each `enabled: false`; `all_ok: true`; `pending_migrations: 0`. Observed twice on 2026-10-06, at 15:50:56Z and 16:31:54Z. | Public readiness endpoint, `GET https://crank.fyi/healthz/ready/` (read-only) |
 | Flags and CronJobs are re-applied on every deploy | `k8s/crank-agent-config.yml` (every capability flag `"false"`) and the CronJob manifests `k8s/crank-cronjob.yml`, `k8s/crank-crawl-cron.yaml`, `k8s/crank-healthcheck-cron.yaml` and `k8s/cron-gather-scores.yml` (the last three `suspend: true`) are applied with `kubectl apply` by both deploy workflows. | `.github/workflows/deploy-home.yml` (runs after every successful `Build Image` on `main`) and `.github/workflows/update-home-deployment.yml` (runs when one of those manifests changes on `main`) |
 | Capability credentials survive a deploy | Both deploy workflows look the Secret up (`get secret crank-capability-secrets -o name --ignore-not-found`, a separate assignment so a `kubectl` error stops the deploy) and run `create secret generic` with five empty literals (`LLM_API_KEY`, `YELP_API_KEY`, `USAJOBS_AUTH_KEY`, `USAJOBS_USER_AGENT_EMAIL`, `FIRECRAWL_API_KEY`) only when it is absent. An existing Secret is never written: no `apply`, `replace` or `create -f`. Operators populate it with "Populate or rotate a credential" in `docs/capability-config-contract.md`. Fixed by [#555](https://github.com/norcalipa/crank/issues/555); before that fix every run replaced the values with empty strings. | `.github/workflows/deploy-home.yml` and `.github/workflows/update-home-deployment.yml`, step "Deploy to Kubernetes"; `crank/tests/test_deploy_workflows.py` |
-| The readiness probe fails on an enabled, unconfigured capability | `GET /healthz/ready/` returns HTTP 503 `not_ready` whenever the capability report is not `all_ok`, for example `INTERACTIVE_AGENT_ENABLED` true with an empty `LLM_API_KEY`, or `JOB_PIPELINE_ENABLED` or `CRAWL_CRON_ENABLED` true with `AGENT_RUN_ENABLED` false. That endpoint is the web Deployment's `readinessProbe`. Neither deploy workflow waits for the rollout. | `crank/views/health.py`, `crank/capability.py`, `k8s/crank.yml`; `crank/tests/test_release_decision_gates.py` runs the endpoint in both configurations |
+| The readiness probe fails on an enabled, unconfigured capability | `GET /healthz/ready/` returns HTTP 503 `not_ready` whenever the capability report is not `all_ok`, for example `INTERACTIVE_AGENT_ENABLED` true with an empty `LLM_API_KEY`, or `JOB_PIPELINE_ENABLED` or `CRAWL_CRON_ENABLED` true with `AGENT_RUN_ENABLED` false. That endpoint is the web Deployment's `readinessProbe`. Both deploy workflows wait for the rollout (`rollout status deployment/crank --timeout=300s`; the run fails on timeout), but only for pods the deploy replaces: a manifest-only deploy usually replaces none, so enablement is verified by the step-5 restart and readiness check, not by a green run. | `crank/views/health.py`, `crank/capability.py`, `k8s/crank.yml`; `crank/tests/test_release_decision_gates.py` runs the endpoint in both configurations |
 | The job-pipeline and match-recompute CronJobs are created by every deploy | `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`) and `deploy/cronjob-match-recompute.yaml` (`crank-match-recompute`) are copied and applied by both workflows after the `k8s/` CronJobs, with the image tag substituted for `${GITHUB_SHA}` (the built commit from `deploy-home`, `latest` from `update-home-deployment`). Both stay `suspend: true`, and their `envFrom` ends with `crank-capability-secrets`. Fixed by #555. | the two files; `grep -n deploy/ .github/workflows/*.yml` |
 | Staging | The repository defines no staging deployment: `crank/settings/staging.py` and `seed_staging_baseline` exist, but no manifest, workflow or compose file names a staging environment. Whether one exists outside the repository is not known from the repository. | `grep -rn staging k8s deploy .github docker-compose.yml` returns nothing |
 
@@ -389,8 +389,10 @@ reported afterwards.
 **Durable enablement of a capability is done by a pull request that commits
 the flag. Credentials live in the `crank-capability-secrets` Secret, which
 deploys never overwrite ([#555](https://github.com/norcalipa/crank/issues/555),
-fixed), and every deploy waits for the web rollout and fails if the new pods
-do not become Ready.** Populate a phase's credential first, with "Populate or
+fixed), and every deploy waits for the web rollout for the pods it replaces.**
+A manifest-only deploy usually replaces no web pod, so a green run is not
+proof that an enablement works: verify it with the restart, `rollout status`
+and `/healthz/ready/` check in step 5 of the procedure. Populate a phase's credential first, with "Populate or
 rotate a credential" in `docs/capability-config-contract.md`, then merge the
 enablement pull request.
 
@@ -411,9 +413,14 @@ its key still empty:
   `LLM_API_KEY` makes `GET /healthz/ready/` return **503**. That endpoint is
   the web readiness probe, so **new web pods never become Ready**. The old
   pods keep serving the old image and the old flags for as long as they
-  live; any pod recreated later starts NotReady. **The deploy workflow now
-  fails** (`rollout status deployment/crank --timeout=300s` times out and
-  prints `describe`, the pods and the last events), so this is visible.
+  live; any pod recreated later starts NotReady. The deploy workflow fails
+  (`rollout status deployment/crank --timeout=300s` times out and prints
+  `describe`, the pods and the last events) only when the deploy itself
+  replaces web pods, for example a build deploy with a new image tag. An
+  enablement pull request touches only `k8s/` or `deploy/` and usually
+  replaces none, so the run stays green with the flag on and the key blank.
+  Do not read a green run as proof: use the step-5 restart, `rollout status`
+  and `/healthz/ready/` check.
 - **`job_source`, `organization_crawl`, `score_source`.** Their source
   credentials (`USAJOBS_AUTH_KEY`, `USAJOBS_USER_AGENT_EMAIL`,
   `FIRECRAWL_API_KEY`, `YELP_API_KEY`) are not checked by the readiness
@@ -428,7 +435,7 @@ work: `crank-capability-secrets` is last in `envFrom` and overrides the
 ConfigMap value).
 
 **Procedure.** Credentials survive a deploy and the deploy waits for the
-rollout.
+rollout of the pods it replaces.
 
 1. One pull request per capability changes that capability's flag in
    `k8s/crank-agent-config.yml` and, where the phase has a CronJob in `k8s/`,
@@ -466,10 +473,11 @@ rollout.
       `kubectl -n crank rollout restart deployment/crank`.
    2. Wait for the rollout:
       `kubectl -n crank rollout status deployment/crank --timeout=300s`. The
-      deploy workflow runs the same wait, so a red run means the new pods are
-      failing their readiness probe; go to step 4. The restart is still
-      needed, because the deploy replaces no pod when only a ConfigMap
-      changed.
+      deploy workflow runs the same wait, but only for pods it replaces. A red
+      run means new pods are failing their readiness probe; go to step 4. A
+      green run proves nothing about this enablement, because the deploy
+      replaces no pod when only a ConfigMap changed. The restart and this
+      wait are the verification.
    3. `GET https://crank.fyi/healthz/ready/` must return **HTTP 200** with
       `"status": "ready"` and `"all_ok": true`, and the capability's entry
       must show both `"enabled": true` and `"ok": true`. `enabled: true`

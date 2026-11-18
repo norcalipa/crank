@@ -80,7 +80,53 @@ def rollout_problems(text):
         for i, line in enumerate(lines)
         if re.search(r"rollout status deployment/crank --timeout=\d+s", line)
     ]
-    return [] if any(i > applied[-1] for i in waits) else ["no rollout status after the apply"]
+    if not any(i > applied[-1] for i in waits):
+        return ["no rollout status after the apply"]
+    problems = []
+    for i in waits:
+        if i <= applied[-1]:
+            continue
+        if not re.fullmatch(r"if ! (?:k3s )?kubectl [^|;&]*rollout status deployment/crank --timeout=\d+s; then", lines[i]):
+            problems.append(f"the rollout wait is not the condition of an `if !`: {lines[i]}")
+            continue
+        block = []
+        for line in lines[i + 1:]:
+            if line == "fi":
+                break
+            block.append(line)
+        else:
+            problems.append("the rollout wait block is not closed by `fi`")
+            continue
+        if not block or block[-1] != "exit 1":
+            problems.append("a failed rollout wait does not end in `exit 1`")
+    return problems
+
+
+def secret_manifest_problems(text):
+    """(f) No line applies, replaces or creates from the Secret manifest."""
+    return [
+        line
+        for line in logical_lines(text)
+        if re.search(r"crank-capability-secrets\.ya?ml", line)
+        and re.search(r"\b(apply|replace|create|patch)\b", line)
+        and not line.startswith("scp ")
+    ]
+
+
+def trigger_path_problems(workflow_text, build_text, manifests):
+    """(g) A deploy/ CronJob edit triggers the deploy, and builds no image."""
+    problems = []
+    on = yaml.safe_load(workflow_text).get(True) or {}
+    paths = ((on.get("push") or {}).get("paths")) or []
+    if "deploy/**" not in paths:
+        problems += [
+            f"on.push.paths lacks deploy/{m}" for m in manifests if f"deploy/{m}" not in paths
+        ]
+    build = yaml.safe_load(build_text).get(True) or {}
+    ignored = ((build.get("push") or {}).get("paths-ignore")) or []
+    if "deploy/**" not in ignored:
+        problems.append("build-image.yml does not ignore deploy/**")
+    return problems
 
 
 def deploy_cronjob_problems(manifests, texts):
@@ -100,6 +146,28 @@ def _pod_specs(document):
     if document.get("kind") == "CronJob":
         spec = ((spec.get("jobTemplate") or {}).get("spec")) or {}
     return ((spec.get("template") or {}).get("spec")) or {}
+
+
+def hostalias_problems(documents):
+    """(h) A pod that loads the ConfigMap with DB_HOST=fats maps fats to the k3s host."""
+    problems = []
+    for document in documents:
+        if not isinstance(document, dict) or document.get("kind") not in ("CronJob", "Job"):
+            continue
+        pod = _pod_specs(document)
+        loads = any(
+            (r.get("configMapRef") or {}).get("name") == "crank-config"
+            for c in (pod.get("containers") or [])
+            for r in (c.get("envFrom") or [])
+        )
+        aliases = {
+            host: alias.get("ip")
+            for alias in (pod.get("hostAliases") or [])
+            for host in (alias.get("hostnames") or [])
+        }
+        if loads and aliases.get("fats") != "192.168.0.10":
+            problems.append((document.get("metadata") or {}).get("name"))
+    return problems
 
 
 def envfrom_problems(documents):
@@ -126,6 +194,11 @@ def _manifest_documents():
         for path in sorted((REPO_ROOT / folder).glob("*.y*ml")):
             documents += [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8")) if d]
     return documents
+
+
+# Pre-existing k8s/ CronJobs that load crank-config without the fats hostAliases.
+# Not changed by #555; tracked as a follow-up. Remove a name when its manifest is fixed.
+HOSTALIASES_FOLLOW_UP = {"crank-crawl-organizations", "crank-healthcheck", "crank-gather-scores"}
 
 
 def _deploy_cronjobs():
@@ -155,6 +228,16 @@ class DeployWorkflowLintTests(SimpleTestCase):
                 self.assertIn("create secret generic crank-capability-secrets", text)
         self.assertEqual(deploy_cronjob_problems(_deploy_cronjobs(), texts), [])
         self.assertEqual(envfrom_problems(_manifest_documents()), [])
+        build = _workflow("build-image.yml")
+        for name, text in texts.items():
+            with self.subTest(workflow=name, rule="secret manifest"):
+                self.assertEqual(secret_manifest_problems(text), [])
+        self.assertEqual(
+            trigger_path_problems(texts["update-home-deployment.yml"], build, _deploy_cronjobs()), []
+        )
+        self.assertEqual(
+            set(hostalias_problems(_manifest_documents())), HOSTALIASES_FOLLOW_UP
+        )
 
     def test_the_deploy_cronjobs_are_found(self):
         self.assertEqual(
@@ -207,6 +290,25 @@ class DeployWorkflowLintTests(SimpleTestCase):
             with self.subTest(workflow=name):
                 self.assertTrue(rollout_problems(stripped))
         self.assertEqual(rollout_problems("echo nothing\n"), ["crank.yml is not applied"])
+        for name in WORKFLOWS:
+            text = _workflow(name)
+            ignored = text.replace(
+                "if ! k3s kubectl -n crank rollout status deployment/crank --timeout=300s; then",
+                "k3s kubectl -n crank rollout status deployment/crank --timeout=300s || true\nif false; then",
+            )
+            no_exit = text.replace("            exit 1\n          fi\n          EOF", "            true\n          fi\n          EOF")
+            for label, mutated in (("|| true", ignored), ("no exit 1", no_exit)):
+                with self.subTest(workflow=name, mutation=label):
+                    self.assertNotEqual(mutated, text)
+                    self.assertTrue(rollout_problems(mutated))
+        unclosed = "envsubst < /tmp/crank.yml | k3s kubectl apply -f -\nif ! k3s kubectl rollout status deployment/crank --timeout=1s; then\nexit 1\n"
+        self.assertEqual(rollout_problems(unclosed), ["the rollout wait block is not closed by `fi`"])
+        early_and_late = (
+            "if ! k3s kubectl rollout status deployment/crank --timeout=1s; then\nexit 1\nfi\n"
+            "envsubst < /tmp/crank.yml | k3s kubectl apply -f -\n"
+            "if ! k3s kubectl rollout status deployment/crank --timeout=1s; then\nexit 1\nfi\n"
+        )
+        self.assertEqual(rollout_problems(early_and_late), [])
         before = "k3s kubectl -n crank rollout status deployment/crank --timeout=1s\nenvsubst < /tmp/crank.yml | k3s kubectl apply -f -\n"
         self.assertTrue(rollout_problems(before))
 
@@ -246,3 +348,45 @@ class DeployWorkflowLintTests(SimpleTestCase):
             ]}}},
         }
         self.assertEqual(envfrom_problems([solo]), ["x/c"])
+
+    # (f)
+    def test_applying_the_secret_manifest_is_flagged(self):
+        for name in WORKFLOWS:
+            text = _workflow(name)
+            for line in (
+                "envsubst < /tmp/crank-capability-secrets.yml | k3s kubectl apply -f -",
+                "k3s kubectl apply -f /tmp/crank-capability-secrets.yml",
+                "k3s kubectl replace -f k8s/crank-capability-secrets.yml",
+            ):
+                with self.subTest(workflow=name, line=line):
+                    self.assertTrue(secret_manifest_problems(text + "\n" + line + "\n"))
+
+    # (g)
+    def test_a_dropped_trigger_path_is_flagged(self):
+        text = _workflow("update-home-deployment.yml")
+        build = _workflow("build-image.yml")
+        manifests = _deploy_cronjobs()
+        for manifest in manifests:
+            mutated = text.replace(f"      - 'deploy/{manifest}'\n", "")
+            with self.subTest(removed=manifest):
+                self.assertNotEqual(mutated, text)
+                self.assertTrue(trigger_path_problems(mutated, build, manifests))
+        mutated = build.replace("      - 'deploy/**'\n", "")
+        self.assertNotEqual(mutated, build)
+        self.assertEqual(
+            trigger_path_problems(text, mutated, manifests), ["build-image.yml does not ignore deploy/**"]
+        )
+        wildcard = text.replace("      - 'deploy/cronjob-job-pipeline.yaml'\n", "      - 'deploy/**'\n")
+        self.assertEqual(trigger_path_problems(wildcard, build, manifests), [])
+
+    # (h)
+    def test_a_cronjob_without_the_fats_host_alias_is_flagged(self):
+        documents = _manifest_documents()
+        for document in documents:
+            pod = _pod_specs(document) if isinstance(document, dict) else {}
+            if document.get("kind") in ("CronJob", "Job") and pod.get("hostAliases"):
+                pod["hostAliases"][0]["ip"] = "10.0.0.10"
+        self.assertTrue(
+            {"crank-job-pipeline", "crank-match-recompute"} <= set(hostalias_problems(documents))
+        )
+        self.assertEqual(hostalias_problems([None, {"kind": "Namespace"}]), [])

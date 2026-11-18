@@ -27,9 +27,13 @@ across deploys ([#555](https://github.com/norcalipa/crank/issues/555)):
   `deploy/cronjob-job-pipeline.yaml`, suspended, with the image tag of that
   deploy and `crank-capability-secrets` in `envFrom` (step 7).
 
-Every deploy now waits for the web rollout and fails the run if the new pods
-do not become Ready, so a flag committed while its credential is blank shows
-as a failed deploy rather than a green one.
+Every deploy waits for the web rollout of the pods it replaces. A manifest-only
+enablement usually replaces none, so a green run does not show that the phase
+works. This phase's readiness check covers only `AGENT_RUN_ENABLED`
+(`_job_pipeline_status` in `crank/capability.py`), so a blank `FIRECRAWL_API_KEY`
+or `USAJOBS_AUTH_KEY` never fails readiness, even after a restart: the
+source returns no data until the key is in the Secret. Populate the keys
+first (step 3) and verify with the smoke job.
 
 ## Prerequisites
 
