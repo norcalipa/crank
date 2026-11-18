@@ -318,6 +318,13 @@ function sessionExpired(res: Response, signInUrl: string): boolean {
  */
 const LOAD_FAILED_MESSAGE = 'We couldn’t load your job matches. Please try again.';
 const REFRESH_FAILED_MESSAGE = 'We couldn’t refresh your job matches.';
+// Statuses that explain themselves without the ranked list: a failed ranked
+// read there still shows the status empty state (issue #609). Any other or
+// unknown state needs the list, so a failed ranked read is an error.
+const PREREQUISITE_STATES = new Set([
+    'no_source', 'source_disabled', 'crawl_running', 'crawl_failed',
+    'crawl_stale', 'crawl_empty', 'no_preferences',
+]);
 
 async function parseJson<T>(res: Response): Promise<T> {
     try {
@@ -1127,7 +1134,6 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [emptyState, setEmptyState] = React.useState<EmptyStatePayload | null>(null);
     const [matchCount, setMatchCount] = React.useState<number>(0);
     const [rankedMatches, setRankedMatches] = React.useState<RankedMatchesPayload | null>(null);
-    const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
     // Revision block of the persisted result list (/api/job-matches/), which is
     // the only surface that can flag a stale result (the ranked endpoint is
     // recomputed live and is never stale).
@@ -1265,7 +1271,6 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             anchorRef.current = captureAnchor();
         }
         setKeptNote(null);
-        setErrorMsg(null);
         const readAll = async () => {
             const [statusRes, matchRes, rankedRes] = await Promise.all([
                 fetch('/api/job-matches/status/', {signal: request.signal}),
@@ -1289,6 +1294,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 throw new Error(LOAD_FAILED_MESSAGE);
             }
             const statusData: EmptyStatePayload = await parseJson(statusRes);
+            // A failed ranked read says nothing about whether matches exist:
+            // never present it as "No matches" or a count-only view (#609).
+            if (!rankedRes.ok && !PREREQUISITE_STATES.has(statusData.state)) {
+                throw new Error(LOAD_FAILED_MESSAGE);
+            }
             let matchData: {count?: number; results?: RankedJobMatch[]} | null = null;
             if (matchRes.ok) {
                 matchData = await parseJson<{count?: number; results?: RankedJobMatch[]}>(matchRes);
@@ -1423,8 +1433,6 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             }
             // Only the panel's own sentences are shown; a dropped connection
             // would otherwise print the browser's wording.
-            setErrorMsg(e instanceof Error && (e.message === LOAD_FAILED_MESSAGE || e.message === REFRESH_FAILED_MESSAGE)
-                ? e.message : LOAD_FAILED_MESSAGE);
             setPhase('error');
         }
     }, [authed, clearShownResults, setRefreshFailed, setRefreshRunning, signInUrl]);
@@ -1792,8 +1800,15 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         return (
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
-                <div className="card-header">
+                <div className="card-header d-flex justify-content-between align-items-center">
                     <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
+                    {/* Kept in every state so the header never changes height;
+                        disabled while the first read is in flight. */}
+                    <button type="button" className="btn btn-sm btn-outline-light job-match-refresh-loading" disabled aria-busy="true"
+                            aria-label="Refresh match status" title="Refresh match status"
+                            data-testid="job-match-refresh">
+                        <Icon name="spinner" />
+                    </button>
                 </div>
                 <div className="card-body">
                     <div role="status" aria-live="polite" data-testid="job-match-loading">
@@ -1819,19 +1834,27 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         return (
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
-                <div className="card-header">
+                <div className="card-header d-flex justify-content-between align-items-center">
                     <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
+                    <button type="button" className="btn btn-sm btn-outline-light" onClick={fetchStatus}
+                            aria-label="Refresh match status" title="Refresh match status"
+                            data-testid="job-match-refresh">
+                        <Icon name="refresh-cw" />
+                    </button>
                 </div>
                 <div className="card-body">
-                    <div className="alert alert-danger" role="alert" data-testid="job-match-error">
-                        {errorMsg || 'We couldn’t load your job matches. Please try again.'}
-                        <div className="mt-2">
-                            <button type="button" className="btn btn-sm btn-primary"
-                                    onClick={fetchStatus} aria-label="Retry loading matches">
-                                <Icon name="refresh-cw" className="me-1" />Try again
-                            </button>
+                    <div className="alert alert-danger job-match-error-alert d-flex align-items-start gap-2"
+                         role="alert" data-testid="job-match-error">
+                        <Icon name="alert-triangle" size={20} className="job-match-error-icon" />
+                        <div>
+                            <h3 className="job-match-error-heading mb-1">Couldn’t load your matches</h3>
+                            <p className="job-match-error-body mb-0">Your saved requirements are unchanged.</p>
                         </div>
                     </div>
+                    <button type="button" className="btn btn-sm btn-primary job-match-error-retry"
+                            onClick={fetchStatus} aria-label="Retry loading matches">
+                        <Icon name="refresh-cw" />Try again
+                    </button>
                 </div>
                 {readAnnouncer}
                 {recheckAnnouncer}

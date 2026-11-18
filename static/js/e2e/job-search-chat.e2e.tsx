@@ -229,6 +229,18 @@ function stubPanelApis(stateKey: string): void {
         )) as typeof fetch;
         return;
     }
+    if (stateKey === 'ranked_unavailable') {
+        // Status says no_matches and the list is empty, but the ranked read fails (issue #609).
+        window.fetch = ((input: RequestInfo | URL): Promise<Response> => {
+            const url = typeof input === 'string' ? input : input.toString();
+            const status = url.includes('/api/job-matches/ranked/') ? 503 : 200;
+            const body = url.includes('/api/job-matches/status/') ? PANEL_STATUS_PAYLOADS.no_matches
+                : url.includes('/api/job-matches/ranked/') ? {error: 'unavailable'}
+                    : {count: 0, next: null, previous: null, results: []};
+            return Promise.resolve(new Response(JSON.stringify(body), {status, headers: {'Content-Type': 'application/json'}}));
+        }) as typeof fetch;
+        return;
+    }
     const status = stateKey === 'stale'
         ? PANEL_STATUS_PAYLOADS.healthy
         : stateKey === 'org_ties' || stateKey === 'org_per_job_only'
