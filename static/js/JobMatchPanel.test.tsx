@@ -149,6 +149,8 @@ describe('JobMatchPanel', () => {
             expect(refresh).toHaveAttribute('aria-label', 'Refresh match status');
             expect(refresh).toHaveAttribute('title', 'Refresh match status');
             expect(refresh.querySelector('svg')).toHaveAttribute('data-icon', 'spinner');
+            // Scoped class that styles the spinner like the inline one.
+            expect(refresh).toHaveClass('job-match-refresh-loading');
         });
     });
 
@@ -173,7 +175,12 @@ describe('JobMatchPanel', () => {
             render(<JobMatchPanel/>);
             const error = await screen.findByTestId('job-match-error');
             // Only the panel's own sentences are shown, never the browser's (issue #485).
-            expect(error).toHaveTextContent('Something went wrong while loading. Your saved requirements are unchanged.');
+            expect(error).toHaveTextContent('Your saved requirements are unchanged.');
+            expect(error).not.toHaveTextContent('Something went wrong');
+            expect(error.querySelector('.job-match-error-body')).not.toBeNull();
+            const retry = screen.getByRole('button', {name: 'Retry loading matches'});
+            expect(retry).toHaveClass('job-match-error-retry');
+            expect(retry.querySelector('svg')).not.toHaveClass('me-1');
             expect(error).not.toHaveTextContent('Network down');
         });
 
@@ -181,7 +188,7 @@ describe('JobMatchPanel', () => {
             (global.fetch as jest.Mock).mockRejectedValue(new TypeError('Failed to fetch'));
             render(<JobMatchPanel/>);
             const error = await screen.findByTestId('job-match-error');
-            expect(error).toHaveTextContent('Something went wrong while loading. Your saved requirements are unchanged.');
+            expect(error).toHaveTextContent('Your saved requirements are unchanged.');
             expect(error).not.toHaveTextContent('Failed to fetch');
         });
 
@@ -209,7 +216,7 @@ describe('JobMatchPanel', () => {
             const alert = await screen.findByTestId('job-match-error');
             expect(alert).toHaveAttribute('role', 'alert');
             expect(within(alert).getByRole('heading', {name: 'Couldn’t load your matches'})).toBeInTheDocument();
-            expect(alert).toHaveTextContent('Something went wrong while loading. Your saved requirements are unchanged.');
+            expect(alert).toHaveTextContent('Your saved requirements are unchanged.');
             const icon = alert.querySelector('svg');
             expect(icon).toHaveAttribute('aria-hidden', 'true');
             expect(icon).toHaveAttribute('width', '20');
@@ -458,7 +465,7 @@ describe('JobMatchPanel', () => {
 
         test('a failed ranked read is an error, not the count-only view (#609)', async () => {
             await renderPanel('ok', { count: 3, rankedStatus: 500 });
-            expect(screen.getByTestId('job-match-error')).toHaveTextContent('Something went wrong while loading. Your saved requirements are unchanged.');
+            expect(screen.getByTestId('job-match-error')).toHaveTextContent('Your saved requirements are unchanged.');
             expect(screen.getByTestId('job-match-panel')).not.toHaveTextContent('ready to review');
         });
 

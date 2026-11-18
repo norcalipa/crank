@@ -1804,7 +1804,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                     {/* Kept in every state so the header never changes height;
                         disabled while the first read is in flight. */}
-                    <button type="button" className="btn btn-sm btn-outline-light" disabled aria-busy="true"
+                    <button type="button" className="btn btn-sm btn-outline-light job-match-refresh-loading" disabled aria-busy="true"
                             aria-label="Refresh match status" title="Refresh match status"
                             data-testid="job-match-refresh">
                         <Icon name="spinner" />
@@ -1848,12 +1848,12 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                         <Icon name="alert-triangle" size={20} className="job-match-error-icon" />
                         <div>
                             <h3 className="job-match-error-heading mb-1">Couldn’t load your matches</h3>
-                            <p className="mb-0">Something went wrong while loading. Your saved requirements are unchanged.</p>
+                            <p className="job-match-error-body mb-0">Your saved requirements are unchanged.</p>
                         </div>
                     </div>
-                    <button type="button" className="btn btn-sm btn-primary"
+                    <button type="button" className="btn btn-sm btn-primary job-match-error-retry"
                             onClick={fetchStatus} aria-label="Retry loading matches">
-                        <Icon name="refresh-cw" className="me-1" />Try again
+                        <Icon name="refresh-cw" />Try again
                     </button>
                 </div>
                 {readAnnouncer}
