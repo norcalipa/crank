@@ -24,7 +24,6 @@ from crank.agents.jobs.matching import (
     reasons_from_requirements,
 )
 from crank.empty_state import NO_MATCHES, derive_state
-from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
 from crank.services import company_evidence, match_recompute, match_results, monitoring
@@ -208,9 +207,9 @@ def _reads_context(user):
         return JobMatch.objects.none(), None
     live = (
         JobMatch.objects.filter(
+            match_results.presentable_match_q(),
             user=user,
             dismissed=False,
-            listing__status=JobListing.Status.ACTIVE,
         )
         .select_related("listing", "organization")
         .order_by("-score", "id")
@@ -254,9 +253,9 @@ def job_match_detail(request, match_id):
         raise Http404
     match = get_object_or_404(
         JobMatch.objects.select_related("listing", "organization"),
+        match_results.presentable_match_q(),
         pk=match_id,
         user=request.user,
-        listing__status=JobListing.Status.ACTIVE,
     )
     return JsonResponse(_match_payload(match, detail=True, user=request.user))
 
@@ -278,9 +277,9 @@ def job_match_seen(request, match_id):
         raise Http404
     match = get_object_or_404(
         JobMatch.objects.select_related("listing", "organization"),
+        match_results.presentable_match_q(),
         pk=match_id,
         user=request.user,
-        listing__status=JobListing.Status.ACTIVE,
     )
     # Always take the lock and run the idempotent all-version update, even
     # when the requested row already looks seen (issue #475 review round 2,
@@ -312,9 +311,9 @@ def job_match_dismiss(request, match_id):
         raise Http404
     match = get_object_or_404(
         JobMatch.objects.select_related("listing", "organization"),
+        match_results.presentable_match_q(),
         pk=match_id,
         user=request.user,
-        listing__status=JobListing.Status.ACTIVE,
     )
     # Always take the lock and run the idempotent all-version update, even
     # when the requested row already looks dismissed (issue #475 review
@@ -358,9 +357,9 @@ def _status_count(user):
     if match_results.read_enabled():
         rows = (
             JobMatch.objects.filter(
+                match_results.presentable_match_q(),
                 user=OuterRef("user"),
                 dismissed=False,
-                listing__status=JobListing.Status.ACTIVE,
                 result_generation=OuterRef("current_generation"),
             )
             .order_by()
@@ -378,7 +377,7 @@ def _status_count(user):
             generation, count = found
             return count, generation
     count = JobMatch.objects.filter(
-        user=user, dismissed=False, listing__status=JobListing.Status.ACTIVE
+        match_results.presentable_match_q(), user=user, dismissed=False
     ).count()
     return count, None
 

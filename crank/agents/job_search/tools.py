@@ -145,9 +145,9 @@ def default_organization_datasource(
     Import is deferred so importing this package never requires Django settings
     to be configured. Filters are already validated by the caller.
     """
-    from crank.models.organization import Organization
+    from crank.services.organization_visibility import visible_organizations
 
-    queryset = Organization.objects.filter(status=1, public=True)
+    queryset = visible_organizations()
     if filters.get("query"):
         queryset = queryset.filter(name__icontains=filters["query"])
     if filters.get("funding_round"):
@@ -398,10 +398,15 @@ def default_job_listing_datasource(
     to be configured. Filters are already validated by the caller.
     """
     from crank.models.job import JobListing
+    from crank.services.organization_visibility import visible_employer_q
 
     queryset = JobListing.objects.all()
     # The default manager already filters to active listings, but be explicit.
-    queryset = queryset.filter(status=JobListing.Status.ACTIVE)
+    # A listing linked to a hidden (inactive or non-public) organization never
+    # reaches the model, its citations or its job cards (issue #536).
+    queryset = queryset.filter(
+        visible_employer_q(), status=JobListing.Status.ACTIVE
+    )
     if filters.get("query"):
         queryset = queryset.filter(title__icontains=filters["query"])
     if filters.get("location"):
@@ -445,9 +450,10 @@ def default_job_listing_detail_datasource(
     settings to be configured.
     """
     from crank.models.job import JobListing
+    from crank.services.organization_visibility import visible_employer_q
 
     return JobListing.objects.filter(
-        id=listing_id, status=JobListing.Status.ACTIVE
+        visible_employer_q(), id=listing_id, status=JobListing.Status.ACTIVE
     ).first()
 
 

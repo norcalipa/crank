@@ -31,11 +31,12 @@ class Loaders:
 
 def _load_organizations(ids: list[int]) -> list[dict[str, Any]]:
     from crank.models.organization import Organization
+    from crank.services.organization_visibility import visible_organizations
 
     # Same visibility rule as the assistant catalog, match generation and
     # employer resolution: active and ``public=True``. (Publicly traded is a
     # separate fact: ``funding_round == "P"``.)
-    rows = Organization.objects.filter(status=1, public=True, id__in=ids)
+    rows = visible_organizations(Organization.objects.filter(id__in=ids))
     return tools.normalize_organization_rows(tools.attach_evidence_summaries(list(rows)))
 
 
@@ -43,8 +44,10 @@ def _load_listing(listing_id: int) -> dict[str, Any] | None:
     row = tools.default_job_listing_detail_datasource(listing_id)
     if row is None:
         return None
+    from crank.services.organization_visibility import is_visible_organization
+
     org = row.organization
-    if org is not None and not (org.status == 1 and org.public):
+    if org is not None and not is_visible_organization(org):
         return None
     return tools.normalize_job_listing_rows([row])[0]
 

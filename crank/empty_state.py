@@ -291,9 +291,9 @@ def _match_count(user) -> int:
     ).exists():
         return match_results.current_match_count(user)
     return JobMatch.objects.filter(
+        match_results.presentable_match_q(),
         user=user,
         dismissed=False,
-        listing__status=JobListing.Status.ACTIVE,
     ).count()
 
 

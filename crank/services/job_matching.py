@@ -42,6 +42,10 @@ from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
 from crank.models.job import JobListing
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
+from crank.services.organization_visibility import (
+    visible_employer_q,
+    visible_organizations,
+)
 
 #: Maximum number of results returned by the matching service.
 MAX_MATCH_RESULTS = 25
@@ -597,7 +601,7 @@ def relaxation_preview(
     capped = max(1, min(limit, MAX_MATCH_RESULTS))
     if queryset is None:
         queryset = JobListing.objects.select_related("organization").filter(
-            status=JobListing.Status.ACTIVE
+            visible_employer_q(), status=JobListing.Status.ACTIVE
         )
     listings = list(queryset[: capped * 4])  # same over-fetch as match_jobs
 
@@ -670,7 +674,7 @@ def match_jobs(
 
     if queryset is None:
         queryset = JobListing.objects.select_related("organization").filter(
-            status=JobListing.Status.ACTIVE
+            visible_employer_q(), status=JobListing.Status.ACTIVE
         )
     listings = list(queryset[:capped * 4])  # over-fetch before filtering
 
@@ -725,7 +729,7 @@ def match_organizations(
 
     capped = max(1, min(limit, MAX_MATCH_RESULTS))
     if queryset is None:
-        queryset = Organization.objects.filter(status=1, public=True)
+        queryset = visible_organizations()
     orgs = list(queryset[:capped * 4])
 
     org_ids = {int(org.pk) for org in orgs if getattr(org, "pk", None)}

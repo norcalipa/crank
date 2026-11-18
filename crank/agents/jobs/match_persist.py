@@ -39,6 +39,7 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
 from crank.services.company_evidence import resolve_field_evidence_for_orgs
+from crank.services.organization_visibility import visible_employer_q
 from crank.services.publication import data_watermark, listing_data_revisions
 
 logger = logging.getLogger(__name__)
@@ -100,11 +101,14 @@ def _preference_revision(user):
 def match_inventory(limit):
     """Active listings from approved+enabled sources, newest first, bounded.
 
+    Listings linked to a hidden organization are excluded (issue #536).
+
     Moved from ``crank.services.job_pipeline._active_listings`` (issue #475)
     so the pipeline and the recompute snapshot share one inventory query.
     """
     return list(
         JobListing.objects.filter(
+            visible_employer_q(),
             status=JobListing.Status.ACTIVE,
             source__approval_state=JobSourceCatalog.ApprovalState.APPROVED,
             source__enabled=True,
