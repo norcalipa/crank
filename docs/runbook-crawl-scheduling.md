@@ -176,7 +176,9 @@ procedure and the post-merge check.
    only the phase that has passed the smoke test. Unsuspend by a commit, never
    by `kubectl patch`, because every deploy re-applies the manifests and
    reverts a patch. For organization profiles commit `spec.suspend: false` in
-   `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`); for job sources
+   `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`, **but not until
+   https://github.com/norcalipa/crank/issues/615 is fixed**: that manifest
+   lacks `hostAliases` and `dnsConfig`); for job sources
    commit it in `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`).
    Neither path builds an image.
 

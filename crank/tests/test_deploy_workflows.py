@@ -102,15 +102,69 @@ def rollout_problems(text):
     return problems
 
 
+def ssh_heredoc(text):
+    """The ``(ssh line, body lines, closed)`` of the single ``ssh ... <<EOF`` heredoc."""
+    lines = logical_lines(text)
+    starts = [i for i, line in enumerate(lines) if line.startswith("ssh ") and "<<" in line]
+    if len(starts) != 1:
+        return None, [], False
+    body = []
+    for line in lines[starts[0] + 1:]:
+        if line == "EOF":
+            return lines[starts[0]], body, True
+        body.append(line)
+    return lines[starts[0]], body, False
+
+
+_WRITE_TARGET = re.compile(
+    r"\bkubectl\b.*\b(?:apply|replace|create|patch)\b.*?\s(?:-f|-k|--filename|--kustomize)[ =]+(\S+)"
+)
+
+
 def secret_manifest_problems(text):
-    """(f) No line applies, replaces or creates from the Secret manifest."""
-    return [
-        line
-        for line in logical_lines(text)
-        if re.search(r"crank-capability-secrets\.ya?ml", line)
-        and re.search(r"\b(apply|replace|create|patch)\b", line)
-        and not line.startswith("scp ")
-    ]
+    """(f) Nothing in the SSH heredoc can apply the Secret manifest.
+
+    Flags every logical line in the heredoc that names the manifest (a loop over
+    manifests spans several lines, so the verb may be on another one), every
+    apply from a directory or glob, and any non-``scp`` line elsewhere that
+    writes from the manifest.
+    """
+    _, body, _ = ssh_heredoc(text)
+    problems = []
+    for line in logical_lines(text):
+        named = re.search(r"crank-capability-secrets\.ya?ml", line)
+        if line in body and named:
+            problems.append(line)
+        elif (
+            named
+            and re.search(r"\b(apply|replace|create|patch)\b", line)
+            and not line.startswith("scp ")
+        ):
+            problems.append(line)
+        elif line in body:
+            target = _WRITE_TARGET.search(line)
+            if target:
+                path = target.group(1).strip("\"'")
+                if path != "-" and (not re.search(r"\.ya?ml$", path) or "*" in path):
+                    problems.append(line)
+    return list(dict.fromkeys(problems))
+
+
+def heredoc_problems(text):
+    """(i) The heredoc fails fast and its exit status reaches the step."""
+    head, body, closed = ssh_heredoc(text)
+    if head is None:
+        return ["there is not exactly one ssh heredoc"]
+    problems = []
+    if not head.endswith(" <<EOF"):
+        problems.append("the ssh line does not end in <<EOF")
+    if "||" in head or ";" in head:
+        problems.append("the ssh line masks its exit status")
+    if not body or body[0] != "set -euo pipefail":
+        problems.append("the heredoc does not start with `set -euo pipefail`")
+    if not closed:
+        problems.append("the heredoc is not closed by EOF")
+    return problems
 
 
 def trigger_path_problems(workflow_text, build_text, manifests):
@@ -149,7 +203,11 @@ def _pod_specs(document):
 
 
 def hostalias_problems(documents):
-    """(h) A pod that loads the ConfigMap with DB_HOST=fats maps fats to the k3s host."""
+    """(h) A pod that loads the ConfigMap with DB_HOST=fats maps fats to the k3s host.
+
+    It also needs ``dnsPolicy: ClusterFirst`` and ``dnsConfig`` with the public
+    resolvers, because in-cluster CoreDNS cannot resolve external names.
+    """
     problems = []
     for document in documents:
         if not isinstance(document, dict) or document.get("kind") not in ("CronJob", "Job"):
@@ -165,7 +223,9 @@ def hostalias_problems(documents):
             for alias in (pod.get("hostAliases") or [])
             for host in (alias.get("hostnames") or [])
         }
-        if loads and aliases.get("fats") != "192.168.0.10":
+        nameservers = (pod.get("dnsConfig") or {}).get("nameservers") or []
+        dns_ok = pod.get("dnsPolicy") == "ClusterFirst" and {"8.8.8.8", "1.1.1.1"} <= set(nameservers)
+        if loads and (aliases.get("fats") != "192.168.0.10" or not dns_ok):
             problems.append((document.get("metadata") or {}).get("name"))
     return problems
 
@@ -197,7 +257,8 @@ def _manifest_documents():
 
 
 # Pre-existing k8s/ CronJobs that load crank-config without the fats hostAliases.
-# Not changed by #555; tracked as a follow-up. Remove a name when its manifest is fixed.
+# Not changed by #555; tracked in https://github.com/norcalipa/crank/issues/615.
+# Remove a name when its manifest is fixed.
 HOSTALIASES_FOLLOW_UP = {"crank-crawl-organizations", "crank-healthcheck", "crank-gather-scores"}
 
 
@@ -223,6 +284,7 @@ class DeployWorkflowLintTests(SimpleTestCase):
         for name, text in texts.items():
             with self.subTest(workflow=name):
                 self.assertEqual(secret_write_problems(text), [])
+                self.assertEqual(heredoc_problems(text), [])
                 self.assertEqual(secret_guard_problems(text), [])
                 self.assertEqual(rollout_problems(text), [])
                 self.assertIn("create secret generic crank-capability-secrets", text)
@@ -360,6 +422,44 @@ class DeployWorkflowLintTests(SimpleTestCase):
             ):
                 with self.subTest(workflow=name, line=line):
                     self.assertTrue(secret_manifest_problems(text + "\n" + line + "\n"))
+            marker = "          k3s kubectl create namespace crank"
+            for label, extra in (
+                ("apply -f dir", "k3s kubectl apply -f /tmp/\n"),
+                ("apply -f k8s/", "k3s kubectl apply -f k8s/\n"),
+                ("apply -k", "k3s kubectl apply -k /tmp\n"),
+                ("apply glob", "k3s kubectl apply -f '/tmp/crank-*.yml'\n"),
+                (
+                    "multi-line loop",
+                    "for f in crank-configmap.yml crank-capability-secrets.yml; do\n"
+                    "  envsubst < /tmp/$f | k3s kubectl apply -f -\n"
+                    "done\n",
+                ),
+            ):
+                mutated = text.replace(marker, "          " + extra.replace("\n", "\n          ") + marker.lstrip(), 1)
+                with self.subTest(workflow=name, mutation=label):
+                    self.assertNotEqual(mutated, text)
+                    self.assertTrue(secret_manifest_problems(mutated))
+        self.assertEqual(secret_manifest_problems("echo hi\n"), [])
+
+    # (i)
+    def test_an_unpinned_heredoc_is_flagged(self):
+        for name in WORKFLOWS:
+            text = _workflow(name)
+            ssh_end = "${{ secrets.SSH_HOST }} <<EOF"
+            mutations = {
+                "no pipefail": text.replace("          set -euo pipefail\n", "", 1),
+                "pipefail not first": text.replace(
+                    "          set -euo pipefail\n", "          echo hi\n          set -euo pipefail\n", 1
+                ),
+                "|| true after heredoc": text.replace(ssh_end, ssh_end + " || true", 1),
+                "|| true before heredoc": text.replace(ssh_end, "${{ secrets.SSH_HOST }} || true <<EOF", 1),
+                "unclosed": text.replace("          EOF\n", "", 1),
+            }
+            for label, mutated in mutations.items():
+                with self.subTest(workflow=name, mutation=label):
+                    self.assertNotEqual(mutated, text)
+                    self.assertTrue(heredoc_problems(mutated))
+        self.assertEqual(heredoc_problems("echo\n"), ["there is not exactly one ssh heredoc"])
 
     # (g)
     def test_a_dropped_trigger_path_is_flagged(self):
@@ -390,3 +490,20 @@ class DeployWorkflowLintTests(SimpleTestCase):
             {"crank-job-pipeline", "crank-match-recompute"} <= set(hostalias_problems(documents))
         )
         self.assertEqual(hostalias_problems([None, {"kind": "Namespace"}]), [])
+
+    def test_a_cronjob_without_the_dns_config_is_flagged(self):
+        for label, mutate in (
+            ("no dnsConfig", lambda pod: pod.pop("dnsConfig")),
+            ("no dnsPolicy", lambda pod: pod.pop("dnsPolicy")),
+            ("wrong dnsPolicy", lambda pod: pod.update(dnsPolicy="Default")),
+            ("one nameserver", lambda pod: pod["dnsConfig"].update(nameservers=["8.8.8.8"])),
+        ):
+            documents = _manifest_documents()
+            for document in documents:
+                pod = _pod_specs(document) if isinstance(document, dict) else {}
+                if document.get("metadata", {}).get("name") in ("crank-job-pipeline", "crank-match-recompute"):
+                    mutate(pod)
+            with self.subTest(mutation=label):
+                self.assertTrue(
+                    {"crank-job-pipeline", "crank-match-recompute"} <= set(hostalias_problems(documents))
+                )

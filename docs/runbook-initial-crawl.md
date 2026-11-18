@@ -206,7 +206,10 @@ Leave `crank-crawl-organizations` suspended until organization-profile sources
 are separately seeded and smoke-tested. It is defined in
 `k8s/crank-crawl-cron.yaml`, which every deploy re-applies, so a
 `kubectl patch` on it lasts only until the next merge to `main`: unsuspend it
-by committing `spec.suspend: false` in that file.
+by committing `spec.suspend: false` in that file. **Do not unsuspend it until
+https://github.com/norcalipa/crank/issues/615 is fixed**: that manifest lacks
+the `fats` `hostAliases` and the `dnsPolicy`/`dnsConfig` block, so its pods
+cannot reach the database or external hosts.
 
 ## Step 8: enable recurring inventory monitoring
 
@@ -231,7 +234,9 @@ same: unsuspend only after the bootstrap is complete and the alerts are
 wired to a policy.
 
 Once the inventory exists and the owner has created the alert
-policy, commit `spec.suspend: false` in `k8s/crank-healthcheck-cron.yaml`.
+policy, commit `spec.suspend: false` in `k8s/crank-healthcheck-cron.yaml`. **Do not
+unsuspend it until https://github.com/norcalipa/crank/issues/615 is fixed**
+(the manifest lacks `hostAliases` and `dnsConfig`).
 The deploy
 workflows already apply that manifest on every deploy (substituting the image
 tag for `${GITHUB_SHA}`), so the `crank-healthcheck` CronJob exists,

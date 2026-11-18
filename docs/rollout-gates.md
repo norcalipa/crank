@@ -97,12 +97,15 @@ decision; each is evaluated independently.
 1. Set `CapabilitySwitch(key="interactive_agent", enabled=False)` via admin
    (the changelist action prompts an intermediate confirmation page before it
    applies; the page re-POSTs `confirm=yes` on confirm).
-2. Revert the pull request that set `INTERACTIVE_AGENT_ENABLED` (a commit to
-   `k8s/crank-agent-config.yml`; a cluster-only edit is reverted by the next
-   deploy). Leave `AGENT_RUN_ENABLED` alone: it is the shared master flag and
+2. Revert the pull request that set `INTERACTIVE_AGENT_ENABLED` and restore
+   `AGENT_NOOP_ENABLED` to `"false"` (a commit to `k8s/crank-agent-config.yml`;
+   a cluster-only edit is reverted by the next deploy). Leave
+   `AGENT_RUN_ENABLED` alone: it is the shared master flag and
    is reverted last, only when every scheduled phase is off (see "Shared
    master flag" under "Phases").
-3. Verify no new `AgentRun` rows are created after disablement.
+3. Verify no new `AgentRun` rows with `run_type="noop"` are created after the
+   rollback time. Other phases' rows are expected while `AGENT_RUN_ENABLED`
+   stays on.
 4. Verify existing data remains consistent (no orphaned RUNNING runs beyond
    stale-lock TTL).
 5. `OperationalChangeAudit` records the rollback action with actor and
@@ -191,7 +194,9 @@ decision; each is evaluated independently.
 2. Revert the pull request that set `GATHER_SCORES_ENABLED` (a commit to
    `k8s/crank-agent-config.yml`). Leave `AGENT_RUN_ENABLED` alone.
 3. Set `SourceCatalog.enabled=False` for affected sources.
-4. Verify no new `SourceRun` or `AgentRun` rows after disablement.
+4. Verify no new `SourceRun` rows, and no new `AgentRun` rows with
+   `run_type="gather_scores"`, after the rollback time. Other phases' rows are
+   expected while `AGENT_RUN_ENABLED` stays on.
 5. Verify retained score data is consistent (no partial writes; committed
    observations remain valid).
 6. `OperationalChangeAudit` records each change.
@@ -279,7 +284,9 @@ decision; each is evaluated independently.
 2. Revert the pull request that set `JOB_PIPELINE_ENABLED` (a commit to
    `k8s/crank-agent-config.yml`). Leave `AGENT_RUN_ENABLED` alone.
 3. Set `JobSourceCatalog.enabled=False` for affected sources.
-4. Verify no new `AgentRun` rows after disablement.
+4. Verify no new `AgentRun` rows with `run_type="job_pipeline"` after the
+   rollback time. Other phases' rows are expected while `AGENT_RUN_ENABLED`
+   stays on.
 5. Verify `JobListing` and `JobMatch` data remains consistent (no orphaned
    matches; committed listings retain valid status).
 6. `OperationalChangeAudit` records each change.
