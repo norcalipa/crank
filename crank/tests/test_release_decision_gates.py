@@ -1664,26 +1664,26 @@ class RolloutDocReleaseSectionTests(SimpleTestCase):
         ):
             self.assertIn(phrase, normalized)
 
-    def test_durable_enablement_is_stated_as_blocked_by_555(self):
-        """No instruction may lead an operator to commit a flag before #555."""
+    def test_durable_enablement_is_stated_as_available_after_555(self):
+        """#555 is fixed: the rule describes the procedure, not a block."""
         normalized = " ".join(self.section.split())
         rule = normalized.split("### Durable enablement rule")[1].split("### Phases")[0]
         opening = rule.split("**Why a cluster-only change does not last.**")[0]
         for phrase in (
-            "not currently safe",
             "https://github.com/norcalipa/crank/issues/555",
-            "which is open",
-            "Do not merge an enablement pull request for any phase after `shell`"
-            " until #555 is fixed.",
+            "deploys never overwrite",
+            "every deploy waits for the web rollout",
+            "Populate a phase's credential first",
         ):
             self.assertIn(phrase, opening)
+        for stale in ("not currently safe", "which is open", "until #555 is fixed"):
+            self.assertNotIn(stale, rule)
         for phrase in (
             "makes `GET /healthz/ready/` return **503**",
             "**new web pods never become Ready**",
-            "**The deploy workflow still goes green**",
-            "never put a credential in a ConfigMap or in the repository",
-            "**Procedure once #555 is fixed.**",
-            "They are not to be followed before then.",
+            "**The deploy workflow now fails**",
+            "Never put a credential in a ConfigMap or in the repository",
+            "**Procedure.**",
             "an approving review is not the sign-off",
             "see decision D7",
             "**no image is built from the enablement merge commit**",
@@ -1691,47 +1691,54 @@ class RolloutDocReleaseSectionTests(SimpleTestCase):
             '`"enabled": true` and `"ok": true`',
             "**A 503 is not fixed by another restart.**",
             "`concurrency: deployment` with `cancel-in-progress: true`",
+            "never by `kubectl patch`",
+            "`build-image.yml` ignores `deploy/**`",
         ):
             self.assertIn(phrase, rule)
-        # The numbered procedure comes after the statement that it is blocked.
-        self.assertLess(
-            rule.index("not currently safe"), rule.index("1. One pull request")
-        )
-        self.assertLess(
-            rule.index("**Procedure once #555 is fixed.**"),
-            rule.index("1. One pull request"),
-        )
+        self.assertLess(rule.index("**Procedure.**"), rule.index("1. One pull request"))
         self.assertNotIn("enabled durably by a **commit**", normalized)
         self.assertNotIn("the approving review is the named sign-off", normalized)
         criteria = normalized.split(
             "Entry criteria that the repository does not yet satisfy:"
         )[1].split("| Phase id | Gates |")[0]
-        self.assertIn("**Every phase after `shell`: [#555]", criteria)
-        self.assertIn("A hard precondition.", criteria)
+        self.assertNotIn("**Every phase after `shell`: [#555]", criteria)
+        phases = normalized.split("### Phases")[1].split("#### Shared master flag")[0]
+        self.assertNotIn("created by no deploy", phases)
+        self.assertNotIn("depends on #555", phases)
 
-    def test_observed_state_records_the_blanked_secret(self):
+    def test_older_rollback_procedures_leave_the_master_flag_alone(self):
+        """The #555 follow-up: no per-phase rollback reverts AGENT_RUN_ENABLED."""
+        normalized = " ".join(self.section.split())
+        content = " ".join(ROLLOUT_DOC.read_text(encoding="utf-8").split())
+        self.assertNotIn("Set `AGENT_RUN_ENABLED=False`", content)
+        self.assertNotIn("=False` in ConfigMap", content)
+        self.assertIn("Leave `AGENT_RUN_ENABLED` alone", content)
+        self.assertTrue(normalized)
+
+    def test_observed_state_records_the_kept_secret(self):
         rows = _section_table(
             self.section, "### Observed state when this section was written"
         )
         facts = {row[0]: row[1] for row in rows}
-        blank = facts["Capability credentials are blanked on every deploy"]
+        kept = facts["Capability credentials survive a deploy"]
         for key in (
             "LLM_API_KEY", "YELP_API_KEY", "USAJOBS_AUTH_KEY",
             "USAJOBS_USER_AGENT_EMAIL", "FIRECRAWL_API_KEY",
         ):
-            self.assertIn(f"`{key}`", blank)
-        self.assertIn("issues/555", blank)
+            self.assertIn(f"`{key}`", kept)
+        self.assertIn("issues/555", kept)
+        self.assertIn("--ignore-not-found", kept)
         self.assertIn(
             "The readiness probe fails on an enabled, unconfigured capability", facts
         )
         self.assertIn(
-            "The job-pipeline and match-recompute CronJobs are not created by any"
+            "The job-pipeline and match-recompute CronJobs are created by every"
             " deploy",
             facts,
         )
 
-    def test_deploy_workflows_blank_the_capability_secret(self):
-        """The observed defect (#555). Update the docs when this stops holding."""
+    def test_deploy_workflows_keep_the_capability_secret(self):
+        """#555: the Secret is created only when absent and never written again."""
         workflows = REPO_ROOT / ".github" / "workflows"
         for name in ("deploy-home.yml", "update-home-deployment.yml"):
             source = (workflows / name).read_text(encoding="utf-8")
@@ -1744,8 +1751,16 @@ class RolloutDocReleaseSectionTests(SimpleTestCase):
                     "USAJOBS_USER_AGENT_EMAIL", "FIRECRAWL_API_KEY",
                 ):
                     self.assertIn(f"--from-literal={key}=''", source)
-                self.assertIn("--dry-run=client -o yaml | k3s kubectl apply -f -", source)
-                self.assertNotIn("rollout status", source)
+                self.assertNotIn("--dry-run=client -o yaml | k3s kubectl apply", source.split("create secret generic crank-capability-secrets")[1].split("JOB_NAME=")[0])
+                self.assertIn(
+                    "EXISTING=\\$(k3s kubectl -n crank get secret"
+                    " crank-capability-secrets -o name --ignore-not-found)",
+                    source,
+                )
+                self.assertIn('if [ -z "\\${EXISTING}" ]; then', source)
+                self.assertIn(
+                    "rollout status deployment/crank --timeout=300s", source
+                )
                 self.assertIn("group: deployment", source)
                 self.assertIn("cancel-in-progress: true", source)
 
@@ -1764,18 +1779,28 @@ class RolloutDocReleaseSectionTests(SimpleTestCase):
         )
         ignored = build.split("paths-ignore:", 1)[1].split("concurrency:", 1)[0]
         self.assertIn("- 'k8s/**'", ignored)
+        self.assertIn("- 'deploy/**'", ignored)
 
-    def test_deploy_cronjobs_are_unapplied_templates_without_source_secrets(self):
+    def test_deploy_cronjobs_are_applied_templates_with_source_secrets(self):
         workflows = REPO_ROOT / ".github" / "workflows"
-        for path in sorted(workflows.glob("*.yml")):
-            self.assertNotIn("deploy/", path.read_text(encoding="utf-8"), path.name)
+        for name in ("deploy-home.yml", "update-home-deployment.yml"):
+            source = (workflows / name).read_text(encoding="utf-8")
+            for manifest in ("cronjob-job-pipeline.yaml", "cronjob-match-recompute.yaml"):
+                with self.subTest(workflow=name, manifest=manifest):
+                    self.assertIn(f"./deploy/{manifest}", source)
+                    self.assertIn(f"envsubst < /tmp/{manifest} | k3s kubectl apply", source)
         for name in ("cronjob-job-pipeline.yaml", "cronjob-match-recompute.yaml"):
             text = (REPO_ROOT / "deploy" / name).read_text(encoding="utf-8")
             with self.subTest(manifest=name):
                 self.assertIn("crank:${GITHUB_SHA}", text)
                 self.assertIn("imagePullPolicy: Always", text)
                 self.assertIn("suspend: true", text)
-                self.assertNotIn("crank-capability-secrets", text)
+                self.assertTrue(
+                    text.split("envFrom:")[1]
+                    .split("imagePullSecrets")[0]
+                    .rstrip()
+                    .endswith("name: crank-capability-secrets")
+                )
 
     def test_decision_record_template_fields(self):
         rows = _section_table(self.section, "### Decision record template")
@@ -1898,6 +1923,7 @@ class RunbookDurableEnablementTests(SimpleTestCase):
     REAPPLIED = {
         "crank-crawl-cron.yaml": "crank-crawl-organizations",
         "crank-healthcheck-cron.yaml": "crank-healthcheck",
+        "cronjob-job-pipeline.yaml": "crank-job-pipeline",
     }
     #: A shell line that changes a ConfigMap, in any spelling.
     CONFIGMAP_WRITE = re.compile(
@@ -1920,10 +1946,6 @@ class RunbookDurableEnablementTests(SimpleTestCase):
             r"(crawl-organizations|job-pipeline) (crawl|pipeline)-smoke-\$\(date \+%s\)",
             r"kubectl -n crank logs -l job-name=<(pipeline-)?smoke-job-name>"
             r" --all-containers",
-            r"GITHUB_SHA=latest envsubst '\$\{GITHUB_SHA\}'"
-            r" < deploy/cronjob-job-pipeline\.yaml \| kubectl apply -f -",
-            r"kubectl -n crank patch cronjob crank-job-pipeline"
-            r" -p '\{\"spec\":\{\"suspend\":(true|false)\}\}'",
             r"kubectl -n crank patch cronjob crank-crawl-jobs"
             r" -p '\{\"spec\":\{\"suspend\":true\}\}'",
             r"kubectl -n crank delete cronjob crank-crawl-jobs",
@@ -2035,11 +2057,11 @@ class RunbookDurableEnablementTests(SimpleTestCase):
         workflows = REPO_ROOT / ".github" / "workflows"
         for workflow in ("deploy-home.yml", "update-home-deployment.yml"):
             source = (workflows / workflow).read_text(encoding="utf-8")
-            self.assertNotIn("deploy/", source)
             for manifest in self.REAPPLIED:
                 self.assertIn(f"envsubst < /tmp/{manifest}", source)
         for manifest, cronjob in self.REAPPLIED.items():
-            text = (REPO_ROOT / "k8s" / manifest).read_text(encoding="utf-8")
+            base = "deploy" if manifest.startswith("cronjob-") else "k8s"
+            text = (REPO_ROOT / base / manifest).read_text(encoding="utf-8")
             self.assertIn(f"name: {cronjob}", text)
             self.assertIn("suspend: true", text)
             self.assertIn("crank:${GITHUB_SHA}", text)
@@ -2048,26 +2070,20 @@ class RunbookDurableEnablementTests(SimpleTestCase):
         for name in self.RUNBOOKS:
             text = self._text(name)
             with self.subTest(runbook=name):
-                self.assertNotRegex(text, r"kubectl[^\n]*apply[^\n]*k8s/")
+                self.assertNotRegex(text, r"kubectl[^\n]*apply[^\n]*(k8s|deploy)/")
                 for cronjob in self.REAPPLIED.values():
                     self.assertNotRegex(
                         text, rf"patch\s+cronjobs?[\s/]+{re.escape(cronjob)}\b"
                     )
-                self.assertIn("patch cronjob crank-job-pipeline", text)
                 self.assertIn("deploy/cronjob-job-pipeline.yaml", text)
 
-    def test_every_raw_apply_substitutes_the_image_tag(self):
+    def test_runbooks_give_no_raw_apply(self):
         """``${GITHUB_SHA}`` is literal in every manifest; never apply one raw."""
-        applies = 0
         for name in self.RUNBOOKS:
             for line in self._commands(name):
-                if "kubectl" in line and " apply " in f" {line} ":
-                    with self.subTest(runbook=name, line=line):
-                        self.assertNotRegex(line, r"apply[^|]*-f\s+(k8s|deploy)/")
-                        self.assertIn("envsubst '${GITHUB_SHA}' < deploy/", line)
-                        self.assertTrue(line.startswith("GITHUB_SHA=latest "))
-                        applies += 1
-        self.assertEqual(applies, 1)
+                with self.subTest(runbook=name, line=line):
+                    self.assertFalse("kubectl" in line and " apply " in f" {line} ")
+                    self.assertNotIn("envsubst", line)
 
     def test_every_kubectl_command_is_one_the_runbooks_mean_to_give(self):
         for name in self.RUNBOOKS:
@@ -2087,12 +2103,16 @@ class RunbookDurableEnablementTests(SimpleTestCase):
                     with self.subTest(runbook=name, form=form.strip()[:50]):
                         self.assertTrue(self._kubectl_problems(text + form))
 
-    def test_image_tag_advice_matches_the_command(self):
-        """The one apply uses ``latest``, and the prose under it says why."""
+    def test_image_tag_advice_matches_the_deploys(self):
+        """Deploys apply the CronJob; the prose says which tag they substitute."""
         initial = " ".join(self._text(self.RUNBOOKS[0]).split())
-        self.assertIn("and the schema move on. Use `latest`.", initial)
+        self.assertIn(
+            "substituting the image tag (the built commit for `deploy-home`,"
+            " `latest` for a manifest-only `update-home-deployment`)",
+            initial,
+        )
+        self.assertNotIn("Use `latest`.", initial)
         self.assertNotIn("Use the commit SHA", initial)
-        self.assertNotIn("Use a commit SHA", initial)
 
     def test_runbooks_never_write_a_configmap_or_assign_a_credential(self):
         for name in self.RUNBOOKS:
@@ -2128,65 +2148,47 @@ class RunbookDurableEnablementTests(SimpleTestCase):
             [],
         )
 
-    def test_runbooks_say_what_cannot_be_done_until_555(self):
+    def test_runbooks_describe_the_durable_mechanism_after_555(self):
         for name in self.RUNBOOKS:
             normalized = " ".join(self._text(name).split())
             with self.subTest(runbook=name):
                 self.assertIn("https://github.com/norcalipa/crank/issues/555", normalized)
-                self.assertIn("Do not commit a capability flag", normalized)
                 self.assertIn("`crank-capability-secrets`", normalized)
-                self.assertIn("gives no command for it", normalized)
-            # A paragraph that tells the operator to commit an enablement
-            # names #555 — the health probe too: unsuspended before there is
-            # inventory, it fails on every run.
+                self.assertIn("Populate or rotate a credential", normalized)
+                self.assertIn("`docs/capability-config-contract.md`", normalized)
+                self.assertNotIn("gives no command for it", normalized)
+                self.assertNotIn("until #555 is fixed", normalized)
+                self.assertNotIn("Do not commit a capability flag", normalized)
             instructions = 0
             for paragraph in re.split(r"\n\s*\n", self._text(name)):
                 flat = " ".join(paragraph.split())
-                if not re.search(
+                if re.search(
                     r"[Cc]ommit(?:ting)? `spec\.suspend: false`|_ENABLED: \"true\"", flat
                 ):
-                    continue
-                instructions += 1
-                with self.subTest(runbook=name, paragraph=flat[:60]):
-                    self.assertIn("#555", flat)
+                    instructions += 1
             self.assertGreaterEqual(instructions, 2, name)
         initial = " ".join(self._text(self.RUNBOOKS[0]).split())
-        self.assertNotIn("does not wait for #555", initial)
-        self.assertNotIn("5 and 6 and the health probe in step 8 can be run", initial)
         for phrase in (
-            "Only steps 1 and 2 and the one-off `crawl_healthcheck` command in"
-            " step 8 can be run today.",
-            "**Steps 5 and 6 wait for #555 as well**",
-            "**This step waits for #555.**",
+            "## Status: durable on the cluster the deploy workflows manage",
+            "**Credentials survive a deploy.**",
+            "**Deploys create and update `crank-job-pipeline`**",
             "prints `job_pipeline: disabled; no work performed` and exits 0",
-            "Until step 5 has run (after #555), every source shows zero listings"
-            " here.",
-            "**Leave the recurring probe suspended until #555 is fixed and step 6"
-            " shows listings.**",
+            "**Leave the recurring probe suspended until step 6 shows listings.**",
             "a `crank-healthcheck` Job that fails every 15 minutes",
             "a first `job-source-alerts-quiet` window that breaches by"
             " construction",
-            "Once #555 is fixed, the inventory exists and the owner has created"
-            " the alert policy, commit `spec.suspend: false` in"
-            " `k8s/crank-healthcheck-cron.yaml`.",
+            "commit `spec.suspend: false` in `k8s/crank-healthcheck-cron.yaml`.",
+            "unsuspend it by committing `spec.suspend: false` in"
+            " `deploy/cronjob-job-pipeline.yaml`",
+            "A `kubectl patch` of `suspend` is reverted by the next deploy.",
+            "**Never put a credential in the `crank-agent-config` ConfigMap or in"
+            " any file in the repository.**",
             "nothing in the repository creates the alert policy",
         ):
             self.assertIn(phrase, initial)
-        for phrase in (
-            "## Status: cannot be completed durably today",
-            "**The repository does not create `crank-job-pipeline`.**",
-            "returns `NotFound`",
-            "its image tag is the literal text `${GITHUB_SHA}`",
-            "**The image tag is fixed at whatever you substituted, because nothing"
-            " re-applies this manifest.**",
-            "With a commit SHA the pipeline keeps running that build indefinitely",
-            "**Its pods receive no source credential.**",
-            "**Never put a credential in the `crank-agent-config` ConfigMap or in"
-            " any file in the repository.**",
-            "**Do not do this until #555 is fixed.**",
-            "Revert the master flag `AGENT_RUN_ENABLED` last",
-        ):
-            self.assertIn(phrase, initial)
+        scheduling = " ".join(self._text(self.RUNBOOKS[1]).split())
+        self.assertIn("Unsuspend by a commit, never by `kubectl patch`", scheduling)
+        self.assertIn("`deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`)", scheduling)
 
     def test_runbooks_name_the_files_and_the_switch(self):
         for name in self.RUNBOOKS:

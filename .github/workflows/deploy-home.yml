@@ -86,6 +86,8 @@ jobs:
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-crawl-cron.yaml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-crawl-cron.yaml
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-healthcheck-cron.yaml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-healthcheck-cron.yaml
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/cron-gather-scores.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/cron-gather-scores.yml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./deploy/cronjob-job-pipeline.yaml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/cronjob-job-pipeline.yaml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./deploy/cronjob-match-recompute.yaml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/cronjob-match-recompute.yaml
 
           # Apply manifests in deterministic order: namespace → ConfigMaps →
           # Secrets → migration Job → CronJobs → web Deployment.
@@ -95,15 +97,21 @@ jobs:
           k3s kubectl create namespace crank --dry-run=client -o yaml | k3s kubectl apply -f -
           envsubst < /tmp/crank-configmap.yml | k3s kubectl apply -f -
           envsubst < /tmp/crank-agent-config.yml | k3s kubectl apply -f -
-          # Create capability secrets if they do not exist; never overwrite
-          # values an operator has already populated out-of-band.
-          k3s kubectl -n crank create secret generic crank-capability-secrets \
+          # Capability credentials live in the cluster Secret and are populated
+          # by an operator out of band (docs/capability-config-contract.md).
+          # Create the Secret, with empty values, ONLY when the cluster
+          # reports it absent. An existing Secret is never written by a
+          # deploy: no apply, replace or create -f. The lookup is its own
+          # assignment so any kubectl error stops the deploy (set -e).
+          EXISTING=\$(k3s kubectl -n crank get secret crank-capability-secrets -o name --ignore-not-found)
+          if [ -z "\${EXISTING}" ]; then
+            k3s kubectl -n crank create secret generic crank-capability-secrets \
             --from-literal=LLM_API_KEY='' \
             --from-literal=YELP_API_KEY='' \
             --from-literal=USAJOBS_AUTH_KEY='' \
             --from-literal=USAJOBS_USER_AGENT_EMAIL='' \
-            --from-literal=FIRECRAWL_API_KEY='' \
-            --dry-run=client -o yaml | k3s kubectl apply -f -
+            --from-literal=FIRECRAWL_API_KEY=''
+          fi
           JOB_NAME="crank-migrate-\${GITHUB_SHA}"
           k3s kubectl delete job "\${JOB_NAME}" --namespace crank --ignore-not-found
           envsubst < /tmp/migrate-job.yml | k3s kubectl apply -f -
@@ -154,6 +162,16 @@ jobs:
           envsubst < /tmp/crank-crawl-cron.yaml | k3s kubectl apply -f -
           envsubst < /tmp/crank-healthcheck-cron.yaml | k3s kubectl apply -f -
           envsubst < /tmp/cron-gather-scores.yml | k3s kubectl apply -f -
+          envsubst < /tmp/cronjob-job-pipeline.yaml | k3s kubectl apply -f -
+          envsubst < /tmp/cronjob-match-recompute.yaml | k3s kubectl apply -f -
 
           envsubst < /tmp/crank.yml | k3s kubectl apply -f -
+
+          # Fail the run, visibly, when the new web pods do not become Ready.
+          if ! k3s kubectl -n crank rollout status deployment/crank --timeout=300s; then
+            k3s kubectl -n crank describe deployment/crank || true
+            k3s kubectl -n crank get pods -l app.kubernetes.io/name=crank -o wide || true
+            k3s kubectl -n crank get events --sort-by=.lastTimestamp | tail -n 30 || true
+            exit 1
+          fi
           EOF

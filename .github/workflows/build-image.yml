@@ -18,6 +18,7 @@ on:
       - 'seeds/**'
       - 'dump/**'
       - 'k8s/**'
+      - 'deploy/**'
       - '!.github/workflows/build-image.yml'
       - '.gitignore'
 
