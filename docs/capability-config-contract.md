@@ -39,20 +39,55 @@ feature flags, provider/model names, timeouts, limits, and schedules.
 ### Secret Reference (`crank-capability-secrets`)
 
 All capability credentials live in the `crank-capability-secrets` Kubernetes
-Secret. The manifest (`k8s/crank-capability-secrets.yml`) defines the
-structure with empty values; operators populate real values out-of-band:
+Secret. The manifest (`k8s/crank-capability-secrets.yml`) documents the
+structure with empty values; operators populate real values out-of-band.
+The deploy workflows create the Secret, with empty values, only when the
+cluster reports it absent (`get secret ... --ignore-not-found`, then
+`create secret generic`). They never apply, replace or recreate an existing
+Secret, so populated values survive every deploy.
 
-```sh
-kubectl -n crank create secret generic crank-capability-secrets \
-  --from-literal=LLM_API_KEY='sk-...' \
-  --from-literal=YELP_API_KEY='...' \
-  --from-literal=USAJOBS_AUTH_KEY='...' \
-  --from-literal=USAJOBS_USER_AGENT_EMAIL='...' \
-  --from-literal=FIRECRAWL_API_KEY='...'
-```
+#### Populate or rotate a credential
 
-The deploy workflow uses `--dry-run=client` so applying the manifest never
-overwrites values an operator has already set.
+This is the one procedure for changing a key. It changes one key without
+dropping the others and keeps the value off the command line and out of
+shell history. Never use `kubectl apply` on this Secret, and never put a
+credential in a ConfigMap or in the repository.
+
+1. Write a merge patch to a private file. Write the plain value under
+   `stringData` (Kubernetes encodes it; do not base64-encode it yourself).
+   Type it into your editor or pipe it from a password manager, not onto a
+   command line:
+
+   ```sh
+   umask 077
+   PATCH="$(mktemp)"
+   "${EDITOR:-vi}" "$PATCH"
+   # contents: {"stringData": {"LLM_API_KEY": "sk-..."}}
+   ```
+
+2. Patch only that key, then delete the file:
+
+   ```sh
+   kubectl -n crank patch secret crank-capability-secrets \
+     --type merge --patch-file "$PATCH"
+   shred -u "$PATCH" 2>/dev/null || rm -f "$PATCH"
+   ```
+
+3. Pods read `envFrom` values only when they start, so restart the web
+   Deployment and wait for it:
+
+   ```sh
+   kubectl -n crank rollout restart deployment/crank
+   kubectl -n crank rollout status deployment/crank --timeout=300s
+   ```
+
+   CronJob pods pick the new value up on their next run.
+4. Confirm key names only (never print values):
+
+   ```sh
+   kubectl -n crank get secret crank-capability-secrets -o json \
+     | python3 -c 'import json,sys; print(sorted(json.load(sys.stdin)["data"]))'
+   ```
 
 ## Workload Wiring
 
@@ -62,9 +97,10 @@ overwrites values an operator has already set.
 | Migration Job | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Agent No-op CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Crawl Organizations CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
-| Crawl Jobs CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Healthcheck CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 | Gather Scores CronJob | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
+| Job Pipeline CronJob (`deploy/cronjob-job-pipeline.yaml`) | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
+| Match Recompute CronJob (`deploy/cronjob-match-recompute.yaml`) | `crank-config`, `crank-agent-config` | `db-connect-credentials`, `crank-capability-secrets` |
 
 ## Deploy Workflow
 
@@ -73,10 +109,10 @@ deterministic order:
 
 1. Namespace
 2. ConfigMaps (`crank-config`, `crank-agent-config`)
-3. Secrets (`db-connect-credentials` out-of-band, `crank-capability-secrets` via dry-run)
+3. Secrets (`db-connect-credentials` out-of-band, `crank-capability-secrets` created only if absent, never overwritten)
 4. Migration Job (wait for completion)
-5. CronJobs (agent-noop, crawl-organizations, crawl-jobs, healthcheck, gather-scores)
-6. Web Deployment
+5. CronJobs (agent-noop, crawl-organizations, healthcheck, gather-scores, and from `deploy/` job-pipeline and match-recompute; all apply with the image tag of the deploy)
+6. Web Deployment, then `rollout status deployment/crank --timeout=300s`; the run fails, with diagnostics, if the new pods do not become Ready
 
 ## Fail-Closed Readiness
 

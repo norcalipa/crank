@@ -97,9 +97,15 @@ decision; each is evaluated independently.
 1. Set `CapabilitySwitch(key="interactive_agent", enabled=False)` via admin
    (the changelist action prompts an intermediate confirmation page before it
    applies; the page re-POSTs `confirm=yes` on confirm).
-2. Set `AGENT_RUN_ENABLED=False` and `AGENT_NOOP_ENABLED=False` in the
-   ConfigMap.
-3. Verify no new `AgentRun` rows are created after disablement.
+2. Revert the pull request that set `INTERACTIVE_AGENT_ENABLED` and restore
+   `AGENT_NOOP_ENABLED` to `"false"` (a commit to `k8s/crank-agent-config.yml`;
+   a cluster-only edit is reverted by the next deploy). Leave
+   `AGENT_RUN_ENABLED` alone: it is the shared master flag and
+   is reverted last, only when every scheduled phase is off (see "Shared
+   master flag" under "Phases").
+3. Verify no new `AgentRun` rows with `run_type="noop"` are created after the
+   rollback time. Other phases' rows are expected while `AGENT_RUN_ENABLED`
+   stays on.
 4. Verify existing data remains consistent (no orphaned RUNNING runs beyond
    stale-lock TTL).
 5. `OperationalChangeAudit` records the rollback action with actor and
@@ -185,9 +191,12 @@ decision; each is evaluated independently.
 ### Rollback Procedure
 
 1. Set `CapabilitySwitch(key="gather_scores", enabled=False)` via admin.
-2. Set `GATHER_SCORES_ENABLED=False` in ConfigMap.
+2. Revert the pull request that set `GATHER_SCORES_ENABLED` (a commit to
+   `k8s/crank-agent-config.yml`). Leave `AGENT_RUN_ENABLED` alone.
 3. Set `SourceCatalog.enabled=False` for affected sources.
-4. Verify no new `SourceRun` or `AgentRun` rows after disablement.
+4. Verify no new `SourceRun` rows, and no new `AgentRun` rows with
+   `run_type="gather_scores"`, after the rollback time. Other phases' rows are
+   expected while `AGENT_RUN_ENABLED` stays on.
 5. Verify retained score data is consistent (no partial writes; committed
    observations remain valid).
 6. `OperationalChangeAudit` records each change.
@@ -272,9 +281,12 @@ decision; each is evaluated independently.
 ### Rollback Procedure
 
 1. Set `CapabilitySwitch(key="job_pipeline", enabled=False)` via admin.
-2. Set `JOB_PIPELINE_ENABLED=False` in ConfigMap.
+2. Revert the pull request that set `JOB_PIPELINE_ENABLED` (a commit to
+   `k8s/crank-agent-config.yml`). Leave `AGENT_RUN_ENABLED` alone.
 3. Set `JobSourceCatalog.enabled=False` for affected sources.
-4. Verify no new `AgentRun` rows after disablement.
+4. Verify no new `AgentRun` rows with `run_type="job_pipeline"` after the
+   rollback time. Other phases' rows are expected while `AGENT_RUN_ENABLED`
+   stays on.
 5. Verify `JobListing` and `JobMatch` data remains consistent (no orphaned
    matches; committed listings retain valid status).
 6. `OperationalChangeAudit` records each change.
@@ -370,9 +382,9 @@ which also holds the single list of
 |---|---|---|
 | Capabilities reported by production | `interactive_agent`, `job_pipeline` and `crawl` each `enabled: false`; `all_ok: true`; `pending_migrations: 0`. Observed twice on 2026-10-06, at 15:50:56Z and 16:31:54Z. | Public readiness endpoint, `GET https://crank.fyi/healthz/ready/` (read-only) |
 | Flags and CronJobs are re-applied on every deploy | `k8s/crank-agent-config.yml` (every capability flag `"false"`) and the CronJob manifests `k8s/crank-cronjob.yml`, `k8s/crank-crawl-cron.yaml`, `k8s/crank-healthcheck-cron.yaml` and `k8s/cron-gather-scores.yml` (the last three `suspend: true`) are applied with `kubectl apply` by both deploy workflows. | `.github/workflows/deploy-home.yml` (runs after every successful `Build Image` on `main`) and `.github/workflows/update-home-deployment.yml` (runs when one of those manifests changes on `main`) |
-| Capability credentials are blanked on every deploy | Both deploy workflows run `kubectl create secret generic crank-capability-secrets --from-literal=LLM_API_KEY='' … --dry-run=client -o yaml` piped into `kubectl apply -f -` on every run, with five empty literals (`LLM_API_KEY`, `YELP_API_KEY`, `USAJOBS_AUTH_KEY`, `USAJOBS_USER_AGENT_EMAIL`, `FIRECRAWL_API_KEY`). `kubectl apply` sets every key the applied object carries, so each run replaces whatever an operator populated with the empty string. The comment above that step ("never overwrite values an operator has already populated") and `docs/capability-config-contract.md` say the opposite. Tracked in [#555](https://github.com/norcalipa/crank/issues/555). | `.github/workflows/deploy-home.yml` and `.github/workflows/update-home-deployment.yml`, step "Deploy to Kubernetes" |
-| The readiness probe fails on an enabled, unconfigured capability | `GET /healthz/ready/` returns HTTP 503 `not_ready` whenever the capability report is not `all_ok`, for example `INTERACTIVE_AGENT_ENABLED` true with an empty `LLM_API_KEY`, or `JOB_PIPELINE_ENABLED` or `CRAWL_CRON_ENABLED` true with `AGENT_RUN_ENABLED` false. That endpoint is the web Deployment's `readinessProbe`. Neither deploy workflow waits for the rollout. | `crank/views/health.py`, `crank/capability.py`, `k8s/crank.yml`; `crank/tests/test_release_decision_gates.py` runs the endpoint in both configurations |
-| The job-pipeline and match-recompute CronJobs are not created by any deploy | `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`) and `deploy/cronjob-match-recompute.yaml` (`crank-match-recompute`) are applied by neither workflow, and their image tag is the literal `${GITHUB_SHA}`, so the files are not valid manifests until that is substituted. Their `envFrom` lists `crank-config`, `crank-agent-config` and `db-connect-credentials` but not `crank-capability-secrets`, so a pod created from them receives no source credential. Tracked in #555. | the two files; `grep -n deploy/ .github/workflows/*.yml` returns nothing |
+| Capability credentials survive a deploy | Both deploy workflows look the Secret up (`get secret crank-capability-secrets -o name --ignore-not-found`, a separate assignment so a `kubectl` error stops the deploy) and run `create secret generic` with five empty literals (`LLM_API_KEY`, `YELP_API_KEY`, `USAJOBS_AUTH_KEY`, `USAJOBS_USER_AGENT_EMAIL`, `FIRECRAWL_API_KEY`) only when it is absent. An existing Secret is never written: no `apply`, `replace` or `create -f`. Operators populate it with "Populate or rotate a credential" in `docs/capability-config-contract.md`. Fixed by [#555](https://github.com/norcalipa/crank/issues/555); before that fix every run replaced the values with empty strings. | `.github/workflows/deploy-home.yml` and `.github/workflows/update-home-deployment.yml`, step "Deploy to Kubernetes"; `crank/tests/test_deploy_workflows.py` |
+| The readiness probe fails on an enabled, unconfigured capability | `GET /healthz/ready/` returns HTTP 503 `not_ready` whenever the capability report is not `all_ok`, for example `INTERACTIVE_AGENT_ENABLED` true with an empty `LLM_API_KEY`, or `JOB_PIPELINE_ENABLED` or `CRAWL_CRON_ENABLED` true with `AGENT_RUN_ENABLED` false. That endpoint is the web Deployment's `readinessProbe`. Both deploy workflows wait for the rollout (`rollout status deployment/crank --timeout=300s`; the run fails on timeout), but only for pods the deploy replaces: a manifest-only deploy usually replaces none, so enablement is verified by the step-5 restart and readiness check, not by a green run. | `crank/views/health.py`, `crank/capability.py`, `k8s/crank.yml`; `crank/tests/test_release_decision_gates.py` runs the endpoint in both configurations |
+| The job-pipeline and match-recompute CronJobs are created by every deploy | `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`) and `deploy/cronjob-match-recompute.yaml` (`crank-match-recompute`) are copied and applied by both workflows after the `k8s/` CronJobs, with the image tag substituted for `${GITHUB_SHA}` (the built commit from `deploy-home`, `latest` from `update-home-deployment`). Both stay `suspend: true`, and their `envFrom` ends with `crank-capability-secrets`. Fixed by #555. | the two files; `grep -n deploy/ .github/workflows/*.yml` |
 | Staging | The repository defines no staging deployment: `crank/settings/staging.py` and `seed_staging_baseline` exist, but no manifest, workflow or compose file names a staging environment. Whether one exists outside the repository is not known from the repository. | `grep -rn staging k8s deploy .github docker-compose.yml` returns nothing |
 
 #453 was closed on 2026-09-18. What its operator did in the cluster cannot be
@@ -381,12 +393,15 @@ reported afterwards.
 
 ### Durable enablement rule
 
-**Durable enablement of a capability that needs a credential is not
-currently safe. It depends on
-[#555](https://github.com/norcalipa/crank/issues/555), which is open. Do not
-merge an enablement pull request for any phase after `shell` until #555 is
-fixed.** The rest of this subsection explains why, and then describes the
-procedure that applies once it is.
+**Durable enablement of a capability is done by a pull request that commits
+the flag. Credentials live in the `crank-capability-secrets` Secret, which
+deploys never overwrite ([#555](https://github.com/norcalipa/crank/issues/555),
+fixed), and every deploy waits for the web rollout for the pods it replaces.**
+A manifest-only deploy usually replaces no web pod, so a green run is not
+proof that an enablement works: verify it with the restart, `rollout status`
+and `/healthz/ready/` check in step 5 of the procedure. Populate a phase's credential first, with "Populate or
+rotate a credential" in `docs/capability-config-contract.md`, then merge the
+enablement pull request.
 
 **Why a cluster-only change does not last.** The ConfigMap and the `k8s/`
 CronJob manifests are re-applied from the repository on every deploy, so an
@@ -398,37 +413,36 @@ pull request removes it. Never set such a key out of band; add it to
 `k8s/crank-agent-config.yml` in the phase's pull request so that the
 repository shows it.)
 
-**Why committing the flag is not enough today.** The same deploy step that
-re-applies the flags also re-applies `crank-capability-secrets` with empty
-values (see "Observed state" above). Until now that was harmless, because the
-flags were reverted with the keys. With a flag committed as `"true"` it is
-not:
+**Why the credential comes first.** With a flag committed as `"true"` and
+its key still empty:
 
 - **`interactive_replies`.** `INTERACTIVE_AGENT_ENABLED` true with an empty
   `LLM_API_KEY` makes `GET /healthz/ready/` return **503**. That endpoint is
   the web readiness probe, so **new web pods never become Ready**. The old
   pods keep serving the old image and the old flags for as long as they
-  live; any pod recreated later starts NotReady. **The deploy workflow still
-  goes green**, because neither workflow waits for the rollout. This happens
-  on the enablement merge and again on every later merge to `main`.
+  live; any pod recreated later starts NotReady. The deploy workflow fails
+  (`rollout status deployment/crank --timeout=300s` times out and prints
+  `describe`, the pods and the last events) only when the deploy itself
+  replaces web pods, for example a build deploy with a new image tag. An
+  enablement pull request touches only `k8s/` or `deploy/` and usually
+  replaces none, so the run stays green with the flag on and the key blank.
+  Do not read a green run as proof: use the step-5 restart, `rollout status`
+  and `/healthz/ready/` check.
 - **`job_source`, `organization_crawl`, `score_source`.** Their source
   credentials (`USAJOBS_AUTH_KEY`, `USAJOBS_USER_AGENT_EMAIL`,
-  `FIRECRAWL_API_KEY`, `YELP_API_KEY`) are blanked the same way. The
-  readiness probe does not check them, so nothing fails loudly: the sources
-  that need a key stop returning data after the next deploy.
+  `FIRECRAWL_API_KEY`, `YELP_API_KEY`) are not checked by the readiness
+  probe, so nothing fails loudly: the sources that need a key return no data
+  until the key is in the Secret.
 - **`publication`, `match_recompute`.** These need no credential of their
   own, but they follow `job_source` in the phase order and consume its
-  output, so they wait for the same fix.
+  output.
 
-Nothing in this repository works around this, and no instruction in this
-document or in the crawl runbooks should be read as one. In particular: never
-put a credential in a ConfigMap or in the repository (it would also not work:
-`crank-capability-secrets` is last in `envFrom` and overrides the ConfigMap
-value with the blank one).
+Never put a credential in a ConfigMap or in the repository (it would also not
+work: `crank-capability-secrets` is last in `envFrom` and overrides the
+ConfigMap value).
 
-**Procedure once #555 is fixed.** These rules assume credentials survive a
-deploy and the deploy waits for the rollout. They are not to be followed
-before then.
+**Procedure.** Credentials survive a deploy and the deploy waits for the
+rollout of the pods it replaces.
 
 1. One pull request per capability changes that capability's flag in
    `k8s/crank-agent-config.yml` and, where the phase has a CronJob in `k8s/`,
@@ -450,13 +464,14 @@ before then.
    intended state. Revert phase flags in the reverse of the order they were
    enabled, and the master flag last.
 4. `deploy/cronjob-job-pipeline.yaml` and `deploy/cronjob-match-recompute.yaml`
-   are not applied by either deploy workflow and cannot be applied as they
-   stand (see "Observed state"). How those two CronJobs are created, which
-   image tag they follow and how they receive source credentials is part of
-   #555. Until then the `job_source` and `match_recompute` phases have no
-   scheduled run, whatever the flags say.
-5. Verify after the merge. An enablement pull request touches only `k8s/`,
-   and `build-image.yml` ignores `k8s/**`: **no image is built from the
+   are applied by both deploy workflows like the `k8s/` CronJobs, suspended,
+   with the image tag of the deploy and `crank-capability-secrets` in
+   `envFrom`. A phase that has a CronJob in `deploy/` is unsuspended by a
+   commit of `spec.suspend: false` in that file, never by `kubectl patch`.
+   `update-home-deployment.yml` runs for a `deploy/` change and
+   `build-image.yml` ignores `deploy/**`, as it does `k8s/**`.
+5. Verify after the merge. An enablement pull request touches only `k8s/` or
+   `deploy/`, and `build-image.yml` ignores `k8s/**` and `deploy/**`: **no image is built from the
    enablement merge commit** and `deploy-home.yml` does not run for it. Only
    `update-home-deployment.yml` runs, applying the tag `latest`.
    1. Pods read `envFrom` values only when they start, and applying a changed
@@ -464,9 +479,12 @@ before then.
       Deployment's image tag, no web pod was replaced. Restart them:
       `kubectl -n crank rollout restart deployment/crank`.
    2. Wait for the rollout:
-      `kubectl -n crank rollout status deployment/crank --timeout=300s`. If it
-      does not complete, the new pods are failing their readiness probe; go
-      to step 4.
+      `kubectl -n crank rollout status deployment/crank --timeout=300s`. The
+      deploy workflow runs the same wait, but only for pods it replaces. A red
+      run means new pods are failing their readiness probe; go to step 4. A
+      green run proves nothing about this enablement, because the deploy
+      replaces no pod when only a ConfigMap changed. The restart and this
+      wait are the verification.
    3. `GET https://crank.fyi/healthz/ready/` must return **HTTP 200** with
       `"status": "ready"` and `"all_ok": true`, and the capability's entry
       must show both `"enabled": true` and `"ok": true`. `enabled: true`
@@ -482,16 +500,16 @@ before then.
 ### Phases
 
 Phases are enabled in the order of this table. Each has its own switch; no
-two share a decision. Every phase after `shell` depends on #555 (see
+two share a decision. Credentials and flags are durable across deploys (see
 "Durable enablement rule").
 
 | Phase id | Settings flags | Switch key | Manifest / CronJob | Rollback action |
 |---|---|---|---|---|
 | `shell` | none — the workspace renders on every page outside the admin, staff and sign-in surfaces (`crank/context_processors.py`, `assistant_workspace_enabled`) | none (`assistant_shell` is reserved as planned, not registered) | web Deployment in `k8s/crank.yml` | Redeploy the previous image tag (`docs/capability-config-contract.md`, "Rollback Procedure", code rollback), then merge a revert commit to `main` — the image rollback alone lasts only until the next merge (see "The shell's rollback is not durable"). Schema changes are additive, so this preserves data (`docs/deployment-migrations.md`, "Epic #454 rollout"). |
 | `interactive_replies` | `INTERACTIVE_AGENT_ENABLED`; provider and model settings; `LLM_PRICE_PER_1K_TOKENS_USD` and `LLM_PER_USER_COST_LIMIT_USD`, both above `0` (see "Entry criteria") | `interactive_agent` | `k8s/crank-agent-config.yml`; no CronJob | Disable the switch; revert the enablement PR. Direct priority editing and stored results stay usable. |
-| `job_source` | `JOB_PIPELINE_ENABLED` (needs the master flag `AGENT_RUN_ENABLED`); `JobSourceCatalog.enabled` per source | `job_pipeline` | `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`) — created by no deploy; depends on #555 | Disable the switch or the single source; revert the pull request that set `JOB_PIPELINE_ENABLED` (not the master flag). Listings and matches are kept. |
+| `job_source` | `JOB_PIPELINE_ENABLED` (needs the master flag `AGENT_RUN_ENABLED`); `JobSourceCatalog.enabled` per source | `job_pipeline` | `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`) — created, suspended, by every deploy | Disable the switch or the single source; revert the pull request that set `JOB_PIPELINE_ENABLED` (not the master flag). Listings and matches are kept. |
 | `publication` | `PUBLICATION_CONSUMER_ENABLED` (not present in the checked-in ConfigMap) | `publication_consumer` | none in the repository (`publication_sweep` command; see `docs/publication-outbox.md`) | Disable the switch; revert the enablement PR. Outbox rows are kept. |
-| `match_recompute` | `MATCH_RECOMPUTE_ENABLED`, `MATCH_RESULTS_READ_ENABLED` (the scheduled command needs the master flag `AGENT_RUN_ENABLED`) | `match_recompute` (read side: `match_results_read`) | `deploy/cronjob-match-recompute.yaml` (`crank-match-recompute`) — created by no deploy; depends on #555 | Disable the switch; revert the enablement PR (order in `docs/match-recompute.md`). |
+| `match_recompute` | `MATCH_RECOMPUTE_ENABLED`, `MATCH_RESULTS_READ_ENABLED` (the scheduled command needs the master flag `AGENT_RUN_ENABLED`) | `match_recompute` (read side: `match_results_read`) | `deploy/cronjob-match-recompute.yaml` (`crank-match-recompute`) — created, suspended, by every deploy | Disable the switch; revert the enablement PR (order in `docs/match-recompute.md`). |
 | `organization_crawl` | `CRAWL_CRON_ENABLED` (needs the master flag `AGENT_RUN_ENABLED`) | `crawl_schedule` | `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`) | Disable the switch; revert the enablement PR. Accepted evidence is kept. |
 | `score_source` | `GATHER_SCORES_ENABLED` (needs the master flag `AGENT_RUN_ENABLED`) | `gather_scores` | `k8s/cron-gather-scores.yml` (`crank-gather-scores`) | As in "Capability: Score Source (Gather Scores)" above. |
 
@@ -574,14 +592,6 @@ rules are in `docs/monitoring.md`, "Release decision gates"; in short:
   source disabled throughout. A held gate blocks expansion.
 
 Entry criteria that the repository does not yet satisfy:
-
-- **Every phase after `shell`: [#555](https://github.com/norcalipa/crank/issues/555)
-  (open).** A hard precondition. Until deploys stop blanking
-  `crank-capability-secrets`, no credentialed capability can stay enabled,
-  and enabling `interactive_replies` by commit takes the web pods out of
-  readiness (see "Durable enablement rule"). The same issue covers creating
-  the `crank-job-pipeline` and `crank-match-recompute` CronJobs, without
-  which `job_source` and `match_recompute` have no scheduled run.
 
 - **Gates reading `inventory_health` or `pipeline_health`**
   (`job-source-alerts-quiet`, `publication-outbox-age`,

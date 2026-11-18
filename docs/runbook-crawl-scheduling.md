@@ -130,19 +130,19 @@ readiness gate treats a queued row as an active/overlapping run.
 
 ## Staging enablement
 
-**On the cluster the deploy workflows manage, steps 1 and 2 cannot be made to
-last until [#555](https://github.com/norcalipa/crank/issues/555) is fixed:**
-every deploy blanks the capability credentials and re-applies the checked-in
-flags. Do not commit a capability flag before then, and see "Durable
-enablement rule" in `docs/rollout-gates.md` for what happens if one is. An
-environment that those workflows do not deploy to is not affected.
+**Capability credentials and flags are durable on the cluster the deploy
+workflows manage ([#555](https://github.com/norcalipa/crank/issues/555)):**
+deploys never overwrite `crank-capability-secrets`, and flags are changed by
+commits. See "Durable enablement rule" in `docs/rollout-gates.md` for the
+procedure and the post-merge check.
 
 1. Review the approved/enabled `SourceCatalog` and `JobSourceCatalog` rows.
    Provider credentials are read from the `crank-capability-secrets`
    Kubernetes Secret. Do not put credentials in a ConfigMap or repository
-   file. There is no supported way to make a key in that Secret survive a
-   deploy yet (#555), so this runbook gives no command for it.
-2. Once #555 is fixed, set the flags by commits to
+   file. Put `FIRECRAWL_API_KEY` and the other keys in that Secret with
+   "Populate or rotate a credential" in
+   `docs/capability-config-contract.md`; the value survives every deploy.
+2. Set the flags by commits to
    `k8s/crank-agent-config.yml`, one pull request each: first the master flag
    `AGENT_RUN_ENABLED: "true"`, then `CRAWL_CRON_ENABLED: "true"` for
    organization profiles (`JOB_PIPELINE_ENABLED: "true"` for job ingestion is
@@ -155,10 +155,10 @@ environment that those workflows do not deploy to is not affected.
 3. The deploy workflows apply `k8s/crank-crawl-cron.yaml` on every deploy
    with the CronJob still suspended (do not `kubectl apply -f` the file
    directly: its image tag is the literal `${GITHUB_SHA}` until the workflow
-   substitutes it). Run a one-off bounded smoke test first. The second
-   command below works only if `crank-job-pipeline` exists; no deploy creates
-   it, and `docs/runbook-initial-crawl.md`, step 7, gives the one manual
-   command that does and what it costs:
+   substitutes it). The deploys also create `crank-job-pipeline` from
+   `deploy/cronjob-job-pipeline.yaml` the same way (see
+   `docs/runbook-initial-crawl.md`, step 7). Run a one-off bounded smoke test
+   first:
 
    ```sh
    kubectl -n crank create job --from=cronjob/crank-crawl-organizations crawl-smoke-$(date +%s)
@@ -173,26 +173,25 @@ environment that those workflows do not deploy to is not affected.
    ```
 
 4. Inspect the command's aggregate counters and source timestamps. Unsuspend
-   only the phase that has passed the smoke test. For organization profiles,
-   once #555 is fixed, commit `spec.suspend: false` in
-   `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`): every deploy
-   re-applies that file, so a `kubectl patch` on it is reverted by the next
-   merge to `main`. For job sources, a `crank-job-pipeline` that was created
-   by hand from `deploy/cronjob-job-pipeline.yaml` is re-applied by no
-   deploy, so this patch stays in place — and so does its image tag:
-
-   ```sh
-   kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":false}}'
-   ```
+   only the phase that has passed the smoke test. Unsuspend by a commit, never
+   by `kubectl patch`, because every deploy re-applies the manifests and
+   reverts a patch. For organization profiles commit `spec.suspend: false` in
+   `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`, **but not until
+   https://github.com/norcalipa/crank/issues/615 is fixed**: that manifest
+   lacks `hostAliases` and `dnsConfig`); for job sources
+   commit it in `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`).
+   Neither path builds an image.
 
    See "Durable enablement rule" in `docs/rollout-gates.md` for the decision
    record and the check to run after the merge.
 
 ## Production override and rollback
 
-The checked-in organization schedule is `0 */6 * * *`. Override
-`ORGANIZATION_CRAWL_CRON` in deployment configuration, then update the CronJob
-`spec.schedule` explicitly; Kubernetes does not interpolate Django environment
+The checked-in organization schedule is `0 */6 * * *`. Override it by a
+commit: change `ORGANIZATION_CRAWL_CRON` in `k8s/crank-agent-config.yml` and
+the CronJob `spec.schedule` in `k8s/crank-crawl-cron.yaml` together. Both
+files are re-applied on every deploy, so a schedule edited only in the
+cluster is reverted. Kubernetes does not interpolate Django environment
 variables into a CronJob schedule. Keep `concurrencyPolicy: Forbid`, the
 database-backed `crawl_schedule` singleton guard, source limits, and deadline
 guardrails. (The former `JOB_CRAWL_CRON` override is obsolete: job freshness is
@@ -203,11 +202,11 @@ To pause without deleting resources, disable the database `CapabilitySwitch`
 ingestion) in Django admin: it takes effect on the next run and no deploy
 overwrites it. Then make the pause durable in the repository: commit
 `spec.suspend: true` in `k8s/crank-crawl-cron.yaml` and/or
-`CRAWL_CRON_ENABLED: "false"` (`JOB_PIPELINE_ENABLED: "false"` for job
+`deploy/cronjob-job-pipeline.yaml` and/or `CRAWL_CRON_ENABLED: "false"` (`JOB_PIPELINE_ENABLED: "false"` for job
 ingestion) in `k8s/crank-agent-config.yml`; the command then exits without
 claiming work. A `kubectl patch` or flag edit made only in the cluster is
-reverted by the next deploy, except on `crank-job-pipeline`, whose manifest
-is not re-applied. When reverting flags, leave the master flag
+reverted by the next deploy, on `crank-job-pipeline` as on the other
+CronJobs. When reverting flags, leave the master flag
 `AGENT_RUN_ENABLED` until every flag that depends on it is `"false"`: with
 `CRAWL_CRON_ENABLED` or `JOB_PIPELINE_ENABLED` still true and the master flag
 off, `GET /healthz/ready/` returns 503 and new web pods fail their readiness
