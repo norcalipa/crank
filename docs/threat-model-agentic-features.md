@@ -51,7 +51,7 @@ are stated per boundary below and owners are named.
 | Source catalog -> network transport | HTTP downgrade, credential-bearing URL, unapproved host/port, redirect to attacker/private host, DNS rebinding/private/link-local/loopback, oversized body | Code-owned host allowlist, HTTPS-only, no URL credentials/nonstandard ports, manual bounded redirects, resolve every hop, reject all blocked/unresolved answers, byte/content-type caps, bounded retries | `crank/tests/agents/sources/test_transport.py`, `test_yelp.py`, `test_usajobs_adapter.py`, phase-4 URL tests | DNS resolution can change after the check at the network layer; owner: source/platform maintainers |
 | Source payload -> application records | Markup/instruction injection, schema drift, secret/raw-body retention, unchecked employer creation | Typed adapters, strip/bound listing text, metadata rejection, no automatic organization creation, deterministic alias resolution, unresolved review queue | `crank/tests/agents/test_job_ingest.py`, `test_employer_resolution.py`, `test_job_models.py`, phase-4 ingestion tests | Source terms/licensing remain source-specific blockers; owner: source owners |
 | Normalized score -> persistence | Malformed values, identity guessing/ambiguity, duplicate/replayed writes, secret provenance | Decimal reject-not-clamp normalization, curated identity mappings, transactional active-row replacement, idempotent provenance identity, provenance allowlist/redaction | `crank/tests/agents/sources/test_normalize.py`, `crank/tests/services/test_score_persistence.py`, phase-4 score tests | Database concurrency needs backend-specific verification; owner: score maintainers |
-| Listing/match records -> presentation | Cross-user match access, guessed IDs, inactive/dismissed listing exposure, stored markup | `user=request.user` filters, active-listing filters, hidden-employer exclusion (`crank/services/organization_visibility.py`), dismissed filtering, bounded JSON projection, text-only rendering | `crank/tests/views/test_job_matches.py`, `test_match_persist.py`, phase-4 owner tests | Staff/admin access is intentionally separate; owner: matching/API maintainers |
+| Listing/match records -> presentation | Cross-user match access, guessed IDs, inactive/dismissed listing exposure, stored markup | `user=request.user` filters, active-listing filters, hidden-employer exclusion (`crank/services/organization_visibility.py`), dismissed filtering, bounded JSON projection, text-only rendering | `crank/tests/views/test_job_matches.py`, `test_match_persist.py`, phase-4 owner tests | Staff/admin access is intentionally separate; persisted assistant replies (`JobSearchMessage.results_json`) are served as stored, so job and organization cards keep the employer name, url and evidence of an employer hidden after the turn; committed generations keep rows for hidden employers (they are filtered on read, not at recompute); owner: matching/API maintainers |
 | User records -> export/reset/delete/retention | Exporting another tenant, stale data after deletion, excessive history, preference audit leakage | Owner-scoped preference/conversation operations, cascade delete, contents-free audits, configured message export cap, reset archives chat, inactive/dismissed matches excluded | `crank/tests/services/test_preferences.py`, `crank/tests/views/test_job_search.py`, `test_job_matches.py`, phase-4 retention tests | Preference/match retention is policy-driven rather than a background purge in this phase; owner: privacy/product maintainers |
 | Runtime -> logs/events | Prompt/message/source secrets or sensitive content in logs/New Relic | Correlation/status/counters only, sanitized bounded error summaries, no prompt/message logging, auth never in transport errors | `crank/tests/test_agent_runs.py`, `test_llm.py`, transport redaction tests, phase-4 negative log/event assertions | Downstream infrastructure must preserve field filtering; owner: platform/observability maintainers |
 | HTTP client -> company correction submissions | Throwaway accounts multiplying the hourly limits, probing with rejected attempts, a burst overshooting a cap, a forged client-address header, one shared bucket locking every user out | Django authentication/CSRF, bounded JSON body, per-account caps reserved before the work, optional per-address caps from a production-only trusted client address (off by default), keyed digest instead of the address in cache keys | `crank/tests/views/test_company_corrections.py`, `crank/tests/test_client_address.py` | Per-address caps are meant to stay off until the operator gate passes (only the procedure ties the switch to the gate), and rest on network state the app cannot see (see "Abuse limits and client address"); owner: web/API maintainers and the operator |
@@ -78,8 +78,9 @@ lands — implemented-before-documented rule, per #463's registry).
   traded is the separate `funding_round == "P"`, so a non-public organization
   is never pinned, citable, saved as a result card or openable), active
   listings whose employer is not hidden (a listing linked to an inactive or
-  non-public organization is excluded everywhere the assistant and the
-  job-match panel read; `crank/services/organization_visibility.py` is the one
+  non-public organization is excluded from every live read the assistant and
+  the job-match panel make and from every committed-match read, but not from
+  persisted assistant replies, which are served as stored; `crank/services/organization_visibility.py` is the one
   statement of the rule), active algorithms, and the
   caller's own preference/result state;
   unresolved or invisible ids are dropped and reported, never echoed as data.
@@ -650,8 +651,12 @@ compared with `main`, requests in flight, concurrency against real Redis), `cran
   presented. A closed/expired listing is excluded from list/detail/actions.
   So is a match or listing whose employer is hidden (inactive or
   `public=False`), in the assistant tools, live and committed match reads,
-  counts and ranked cards; the rule is read at request time and lives in
-  `crank/services/organization_visibility.py`.
+  counts and ranked cards. Persisted assistant replies are the exception:
+  they are served as stored, so cards for an employer hidden after the turn
+  stay in that history. The rule is read at request time for every match read
+  (the recompute inventory does not filter, so committed rows for a hidden
+  employer are kept and reappear when it is visible again, with no write) and
+  lives in `crank/services/organization_visibility.py`.
   Match rows cascade with user deletion and listing deletion; dismissed rows
   remain stored as an application-state record but are not presented.
 - Source raw response bodies, provider reasoning, hidden prompts, credentials,

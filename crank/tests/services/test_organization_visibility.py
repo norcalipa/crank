@@ -14,9 +14,8 @@ from crank.agents.job_search import page_context, tools
 from crank.agents.job_search.errors import InvalidJobListingReferenceError
 from crank.agents.job_search.service import JobSearchOrchestrator
 from crank.agents.jobs import employer
-from crank.agents.jobs.match_persist import match_inventory
 from crank.models.job import JobListing, JobSourceCatalog
-from crank.models.job_match import JobMatch
+from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
 from crank.services import job_matching, match_results
@@ -201,10 +200,6 @@ class LiveMatchingTests(HiddenEmployerFixture):
             user=self.user, revision=0, preferences={"work_location": {"modes": ["remote"]}}
         )
 
-    def test_match_inventory_excludes_hidden_employers(self):
-        ids = {listing.pk for listing in match_inventory(50)}
-        self.assertEqual(ids, {self.visible.pk, self.orphan.pk})
-
     def test_match_jobs_and_relaxation_preview_exclude_hidden_employers(self):
         seen = []
 
@@ -227,12 +222,28 @@ class LiveMatchingTests(HiddenEmployerFixture):
             job_matching.match_organizations(self.user)
         self.assertEqual(captured, [{self.visible_org.pk}])
 
-    def test_recompute_publishes_no_row_for_hidden_employer(self):
+    def test_hide_recompute_unhide_restores_committed_rows_with_no_write(self):
         recompute_user(self.user, reason="preference")
-        self.assertFalse(
-            JobMatch.objects.filter(listing__in=[self.private, self.inactive]).exists()
+        before = match_results.current_match_count(self.user)
+        self.assertGreaterEqual(before, 1)
+        # Hide the employer, then a recompute runs while it is hidden.
+        Organization.objects.filter(pk=self.visible_org.pk).update(public=False)
+        recompute_user(self.user, reason="preference")
+        self.assertEqual(
+            match_results.current_generation_queryset(self.user)
+            .filter(listing=self.visible)
+            .count(),
+            0,
         )
-        self.assertTrue(JobMatch.objects.filter(listing=self.visible).exists())
+        generation = MatchResultState.objects.get(user=self.user).current_generation
+        writes = JobMatch.objects.filter(user=self.user).count()
+        # Visible again: the committed rows come back with no further write.
+        Organization.objects.filter(pk=self.visible_org.pk).update(public=True)
+        self.assertEqual(match_results.current_match_count(self.user), before)
+        self.assertEqual(
+            MatchResultState.objects.get(user=self.user).current_generation, generation
+        )
+        self.assertEqual(JobMatch.objects.filter(user=self.user).count(), writes)
 
 
 class MatchReadTests(HiddenEmployerFixture):
@@ -250,6 +261,12 @@ class MatchReadTests(HiddenEmployerFixture):
         # Stored organization hidden although the listing's is visible.
         self.other = self.make_listing("other", self.visible_org)
         self.m_stored = self.make_match(self.other, organization=self.private_org)
+        # Stored organization visible, but the listing was re-linked to a hidden one.
+        self.relinked = self.make_listing("relinked", self.visible_org)
+        self.m_relinked = self.make_match(self.relinked)
+        JobListing.all_objects.filter(pk=self.relinked.pk).update(
+            organization=self.private_org
+        )
 
     def shown(self):
         return {m.pk for m in JobMatch.objects.filter(match_results.presentable_match_q())}
@@ -272,7 +289,7 @@ class MatchReadTests(HiddenEmployerFixture):
         self.assertNotIn("Inactive Co", names)
 
     def test_detail_seen_dismiss_answer_404_and_write_nothing(self):
-        for match in (self.m_private, self.m_inactive, self.m_stored):
+        for match in (self.m_private, self.m_inactive, self.m_stored, self.m_relinked):
             with self.subTest(match=match.pk):
                 self.assertEqual(self.client.get(f"/api/job-matches/{match.pk}/").status_code, 404)
                 for action in ("seen", "dismiss"):

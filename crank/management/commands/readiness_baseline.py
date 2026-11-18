@@ -292,9 +292,8 @@ def assistant_provider() -> dict:
 def listing_counts() -> dict:
     """ACTIVE listings the product can match: approved, enabled sources only.
 
-    The same source filter ``assistant_status._inventory_ready()`` and
-    ``match_persist.match_inventory()`` use (``match_inventory`` also skips
-    listings whose employer is hidden; this count does not). ``check_inventory_health()`` counts
+    The same filter ``assistant_status._inventory_ready()`` and
+    ``match_persist.match_inventory()`` use. ``check_inventory_health()`` counts
     listings under any source, so a disabled or blocked source's listings are
     live there and ignored by matching. Integers only.
     """
