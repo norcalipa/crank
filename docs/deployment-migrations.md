@@ -496,17 +496,26 @@ numbered merge migration if a head split remains, keeping
   `test_source_freshness` name 0049. Exactly one operation: `AddIndex` on
   `CrawlRun` over `(job_source, -started_at, -id)`, named
   `crank_crawl_jobsrc_time_idx`. On MySQL that is one `CREATE INDEX` statement
-  (`job_source_id, started_at DESC, id DESC`). It supports the per-source
-  "newest runs first" reads: the window query in `check_inventory_health` and
-  the latest-run subquery in `operations_readiness.source_rows`.
+  (`job_source_id, started_at DESC, id DESC`). It serves the latest-run
+  subquery in `operations_readiness.source_rows` (`SEARCH ... USING INDEX
+  crank_crawl_jobsrc_time_idx (job_source_id=?)` on SQLite). It does not serve
+  the `check_inventory_health` window query on SQLite: that plan still reads
+  `crank_crawlrun` through the FK index `crank_crawlrun_job_source_id_9151e016`
+  and sorts in temp B-trees, identical with the new index dropped. The MySQL 8
+  plan for the window query is still pending under #535.
 - **Why its own migration.** One DDL statement per migration, as for 0041 and
   0044, so an interrupted `migrate` cannot leave a half-applied migration.
 - **Expected behaviour.** Online, in-place `CREATE INDEX` on InnoDB with brief
   metadata locks; `crank_crawlrun` is a small operational table. Rollout is
-  migrate, then deploy.
+  migrate, then deploy. On InnoDB the implicit foreign-key index on
+  `job_source_id` may be silently dropped once the composite index exists, so
+  `SHOW INDEX` after the migration can differ from before.
 - **Recovery if `migrate` is interrupted inside 0049.** `showmigrations crank`
   lists 0049 unapplied. Run `SHOW INDEX FROM crank_crawlrun WHERE Key_name =
   'crank_crawl_jobsrc_time_idx'`. If the index exists, run `migrate crank
   0049_crawlrun_job_source_time_idx --fake`; otherwise rerun `migrate`.
 - **Rollback.** Older pods ignore the index. `migrate crank
-  0048_jobsearchconversation_first_result_at` drops it.
+  0048_jobsearchconversation_first_result_at` drops it. On MySQL that is two
+  DDL statements: Django's `remove_index` first runs `CREATE INDEX
+  crank_crawlrun_job_source_id_<hash> (job_source_id)` to restore the FK index,
+  then `DROP INDEX crank_crawl_jobsrc_time_idx`.

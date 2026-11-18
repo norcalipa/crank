@@ -210,6 +210,8 @@ class InventoryHealthTests(TestCase):
     def test_pending_run_without_start_does_not_mask_repeated_failures(self):
         # Issue #535: NULL started_at sorts last under ORDER BY started_at DESC, so a
         # newer pending run (no start yet) neither hides nor displaces the failures.
+        # This relies on NULLs sorting last in DESC order, true on SQLite and MySQL
+        # (not PostgreSQL); the services do not pass nulls_last=True.
         now = timezone.now()
         source = make_source("Pending Tail", last_crawl_at=now)
         for i in range(3):
@@ -225,6 +227,7 @@ class InventoryHealthTests(TestCase):
         )
         result = inventory_health.check_inventory_health(now=now)
         self.assertEqual(result["repeated_failure_sources"], 1)
+        # Dialect-assumption check (re-states the ORDER BY); the guard is the count above.
         ordered = list(
             CrawlRun.objects.filter(job_source=source).order_by("-started_at", "-id")
         )
