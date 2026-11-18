@@ -4116,6 +4116,12 @@ body.assistant-open .app-content .table-responsive,
     column-gap: .75rem;
     row-gap: 0;
     min-inline-size: 0;
+    /* One touch-target tall, content centred: a row that has no
+       "Suggest a correction" link (signed out) keeps the height and the even
+       spacing it has with one. The row's own padding is its only vertical
+       spacing. */
+    min-block-size: 44px;
+    align-content: center;
 }
 
 .evidence-row-value > :first-child {
@@ -5127,7 +5133,7 @@ span.priority-chip-button { cursor: default; }
 
 .evidence-external-note { color: var(--bs-secondary-color); font-size: .75rem; }
 
-.evidence-timestamps { margin-top: .25rem; }
+.evidence-timestamps { margin-block: 0; }
 
 .evidence-timestamps summary {
     display: list-item;
@@ -5160,10 +5166,17 @@ span.priority-chip-button { cursor: default; }
 
 .evidence-skeleton { min-block-size: 11rem; }
 
+.evidence-row {
+    padding-block: .5rem;
+}
+
+.evidence-pending-item + .evidence-pending-item {
+    padding-top: .5rem;
+}
+
 .evidence-row + .evidence-row,
 .evidence-pending-item + .evidence-pending-item,
 .evidence-group + .evidence-group > .evidence-row:first-child {
-    padding-top: .5rem;
     background: linear-gradient(var(--bs-border-color-translucent), var(--bs-border-color-translucent))
         center top / calc(100% - var(--bs-gutter-x)) 1px no-repeat;
 }

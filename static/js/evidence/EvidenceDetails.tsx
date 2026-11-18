@@ -129,7 +129,7 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                            testId={`field-status-${key}`}/>
                         );
                         return (
-                            <div className="row mb-2 align-items-baseline evidence-row" key={key}
+                            <div className="row align-items-baseline evidence-row" key={key}
                                  data-testid={`field-evidence-${key}`}>
                                 <div className="col-5 text-end fw-bold">{fieldKeyLabel(key)}:</div>
                                 <div className="col-7 evidence-row-value">
@@ -193,7 +193,7 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
             {unverified.length > 0 && (
                 <div className="mt-2 evidence-group" data-testid="unverified-fields">
                     {unverified.map(key => (
-                        <div className="row mb-1 align-items-baseline evidence-row" key={key}
+                        <div className="row align-items-baseline evidence-row" key={key}
                              data-testid={`field-unverified-${key}`}>
                             <div className="col-5 text-end fw-bold">{fieldKeyLabel(key)}:</div>
                             <div className="col-7 evidence-row-value">

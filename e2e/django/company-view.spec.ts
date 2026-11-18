@@ -225,6 +225,41 @@ test.describe('company view (issue #486b)', () => {
         expect(corrections).toEqual([]);
     });
 
+    test('an evidence row without evidence keeps its height and even spacing whether or not "Suggest a value" is shown (issue #574)', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        const measure = async () => {
+            await opener(page).click();
+            await expect(page.getByTestId('evidence-details')).toBeVisible();
+            return page.locator('[data-testid^="field-unverified-"]').evaluateAll((rows) => rows.map((row) => {
+                const box = row.getBoundingClientRect();
+                const badge = (row.querySelector('[class*="badge"]') as HTMLElement).getBoundingClientRect();
+                return {
+                    link: row.querySelector('.correction-action') !== null,
+                    height: box.height,
+                    above: badge.top - box.top,
+                    below: box.bottom - badge.bottom,
+                };
+            }));
+        };
+        await login(page);
+        await page.goto('/');
+        const signedIn = await measure();
+        expect(signedIn.length).toBeGreaterThan(0);
+        expect(signedIn.every((row) => row.link)).toBe(true);
+
+        await page.context().clearCookies();
+        await page.goto('/');
+        const signedOut = await measure();
+        expect(signedOut.length).toBe(signedIn.length);
+        for (const row of signedOut) {
+            expect(row.link).toBe(false);
+            expect(Math.abs(row.height - signedIn[0].height)).toBeLessThan(1.5);
+            // The badge sits in the middle of the row: the divider is never on it.
+            expect(Math.abs(row.above - row.below)).toBeLessThan(3);
+            expect(row.above).toBeGreaterThan(12);
+        }
+    });
+
     // Hands out the pending list from memory and stores nothing: the POST is stubbed
     // (corrections.spec.ts spends the seeded user's hourly allowance).
     async function stubCorrections(page: Page, initial: Array<Record<string, unknown>> = []) {
