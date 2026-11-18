@@ -12,8 +12,13 @@ for (const [name, width, height] of [['desktop', 1280, 800], ['mobile', 375, 800
         const alert = page.getByTestId('job-match-error');
         await expect(alert).toBeVisible();
         await expect(alert).toHaveAttribute('role', 'alert');
-        await expect(alert).toContainText('We couldn’t load your job matches. Please try again.');
-        await expect(page.getByRole('button', {name: 'Retry loading matches'})).toBeVisible();
+        await expect(alert).toContainText('Couldn’t load your matches');
+        await expect(alert).toContainText('Something went wrong while loading. Your saved requirements are unchanged.');
+        // Try again sits below the alert, not inside it.
+        const retry = page.getByRole('button', {name: 'Retry loading matches'});
+        await expect(retry).toBeVisible();
+        await expect(alert.getByRole('button')).toHaveCount(0);
+        await expect(page.getByTestId('job-match-refresh')).toBeEnabled();
         await expect(page.getByText('No matches for your current requirements')).toHaveCount(0);
     });
 }

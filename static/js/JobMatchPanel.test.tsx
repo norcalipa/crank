@@ -139,6 +139,17 @@ describe('JobMatchPanel', () => {
             expect(loading).toHaveTextContent(/loading your match status/i);
             expect(loading.querySelectorAll('.job-match-skeleton-row').length).toBeGreaterThan(0);
         });
+
+        test('the header refresh button is present, disabled and busy while loading', () => {
+            (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+            render(<JobMatchPanel/>);
+            const refresh = screen.getByTestId('job-match-refresh');
+            expect(refresh).toBeDisabled();
+            expect(refresh).toHaveAttribute('aria-busy', 'true');
+            expect(refresh).toHaveAttribute('aria-label', 'Refresh match status');
+            expect(refresh).toHaveAttribute('title', 'Refresh match status');
+            expect(refresh.querySelector('svg')).toHaveAttribute('data-icon', 'spinner');
+        });
     });
 
     describe('error state', () => {
@@ -153,7 +164,7 @@ describe('JobMatchPanel', () => {
             expect(error).toBeInTheDocument();
             // Raw implementation details (a bare HTTP status code) never reach
             // the user; the copy is actionable with a labelled retry.
-            expect(error).toHaveTextContent(/couldn.t load your job matches/i);
+            expect(error).toHaveTextContent(/couldn.t load your matches/i);
             expect(error.textContent).not.toMatch(/status 500/i);
         });
 
@@ -162,7 +173,7 @@ describe('JobMatchPanel', () => {
             render(<JobMatchPanel/>);
             const error = await screen.findByTestId('job-match-error');
             // Only the panel's own sentences are shown, never the browser's (issue #485).
-            expect(error).toHaveTextContent('We couldn’t load your job matches. Please try again.');
+            expect(error).toHaveTextContent('Something went wrong while loading. Your saved requirements are unchanged.');
             expect(error).not.toHaveTextContent('Network down');
         });
 
@@ -170,7 +181,7 @@ describe('JobMatchPanel', () => {
             (global.fetch as jest.Mock).mockRejectedValue(new TypeError('Failed to fetch'));
             render(<JobMatchPanel/>);
             const error = await screen.findByTestId('job-match-error');
-            expect(error).toHaveTextContent('We couldn’t load your job matches. Please try again.');
+            expect(error).toHaveTextContent('Something went wrong while loading. Your saved requirements are unchanged.');
             expect(error).not.toHaveTextContent('Failed to fetch');
         });
 
@@ -188,7 +199,42 @@ describe('JobMatchPanel', () => {
             });
             render(<JobMatchPanel/>);
             const error = await screen.findByTestId('job-match-error');
-            expect(error).toHaveTextContent(/couldn.t load your job matches/i);
+            expect(error).toHaveTextContent(/couldn.t load your matches/i);
+        });
+
+        test('the alert holds only the message: icon, heading and sentence; Try again sits outside it', async () => {
+            (global.fetch as jest.Mock).mockImplementation((url: string) => (url.includes('/status/')
+                ? Promise.resolve(jsonResponse({}, 500)) : Promise.resolve(jsonResponse(matchPayload(0)))));
+            render(<JobMatchPanel/>);
+            const alert = await screen.findByTestId('job-match-error');
+            expect(alert).toHaveAttribute('role', 'alert');
+            expect(within(alert).getByRole('heading', {name: 'Couldn’t load your matches'})).toBeInTheDocument();
+            expect(alert).toHaveTextContent('Something went wrong while loading. Your saved requirements are unchanged.');
+            const icon = alert.querySelector('svg');
+            expect(icon).toHaveAttribute('aria-hidden', 'true');
+            expect(icon).toHaveAttribute('width', '20');
+            const retry = screen.getByRole('button', {name: 'Retry loading matches'});
+            expect(alert).not.toContainElement(retry);
+            expect(alert.nextElementSibling).toBe(retry);
+        });
+
+        test('the header refresh button is present and enabled in the error state and retries', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockImplementationOnce((url: string) => (url.includes('/status/')
+                ? Promise.resolve(jsonResponse({}, 500)) : Promise.resolve(jsonResponse(matchPayload(0)))));
+            render(<JobMatchPanel/>);
+            await screen.findByTestId('job-match-error');
+            const refresh = screen.getByTestId('job-match-refresh');
+            expect(refresh).toBeEnabled();
+            expect(refresh).toHaveAttribute('aria-label', 'Refresh match status');
+            expect(refresh).toHaveAttribute('title', 'Refresh match status');
+            mock.mockImplementation((url: string) => {
+                if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
+                if (url.includes('/ranked/')) return Promise.resolve(jsonResponse(rankedPayload()));
+                return Promise.resolve(jsonResponse(matchPayload(3)));
+            });
+            fireEvent.click(refresh);
+            await waitFor(() => expect(screen.queryByTestId('job-match-error')).not.toBeInTheDocument());
         });
 
         test('retry button re-fetches status', async () => {
@@ -412,7 +458,7 @@ describe('JobMatchPanel', () => {
 
         test('a failed ranked read is an error, not the count-only view (#609)', async () => {
             await renderPanel('ok', { count: 3, rankedStatus: 500 });
-            expect(screen.getByTestId('job-match-error')).toHaveTextContent('We couldn’t load your job matches. Please try again.');
+            expect(screen.getByTestId('job-match-error')).toHaveTextContent('Something went wrong while loading. Your saved requirements are unchanged.');
             expect(screen.getByTestId('job-match-panel')).not.toHaveTextContent('ready to review');
         });
 

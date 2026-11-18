@@ -1520,6 +1520,24 @@ body.app-nav-drawer-open {
     color: #7dd3fc;
 }
 
+/* Error state (issue #609 visual review): the alert holds only the message;
+   "Try again" sits below it so the accent button is off the red surface. The
+   alert's own bottom margin is replaced by a fixed gap above the button, so
+   the card padding stays even below the last control. */
+#job-match-panel .job-match-error-alert {
+    margin-bottom: 0.75rem;
+}
+
+#job-match-panel .job-match-error-icon {
+    flex-shrink: 0;
+    margin-top: 0.125rem;
+}
+
+#job-match-panel .job-match-error-heading {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
 @media (max-width: 390px) {
     .app-content,
     .app-messages {
