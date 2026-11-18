@@ -410,10 +410,51 @@ describe('JobMatchPanel', () => {
             expect(screen.queryByTestId(/ranked-job-/)).not.toBeInTheDocument();
         });
 
-        test('falls back to match count when ranked API fails', async () => {
+        test('a failed ranked read is an error, not the count-only view (#609)', async () => {
             await renderPanel('ok', { count: 3, rankedStatus: 500 });
-            const panel = screen.getByTestId('job-match-panel');
-            await waitFor(() => expect(panel).toHaveTextContent('3 job matches ready to review'));
+            expect(screen.getByTestId('job-match-error')).toHaveTextContent('We couldn’t load your job matches. Please try again.');
+            expect(screen.getByTestId('job-match-panel')).not.toHaveTextContent('ready to review');
+        });
+
+        test.each([['no_matches', 503], ['partial_coverage', 503], ['mystery_state', 503]])(
+            'a failed ranked read in %s shows the error card with Try again, not "No matches"', async (state, rankedStatus) => {
+                await renderPanel(state, { rankedStatus });
+                const alert = screen.getByTestId('job-match-error');
+                expect(alert).toHaveAttribute('role', 'alert');
+                expect(screen.getByRole('button', {name: 'Retry loading matches'})).toBeInTheDocument();
+                expect(screen.getByTestId('job-match-panel')).not.toHaveTextContent('No matches for your current requirements');
+            },
+        );
+
+        test('a failed ranked read in a prerequisite state keeps the status empty state', async () => {
+            await renderPanel('no_preferences', { rankedStatus: 503 });
+            expect(screen.queryByTestId('job-match-error')).toBeNull();
+            expect(screen.getByTestId('job-match-panel')).toHaveTextContent('Test title');
+        });
+
+        test('a rejected ranked fetch shows the error card', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockImplementation((url: string) => (url.includes('/ranked/')
+                ? Promise.reject(new Error('network'))
+                : Promise.resolve(jsonResponse(url.includes('/status/') ? statusPayload('no_matches') : matchPayload(0, [])))));
+            render(<JobMatchPanel/>);
+            expect(await screen.findByTestId('job-match-error')).toBeInTheDocument();
+        });
+
+        test('Try again after a failed ranked read re-runs the reads and can succeed or fail again', async () => {
+            await renderPanel('no_matches', { rankedStatus: 503 });
+            const mock = global.fetch as jest.Mock;
+            const impl = mock.getMockImplementation()!;
+            const retry = screen.getByRole('button', {name: 'Retry loading matches'});
+            // Second failure: same card.
+            await act(async () => { fireEvent.click(retry); });
+            expect(await screen.findByTestId('job-match-error')).toBeInTheDocument();
+            mock.mockImplementation((url: string) => (url.includes('/ranked/')
+                ? Promise.resolve(jsonResponse(rankedPayload([sampleJobMatch], [])))
+                : impl(url)));
+            await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Retry loading matches'})); });
+            expect(await screen.findByTestId('ranked-job-42')).toBeInTheDocument();
+            expect(screen.queryByTestId('job-match-error')).toBeNull();
         });
 
         test('refresh button re-fetches ranked matches', async () => {

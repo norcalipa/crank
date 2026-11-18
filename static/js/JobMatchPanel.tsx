@@ -318,6 +318,13 @@ function sessionExpired(res: Response, signInUrl: string): boolean {
  */
 const LOAD_FAILED_MESSAGE = 'We couldn’t load your job matches. Please try again.';
 const REFRESH_FAILED_MESSAGE = 'We couldn’t refresh your job matches.';
+// Statuses that explain themselves without the ranked list: a failed ranked
+// read there still shows the status empty state (issue #609). Any other or
+// unknown state needs the list, so a failed ranked read is an error.
+const PREREQUISITE_STATES = new Set([
+    'no_source', 'source_disabled', 'crawl_running', 'crawl_failed',
+    'crawl_stale', 'crawl_empty', 'no_preferences',
+]);
 
 async function parseJson<T>(res: Response): Promise<T> {
     try {
@@ -1289,6 +1296,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 throw new Error(LOAD_FAILED_MESSAGE);
             }
             const statusData: EmptyStatePayload = await parseJson(statusRes);
+            // A failed ranked read says nothing about whether matches exist:
+            // never present it as "No matches" or a count-only view (#609).
+            if (!rankedRes.ok && !PREREQUISITE_STATES.has(statusData.state)) {
+                throw new Error(LOAD_FAILED_MESSAGE);
+            }
             let matchData: {count?: number; results?: RankedJobMatch[]} | null = null;
             if (matchRes.ok) {
                 matchData = await parseJson<{count?: number; results?: RankedJobMatch[]}>(matchRes);
