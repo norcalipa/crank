@@ -198,7 +198,7 @@ html, body {
 }
 
 .app-nav-link--active {
-    background-color: rgba(0, 123, 255, .15);
+    background-color: rgba(96, 165, 250, .16);
     color: var(--bs-primary-text-emphasis, #0a58ca);
     font-weight: 600;
     box-shadow: inset 3px 0 0 var(--bs-link-color);
@@ -246,11 +246,12 @@ html, body {
 
 .app-nav-link--logout {
     cursor: pointer;
-    color: var(--bs-danger-text-emphasis, #f0958c);
+    color: var(--bs-secondary-color);
 }
 
 .app-nav-link--logout:hover {
-    background-color: rgba(220, 53, 69, .12);
+    background-color: rgba(255, 255, 255, .07);
+    color: var(--bs-body-color);
 }
 
 .app-nav-toggle {
@@ -298,6 +299,10 @@ html, body {
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+}
+
+[data-nav-drawer] .app-nav-brand {
+    border-bottom: 0;
 }
 
 .app-nav-drawer-header {
@@ -426,6 +431,40 @@ body.app-nav-drawer-open {
 
 .rankings-subtitle { min-width: 0; }
 
+.rankings-title-row,
+.page-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    margin-bottom: .25rem;
+}
+
+.rankings-title,
+.page-title-row > h1 {
+    margin: 0;
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    line-height: 1.2;
+}
+
+.homepage-container:has(.company-view) > .rankings-title-row {
+    justify-content: flex-end;
+}
+
+.homepage-container:has(.company-view) .rankings-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 .how-ranking-works--inline {
     border: 0;
     background: transparent;
@@ -495,6 +534,11 @@ body.app-nav-drawer-open {
     gap: .5rem;
 }
 
+/* A degraded state that still shows data is a warning, not a danger. */
+.choices-status.alert-warning {
+    width: 100%;
+}
+
 .filter-chips > li {
     min-width: 0;
     max-width: 100%;
@@ -553,6 +597,47 @@ body.app-nav-drawer-open {
     flex: 2 1 12rem;
 }
 
+.rankings-toolbar .form-select {
+    border-radius: .75rem;
+}
+
+.rankings-suggest {
+    border-radius: .75rem;
+    font-size: .875rem;
+}
+
+.rankings-suggest--footer {
+    display: none;
+}
+
+.rankings-toolbar-pager,
+.rankings-pager-bottom {
+    display: flex;
+    justify-content: flex-end;
+    margin-left: auto;
+}
+
+.rankings-pager-bottom {
+    margin-top: .75rem;
+}
+
+.rankings-pager-bottom .pagination {
+    justify-content: flex-end;
+}
+
+.rankings-toolbar-pager {
+    order: 2;
+}
+
+.rankings-toolbar-count-text {
+    order: 1;
+}
+
+.rankings-toolbar-count > .choices-status-slot {
+    flex: 1 1 100%;
+    order: 3;
+}
+
 .rankings-toolbar-preset {
     display: flex;
     align-items: center;
@@ -588,16 +673,23 @@ body.app-nav-drawer-open {
     font-size: .875rem;
 }
 
+.visually-hidden-narrow { }
+
 .organization-results-count,
 .organization-page-count {
     min-width: 0;
     overflow-wrap: anywhere;
 }
 
-/* On phones the "Updated" mark takes a line of its own under the count, whose
-   room is always reserved, so its arrival and departure move nothing however
-   long the count is (issue #485c). Wider, it shares the count's line. */
-@media (max-width: 575.98px) {
+/* The "Updated" mark sits after the count on the same line at every width; its
+   room stays reserved while it is invisible, so its arrival moves nothing
+   (issue #485c). */
+.organization-results-count .badge { white-space: nowrap; }
+
+/* The narrowest phones (under 360px) cannot fit a long count and the mark on
+   one line, so the mark has a line of its own under the count whose room is
+   always reserved: its arrival moves nothing. */
+@media (max-width: 359.98px) {
     .organization-results-count {
         position: relative;
         padding-bottom: 1.5rem;
@@ -645,7 +737,7 @@ body.app-nav-drawer-open {
     flex: 1 1 10rem;
     min-width: 0;
     padding-inline-start: 2.5rem;
-    border-radius: 999px;
+    border-radius: .75rem;
 }
 
 .organization-search-icon {
@@ -713,7 +805,7 @@ body.app-nav-drawer-open {
 
 .organization-row {
     display: grid;
-    grid-template-columns: 2rem 2.5rem minmax(0, 1fr) minmax(10rem, 17rem) 7.5rem auto;
+    grid-template-columns: 2rem 2.5rem minmax(14rem, 19rem) minmax(0, 1fr) 6.5rem auto;
     grid-template-areas: "rank tile main evidence score cta";
     align-items: center;
     gap: .75rem;
@@ -726,7 +818,7 @@ body.app-nav-drawer-open {
 }
 
 .organization-row:hover {
-    border-color: #60a5fa;
+    border-color: var(--bs-primary);
     background: var(--bs-secondary-bg);
 }
 
@@ -793,42 +885,84 @@ body.app-nav-drawer-open {
 
 .organization-evidence {
     grid-area: evidence;
+    display: grid;
+    gap: .125rem;
     min-width: 0;
+}
+
+.organization-checked {
+    color: var(--bs-secondary-color);
+    font-size: .75rem;
+    white-space: nowrap;
 }
 
 .crank-chips {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: .25rem;
+    overflow: hidden;
+}
+
+/* The list header (issue #617): one line of column names on the row grid,
+   shown from 34rem of container width. */
+.organization-list-header {
+    display: none;
+    grid-template-columns: 2rem 2.5rem minmax(14rem, 19rem) minmax(0, 1fr) 6.5rem auto;
+    gap: .75rem;
+    margin-bottom: .25rem;
+    padding: 0 calc(.875rem + 1px);
+    color: var(--bs-secondary-color);
+    font-size: 11px;
+    letter-spacing: .06em;
+    line-height: 1.4;
+    text-transform: uppercase;
+}
+
+.organization-list-header-company { grid-column: 3; }
+.organization-list-header-evidence { grid-column: 4; }
+.organization-list-header-score { grid-column: 5 / span 2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@container organization-results (min-width: 34rem) {
+    .organization-list-header { display: grid; }
 }
 
 .crank-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: .25rem;
+    display: inline-block;
+    flex: 0 0 auto;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
     padding: .0625rem .5rem;
-    border: 1px solid currentColor;
+    border: 0;
     border-radius: 999px;
-    background: rgba(255, 255, 255, .04);
+    background: color-mix(in srgb, currentColor 16%, transparent);
     font-size: .75rem;
     font-weight: 600;
     line-height: 1.5;
     white-space: nowrap;
 }
 
-.crank-chip-marker { font-variant-emoji: text; }
+/* Only the last chip gives way when the cell is short, with an ellipsis. */
+.crank-chip:last-child {
+    flex-shrink: 1;
+    min-width: 1.75rem;
+}
+
+.crank-chip-marker { margin-inline-end: .25rem; font-variant-emoji: text; }
 
 .crank-chip--verified { color: var(--bs-success-text-emphasis); }
 .crank-chip--stale { color: var(--bs-warning-text-emphasis); }
-.crank-chip--unknown { color: var(--bs-secondary-color); border-style: dashed; }
-.crank-chip--pending { color: var(--bs-info-text-emphasis); border-style: dashed; }
-.crank-chip--vesting { color: var(--bs-primary-text-emphasis); }
+.crank-chip--unknown { color: var(--bs-secondary-color); }
+.crank-chip--pending { color: var(--bs-info-text-emphasis); }
+.crank-chip--more { color: var(--bs-secondary-color); }
+.crank-chip--vesting { color: var(--bs-secondary-color); }
 
 [data-bs-theme="dark"] .crank-chip--verified { color: #86efac; }
 [data-bs-theme="dark"] .crank-chip--stale { color: #fcd34d; }
 [data-bs-theme="dark"] .crank-chip--unknown { color: #d1d5db; }
 [data-bs-theme="dark"] .crank-chip--pending { color: #c4b5fd; }
-[data-bs-theme="dark"] .crank-chip--vesting { color: #bfdbfe; }
+[data-bs-theme="dark"] .crank-chip--vesting { color: #cbd5e1; }
+[data-bs-theme="dark"] .crank-chip--more { color: #cbd5e1; }
 
 .organization-score {
     grid-area: score;
@@ -855,29 +989,38 @@ body.app-nav-drawer-open {
     height: 6px;
     overflow: hidden;
     border-radius: 999px;
-    background: rgba(255, 255, 255, .16);
+    background: rgba(148, 163, 184, .22);
 }
 
 .organization-score-bar > span {
     display: block;
     height: 100%;
     border-radius: inherit;
-    background: linear-gradient(90deg, #38bdf8, #60a5fa);
+    background: #94a3b8;
 }
 
 .organization-cta {
     grid-area: cta;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: .375rem;
     padding: .375rem .75rem;
-    border: 1px solid #60a5fa;
+    border: 1px solid transparent;
     border-radius: 8px;
-    background: #60a5fa;
-    color: #0b1220;
+    background: transparent;
+    color: #93c5fd;
     font-size: .875rem;
     font-weight: 600;
     white-space: nowrap;
+}
+
+/* Quiet until the row is read: filled on hover or keyboard focus. */
+.organization-row:hover .organization-cta,
+.organization-row:focus-visible .organization-cta {
+    border-color: #60a5fa;
+    background: #60a5fa;
+    color: #0b1220;
 }
 
 /* Medium: two lines; the chips drop under the name. */
@@ -891,21 +1034,38 @@ body.app-nav-drawer-open {
     }
 }
 
-/* Phones: a stacked card, full width, at most 180px. */
+/* Phones: a compact card of about 118px. */
 @container organization-results (max-width: 34rem) {
     .organization-row {
-        grid-template-columns: 1.5rem 2.5rem minmax(0, 1fr) auto;
+        grid-template-columns: 1rem 2.5rem minmax(0, 1fr) auto;
         grid-template-areas:
             "rank tile main score"
-            "evidence evidence evidence evidence"
-            "cta cta cta cta";
-        gap: .5rem .5rem;
+            "evidence evidence evidence cta";
+        gap: .375rem .5rem;
+        padding: .5rem;
+    }
+
+    .organization-name {
+        font-size: 1rem;
+    }
+
+    .organization-meta {
+        font-size: .75rem;
+    }
+
+    .organization-evidence {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .organization-cta {
-        justify-content: center;
-        width: 100%;
-        padding: .25rem .75rem;
+        justify-self: end;
+        width: auto;
+        padding: .25rem 0;
+        font-size: .75rem;
+    }
+
+    .organization-cta .fa-arrow-right {
+        display: none;
     }
 }
 
@@ -1371,25 +1531,23 @@ body.app-nav-drawer-open {
    Issue #467 round-2 visual fixes.
    ------------------------------------------------------------------------- */
 
-/* One interactive color family (sky/cyan). The primary action moves off
-   Bootstrap blue (#0D6EFD) onto a sky fill with dark ink, so primary +
-   outline-info + text-info links share one cyan/sky family and green/amber/
-   rose stay reserved for semantic states. Dark ink #082f49 on sky-500
-   #0ea5e9 is ~4.7:1; hover (#38bdf8) and active (#0284c7) stay >=4.5:1. */
+/* One blue (issue #617): the panel's primary action is the global primary,
+   #60a5fa with dark ink #0b1220 (~8:1); hover #93c5fd stays above 4.5:1, and
+   green/amber/rose stay reserved for semantic states. */
 #job-match-panel .btn-primary {
-    --bs-btn-color: #082f49;
-    --bs-btn-bg: #0ea5e9;
-    --bs-btn-border-color: #0ea5e9;
-    --bs-btn-hover-color: #082f49;
-    --bs-btn-hover-bg: #38bdf8;
-    --bs-btn-hover-border-color: #38bdf8;
-    --bs-btn-active-color: #082f49;
-    --bs-btn-active-bg: #0284c7;
-    --bs-btn-active-border-color: #0284c7;
-    --bs-btn-disabled-color: #082f49;
-    --bs-btn-disabled-bg: #0ea5e9;
-    --bs-btn-disabled-border-color: #0ea5e9;
-    --bs-btn-focus-shadow-rgb: 14, 165, 233;
+    --bs-btn-color: #0b1220;
+    --bs-btn-bg: #60a5fa;
+    --bs-btn-border-color: #60a5fa;
+    --bs-btn-hover-color: #0b1220;
+    --bs-btn-hover-bg: #93c5fd;
+    --bs-btn-hover-border-color: #93c5fd;
+    --bs-btn-active-color: #0b1220;
+    --bs-btn-active-bg: #93c5fd;
+    --bs-btn-active-border-color: #93c5fd;
+    --bs-btn-disabled-color: #0b1220;
+    --bs-btn-disabled-bg: #60a5fa;
+    --bs-btn-disabled-border-color: #60a5fa;
+    --bs-btn-focus-shadow-rgb: 96, 165, 250;
 }
 
 /* Requirement chips: three semantically distinct states. Match = emerald,
@@ -1427,12 +1585,12 @@ body.app-nav-drawer-open {
 }
 
 /* Visible keyboard-focus rings on every panel control. The sky ring
-   (#38bdf8) stays distinct from the semantic amber/rose/green and reads
+   (#93c5fd) stays distinct from the semantic amber/rose/green and reads
    against the dark surface at >=3:1 non-text contrast. */
 #job-match-panel .btn:focus-visible,
 #job-match-panel a.job-match-name:focus-visible,
 #job-match-panel a.btn:focus-visible {
-    outline: 3px solid #38bdf8;
+    outline: 3px solid #93c5fd;
     outline-offset: 2px;
 }
 
@@ -2226,78 +2384,69 @@ body.app-nav-drawer-open {
    the only CSS hooks; WorkspaceShell.tsx owns them.
    ------------------------------------------------------------------------ */
 
-.assistant-launcher {
-    position: fixed;
-    right: 1rem;
-    bottom: calc(1rem + var(--safe-area-inset-bottom));
-    z-index: var(--z-assistant);
+/* The Assistant entry (issue #617) sits in the page's title row on wide
+   screens and in the top bar beside Menu on phones, so it never floats over
+   a row action. Only a page with neither slot gets the floating 44px
+   icon-only circle, and its content reserves the room below. */
+.assistant-slot {
     display: inline-flex;
-    align-items: center;
-    gap: .5rem;
-    min-height: 44px;
-    padding: .625rem 1rem;
-    /* Defined boundary (visual review #472 round 2, item 10): the primary
-       blue sits close to the dark surfaces, so the closed launcher carries
-       a visible light border plus an outer dark ring that keeps the edge
-       legible on any background and reads as hover/focus-ready. */
-    /* Launcher perimeter (visual review #472 round 4, item 5): a bright
-       light border plus a dual ring — dark inner ring for light surfaces,
-       faint light halo for dark content — and a soft drop shadow, so the
-       launcher edge stays legible over dark content. */
-    border: 1px solid rgba(255, 255, 255, .6);
-    border-radius: 999px;
-    background: var(--bs-primary);
-    color: #fff;
-    font-size: .9375rem;
-    cursor: pointer;
-    box-shadow: 0 0 0 1px rgba(10, 15, 25, .85),
-        0 0 0 2px rgba(255, 255, 255, .18),
-        0 8px 24px rgba(0, 0, 0, .45);
+    flex: 0 0 auto;
 }
 
-.assistant-launcher:hover {
-    filter: brightness(1.1);
-    border-color: rgba(255, 255, 255, .65);
-}
-
-/* Pressed-state feedback: while the panel is open the launcher is the
-   control that opened it, so it keeps an explicit pressed treatment instead
-   of relying on the icon alone (visual review #472 round 1, item 9). */
-.assistant-launcher[aria-expanded="true"] {
-    background: #0b5ed7;
-    border-color: #9ec5fe;
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, .35), 0 2px 8px rgba(0, 0, 0, .4);
-}
-
-/* Minimized restore control: icon alone was ambiguous (restore? open?
-   expand?), so the compact chip always carries a text cue. */
+.assistant-launcher,
 .assistant-restore {
-    position: fixed;
-    right: 1rem;
-    bottom: calc(1rem + var(--safe-area-inset-bottom));
-    z-index: var(--z-assistant);
     display: inline-flex;
     align-items: center;
     gap: .5rem;
     min-height: 44px;
-    padding: .625rem 1rem;
-    border: 1px solid #b9d3fe;
-    border-radius: 999px;
-    background: #0b5ed7;
-    color: #fff;
+    padding: .5rem 1rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: .75rem;
+    background: var(--bs-secondary-bg);
+    color: var(--bs-body-color);
     font-size: .9375rem;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
-    /* Same defined boundary as the launcher (visual review #472 round 2,
-       item 10; round 4, item 5): light border + dark inner ring + faint
-       light halo on dark surfaces. */
-    box-shadow: 0 0 0 1px rgba(10, 15, 25, .85),
-        0 0 0 2px rgba(255, 255, 255, .18),
-        0 8px 24px rgba(0, 0, 0, .45);
 }
 
+.assistant-launcher:hover,
 .assistant-restore:hover {
-    filter: brightness(1.1);
+    border-color: var(--bs-primary);
+    color: var(--bs-emphasis-color);
+}
+
+.assistant-launcher--floating,
+.assistant-restore--floating {
+    position: fixed;
+    right: 1rem;
+    bottom: calc(1rem + var(--safe-area-inset-bottom));
+    z-index: var(--z-assistant);
+    justify-content: center;
+    width: 44px;
+    padding: 0;
+    border-radius: 50%;
+    border-color: var(--bs-primary);
+    background: var(--bs-primary);
+    color: #0b1220;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+
+.assistant-launcher--floating:hover,
+.assistant-restore--floating:hover {
+    background: #93c5fd;
+    border-color: #93c5fd;
+    color: #0b1220;
+}
+
+.assistant-launcher--floating .assistant-launcher-label,
+.assistant-restore--floating .assistant-restore-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
 }
 
 .assistant-restore:focus-visible {
@@ -2582,8 +2731,8 @@ body.app-nav-drawer-open {
         margin: 0 0 -1rem;
         border-radius: 0 0 .375rem .375rem;
         padding: .875rem 1rem;
-        background: #111722;
-        border-top: 1px solid rgba(255, 255, 255, .10);
+        background: var(--bs-body-bg);
+        border-top: 1px solid var(--bs-border-color);
     }
 
     body.assistant-docked .app-content {
@@ -3218,7 +3367,7 @@ body.app-nav-drawer-open {
 }
 
 /* Minimized pill reserves its own space so it never covers page content. */
-body:has(.assistant-restore) .app-content {
+body:has(.assistant-dock--floating) .app-content {
     padding-bottom: calc(44px + 2rem + env(safe-area-inset-bottom, 0px));
 }
 
@@ -3252,10 +3401,8 @@ body.assistant-open .app-content .table-responsive {
         linear-gradient(270deg, rgba(255, 255, 255, .22), transparent) right center / .75rem 100% no-repeat scroll;
 }
 
-/* Mobile dock: the launcher / restore control live in a full-width row that
-   is a normal-flow sibling after the page, sticky to the viewport bottom
-   with a safe-area inset, so at rest it reserves its own space and never
-   sits on top of content. */
+/* The dock wrapper is layout-neutral: the entry lives in a page slot (title
+   row or phone top bar) or, failing both, floats as a 44px circle. */
 .assistant-dock {
     display: contents;
 }
@@ -3269,28 +3416,6 @@ body.assistant-open .app-content .table-responsive {
        scrollport; clip keeps the horizontal guard without that. */
     body:has(.assistant-dock) {
         overflow-x: clip;
-    }
-
-    .assistant-dock {
-        display: flex;
-        justify-content: flex-end;
-        position: sticky;
-        bottom: 0;
-        z-index: var(--z-assistant);
-        padding: .5rem .75rem calc(.5rem + env(safe-area-inset-bottom, 0px));
-        background: var(--bs-body-bg);
-        border-top: 1px solid var(--bs-border-color);
-    }
-
-    .assistant-dock .assistant-launcher,
-    .assistant-dock .assistant-restore {
-        position: static;
-        width: 100%;
-        justify-content: center;
-    }
-
-    body:has(.assistant-restore) .app-content {
-        padding-bottom: 2.5rem;
     }
 }
 
@@ -4051,8 +4176,8 @@ body.assistant-open .app-content .table-responsive {
 /* Scroll cue at the transcript edges (same technique as .priorities-scroll). */
 #job-search-chat .chat-transcript {
     background-image:
-        linear-gradient(#212529 30%, rgba(33, 37, 41, 0)),
-        linear-gradient(rgba(33, 37, 41, 0), #212529 70%),
+        linear-gradient(#101b26 30%, rgba(16, 27, 38, 0)),
+        linear-gradient(rgba(16, 27, 38, 0), #101b26 70%),
         radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), transparent),
         radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), transparent);
     background-position: top, bottom, top, bottom;
@@ -4118,8 +4243,8 @@ body.assistant-open .app-content .table-responsive {
 
     /* Last ranking card stays above the dock: dock height (44px control +
        .5rem padding top/bottom + 1px border) plus the safe-area inset. */
-    body:has(.assistant-dock) .app-content {
-        padding-bottom: calc(44px + 1rem + 1px + var(--safe-area-inset-bottom));
+    body:has(.assistant-dock--floating) .app-content {
+        padding-bottom: calc(44px + 2rem + var(--safe-area-inset-bottom));
     }
 }
 
@@ -4128,31 +4253,11 @@ body.assistant-open .app-content .table-responsive {
     display: none;
 }
 
-/* On phones the loading status is the spinner alone (the words stay for
-   assistive technology), so it never wraps onto a line of its own. */
-@media (max-width: 575.98px) {
-    /* The spinner sits at the end of the count's first line, in room that is
-       always reserved, so it adds no line of its own and moves nothing. */
-    .rankings-toolbar-count-text {
-        position: relative;
-        padding-inline-end: 1.75rem;
-    }
-
-    .choices-status-slot:has(> [data-testid="choices-status-loading"]) {
-        position: absolute;
-        inset-inline-end: 0;
-        top: 0;
-    }
-
-    .choices-status:not(.choices-status-error) .choices-status-text {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0, 0, 0, 0);
-        white-space: nowrap;
-    }
+/* The loading status keeps its words at every width (issue #617) and sits on
+   the count's own line, so nothing moves when it goes; an error takes a
+   full-width line of its own after the count and the pager. */
+.rankings-toolbar-count-text .choices-status {
+    white-space: nowrap;
 }
 
 .choices-skeleton {
@@ -4463,14 +4568,14 @@ body.assistant-open .app-content .table-responsive {
 .priorities-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .priorities-section .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; }
 .priorities-section .btn-outline-primary {
-    --bs-btn-color: #6ea8fe;
-    --bs-btn-border-color: #6ea8fe;
-    --bs-btn-hover-color: #fff;
-    --bs-btn-hover-bg: #0d6efd;
-    --bs-btn-hover-border-color: #0d6efd;
-    --bs-btn-active-color: #fff;
-    --bs-btn-active-bg: #0a58ca;
-    --bs-btn-active-border-color: #0a58ca;
+    --bs-btn-color: #93c5fd;
+    --bs-btn-border-color: #60a5fa;
+    --bs-btn-hover-color: #0b1220;
+    --bs-btn-hover-bg: #60a5fa;
+    --bs-btn-hover-border-color: #60a5fa;
+    --bs-btn-active-color: #0b1220;
+    --bs-btn-active-bg: #93c5fd;
+    --bs-btn-active-border-color: #93c5fd;
 }
 .priorities-section .link-danger { color: #ea868f !important; text-decoration-color: rgba(234, 134, 143, 0.5) !important; }
 .priorities-section .link-danger:hover,
@@ -4533,8 +4638,8 @@ span.priority-chip-button { cursor: default; }
     margin-inline: -6px;
     scroll-padding: 8px;
     background:
-        linear-gradient(#212529 30%, rgba(33, 37, 41, 0)) top / 100% 24px no-repeat local,
-        linear-gradient(rgba(33, 37, 41, 0), #212529 70%) bottom / 100% 24px no-repeat local,
+        linear-gradient(#101b26 30%, rgba(16, 27, 38, 0)) top / 100% 24px no-repeat local,
+        linear-gradient(rgba(16, 27, 38, 0), #101b26 70%) bottom / 100% 24px no-repeat local,
         radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), transparent) top / 100% 8px no-repeat scroll,
         radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), transparent) bottom / 100% 8px no-repeat scroll;
 }
@@ -4769,7 +4874,7 @@ span.priority-chip-button { cursor: default; }
     bottom: -6px;
     margin: 0 -6px -6px;
     padding: 0.5rem 6px 0.25rem;
-    background: #212529;
+    background: #101b26;
     border-top: 1px solid #495057;
     box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.8);
 }
@@ -4825,7 +4930,7 @@ span.priority-chip-button { cursor: default; }
 @media (max-width: 767.98px) {
     /* Sheets: no card chrome, so the diff gets the width and the height. */
     .priorities-sidebar .priorities-review-compact { padding: 0; border: 0; background: transparent; }
-    .priorities-sidebar .priorities-review-compact > .chat-actions { margin-inline: -6px; padding-inline: 6px; background: #212529; }
+    .priorities-sidebar .priorities-review-compact > .chat-actions { margin-inline: -6px; padding-inline: 6px; background: #101b26; }
     /* The note only repeats the two button labels. */
     .priorities-sidebar .priorities-review-compact > .priorities-scope-note { display: none; }
     /* The reset question is read before its buttons: no card chrome, and the buttons follow the text. */
@@ -4836,7 +4941,7 @@ span.priority-chip-button { cursor: default; }
     .priorities-sidebar .priorities-applied > .priorities-heading { margin-bottom: 0.25rem; }
     .priorities-sidebar .priorities-applied > .pref-change-list { margin-top: 0; }
     .priorities-sidebar .priorities-applied .pref-change-item:first-child { padding-top: 0; border-top: 0; }
-    .priorities-sidebar .priorities-applied > .chat-actions { margin-inline: -6px; padding-inline: 6px; background: #212529; }
+    .priorities-sidebar .priorities-applied > .chat-actions { margin-inline: -6px; padding-inline: 6px; background: #101b26; }
 }
 @media (max-width: 767.98px) and (max-height: 640px) {
     /* On the shortest sheets the summary keeps to one line, so the values it is about show. */
@@ -5407,7 +5512,7 @@ span.priority-chip-button { cursor: default; }
 #job-match-panel .job-match-legend { margin-bottom: 1rem; }
 #job-match-panel .job-match-legend .ranking-definitions dt:first-child { margin-top: 0; }
 /* Sky like every other focus ring in this panel, not the rankings amber. */
-#job-match-panel .how-ranking-works-summary:focus-visible { outline-color: #38bdf8; }
+#job-match-panel .how-ranking-works-summary:focus-visible { outline-color: #93c5fd; }
 @container job-match (max-width: 26rem) {
     #job-match-panel .job-match-legend .how-ranking-works-content { font-size: .875rem; line-height: 1.45; }
     #job-match-panel .job-match-legend .ranking-definitions dt { margin-top: .5rem; }
@@ -5420,7 +5525,7 @@ span.priority-chip-button { cursor: default; }
 }
 
 #job-match-panel .job-match-panel-title:focus-visible {
-    outline: 3px solid #38bdf8;
+    outline: 3px solid #93c5fd;
     outline-offset: 2px;
 }
 
@@ -5435,7 +5540,7 @@ span.priority-chip-button { cursor: default; }
     container-name: company-view;
     min-width: 0;
     margin-bottom: 1.5rem;
-    background-color: #212529;
+    background-color: #101b26;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 4px;
     color: #fff;
@@ -5574,33 +5679,8 @@ span.priority-chip-button { cursor: default; }
 /* While a company is open it is the page's subject: the rankings
    introduction steps aside so the view starts at the top of the scroll area.
    The page heading stays in the accessibility tree. */
-.homepage-container:has(.company-view) > h1 {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-}
-
 .homepage-container:has(.company-view) > .rankings-intro {
     display: none;
-}
-
-/* Phones: a short state (loading, not found, load error) keeps the Assistant
-   bar at the bottom edge. The page is at least as tall as the viewport minus
-   the sticky top bar (.app-mobile-topbar: 48px plus its 1px border) and the
-   bar. The bar's button is 44.5px tall, so the bar is half a pixel taller
-   than the padding expression above (44px + 1rem + 1px): the 2px here keeps
-   the page from being 1px taller than the window. */
-@media (max-width: 767.98px) {
-    body:has(.assistant-dock) .app-content:has(.company-view) {
-        min-height: calc(100vh - 49px - (44px + 1rem + 2px + var(--safe-area-inset-bottom)));
-        min-height: calc(100dvh - 49px - (44px + 1rem + 2px + var(--safe-area-inset-bottom)));
-    }
 }
 
 /* Not found and load error are a compact block, so the sentence, Retry and
@@ -5860,3 +5940,289 @@ span.priority-chip-button { cursor: default; }
     opacity: .75;
 }
 /* end issue #486 company view */
+
+/* ==========================================================================
+   Issue #617 round 2: one blue on navy surfaces, the boards' palette.
+   ========================================================================== */
+[data-bs-theme="dark"] {
+    --bs-body-bg: #0c1620;
+    --bs-body-bg-rgb: 12, 22, 32;
+    --bs-tertiary-bg: #101b26;
+    --bs-tertiary-bg-rgb: 16, 27, 38;
+    --bs-secondary-bg: #142235;
+    --bs-secondary-bg-rgb: 20, 34, 53;
+    --bs-border-color: #1f2d3d;
+    --bs-border-color-translucent: rgba(148, 163, 184, .16);
+    --bs-primary: #60a5fa;
+    --bs-primary-rgb: 96, 165, 250;
+    --bs-link-color: #93c5fd;
+    --bs-link-color-rgb: 147, 197, 253;
+    --bs-link-hover-color: #bfdbfe;
+    --bs-link-hover-color-rgb: 191, 219, 254;
+    --bs-primary-text-emphasis: #93c5fd;
+    --bs-primary-bg-subtle: #10243d;
+    --bs-primary-border-subtle: #1e3a5f;
+    --bs-secondary-bg-subtle: #142235;
+    --bs-secondary-border-subtle: #2a3b50;
+    --bs-dark-rgb: 16, 27, 38;
+}
+
+[data-bs-theme="dark"] .btn-primary {
+    --bs-btn-color: #0b1220;
+    --bs-btn-bg: #60a5fa;
+    --bs-btn-border-color: #60a5fa;
+    --bs-btn-hover-color: #0b1220;
+    --bs-btn-hover-bg: #93c5fd;
+    --bs-btn-hover-border-color: #93c5fd;
+    --bs-btn-active-color: #0b1220;
+    --bs-btn-active-bg: #93c5fd;
+    --bs-btn-active-border-color: #93c5fd;
+    --bs-btn-disabled-color: #0b1220;
+    --bs-btn-disabled-bg: #60a5fa;
+    --bs-btn-disabled-border-color: #60a5fa;
+    --bs-btn-focus-shadow-rgb: 96, 165, 250;
+}
+
+[data-bs-theme="dark"] .btn-outline-primary {
+    --bs-btn-color: #93c5fd;
+    --bs-btn-border-color: #60a5fa;
+    --bs-btn-hover-color: #0b1220;
+    --bs-btn-hover-bg: #60a5fa;
+    --bs-btn-hover-border-color: #60a5fa;
+    --bs-btn-active-color: #0b1220;
+    --bs-btn-active-bg: #93c5fd;
+    --bs-btn-active-border-color: #93c5fd;
+    --bs-btn-disabled-color: #93c5fd;
+    --bs-btn-disabled-border-color: #60a5fa;
+    --bs-btn-focus-shadow-rgb: 96, 165, 250;
+}
+
+[data-bs-theme="dark"] .btn-outline-secondary {
+    --bs-btn-color: #cbd5e1;
+    --bs-btn-border-color: #64748b;
+    --bs-btn-hover-color: #0b1220;
+    --bs-btn-hover-bg: #cbd5e1;
+    --bs-btn-hover-border-color: #cbd5e1;
+    --bs-btn-active-color: #0b1220;
+    --bs-btn-active-bg: #e2e8f0;
+    --bs-btn-active-border-color: #e2e8f0;
+    --bs-btn-disabled-color: #94a3b8;
+    --bs-btn-disabled-border-color: #475569;
+}
+
+[data-bs-theme="dark"] .pagination {
+    --bs-pagination-color: #93c5fd;
+    --bs-pagination-bg: var(--bs-tertiary-bg);
+    --bs-pagination-border-color: var(--bs-border-color);
+    --bs-pagination-hover-color: #bfdbfe;
+    --bs-pagination-hover-bg: var(--bs-secondary-bg);
+    --bs-pagination-hover-border-color: var(--bs-border-color);
+    --bs-pagination-focus-color: #bfdbfe;
+    --bs-pagination-focus-bg: var(--bs-secondary-bg);
+    --bs-pagination-active-color: #0b1220;
+    --bs-pagination-active-bg: #60a5fa;
+    --bs-pagination-active-border-color: #60a5fa;
+    --bs-pagination-disabled-color: #94a3b8;
+    --bs-pagination-disabled-bg: var(--bs-tertiary-bg);
+    --bs-pagination-disabled-border-color: var(--bs-border-color);
+}
+
+[data-bs-theme="dark"] .form-check-input:checked,
+[data-bs-theme="dark"] .form-check-input[type="checkbox"]:indeterminate {
+    background-color: #60a5fa;
+    border-color: #60a5fa;
+}
+
+[data-bs-theme="dark"] .form-check-input:checked[type="checkbox"] {
+    --bs-form-check-bg-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%230b1220' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='m6 10 3 3 6-6'/%3e%3c/svg%3e");
+}
+
+/* Controls keep a 3:1 edge on the navy page even though the hairline
+   border colour is quiet. */
+[data-bs-theme="dark"] .form-control,
+[data-bs-theme="dark"] .form-select {
+    border-color: #64748b;
+}
+
+.organization-filter:not(.organization-filter--on) {
+    border-color: #64748b;
+}
+
+.organization-empty-state .organization-empty-title {
+    color: var(--bs-emphasis-color);
+    font-weight: 600;
+}
+
+/* Medium rows: chips sit under the name, so the header drops that column. */
+@container organization-results (max-width: 52rem) {
+    .organization-list-header {
+        grid-template-columns: 2rem 2.5rem minmax(0, 1fr) 7.5rem auto;
+    }
+
+    .organization-list-header-evidence { display: none; }
+    .organization-list-header-score { grid-column: 4 / span 2; }
+}
+
+/* Mobile top bar (issue #617): one 56px band with the wordmark, Menu and
+   the Assistant entry. */
+.app-mobile-brand,
+.app-mobile-actions {
+    display: none;
+}
+
+@media (max-width: 767.98px) {
+    .app-mobile-topbar {
+        justify-content: space-between;
+        gap: .5rem;
+        min-height: 56px;
+        padding: .25rem .75rem;
+    }
+
+    .app-mobile-brand {
+        display: inline-block;
+        color: #93c5fd;
+        font-size: 1.5rem;
+        font-weight: 800;
+        letter-spacing: -.02em;
+        line-height: 1;
+        text-decoration: none;
+    }
+
+    .app-mobile-actions {
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+    }
+
+    .app-nav-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: .5rem;
+        width: auto;
+        padding: 0 .75rem;
+        border-radius: .75rem;
+        background: var(--bs-secondary-bg);
+        font-size: .9375rem;
+    }
+
+    .app-nav-toggle i {
+        font-size: 1.125rem;
+    }
+}
+
+@media (max-width: 575.98px) {
+    /* First screen: Sort by and the vesting toggle share a line, search
+       spans both, the top pager and "Page N of M" step aside (the bottom
+       pager stays), and "Suggest a company" moves under the list. */
+    .rankings-toolbar {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: .5rem;
+    }
+
+    .rankings-toolbar-search,
+    .rankings-toolbar-count,
+    .rankings-toolbar > .filter-chips {
+        grid-column: 1 / -1;
+    }
+
+    .rankings-toolbar-preset {
+        flex: none;
+    }
+
+    .rankings-toolbar-preset .form-select {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .visually-hidden-narrow {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .rankings-toolbar-pager,
+    .organization-page-count {
+        display: none;
+    }
+
+    .rankings-toolbar .rankings-suggest {
+        display: none;
+    }
+
+    .rankings-suggest--footer {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-top: .75rem;
+        width: 100%;
+    }
+
+    .rankings-title-row .assistant-slot { display: none; }
+
+    .rankings-intro {
+        flex-wrap: nowrap;
+        align-items: center;
+        margin-bottom: .5rem;
+    }
+
+    .rankings-intro:not(:has([open])) .rankings-subtitle {
+        flex: 1 1 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .rankings-intro:not(:has([open])) .how-ranking-works--inline {
+        flex: 0 0 auto;
+        white-space: nowrap;
+    }
+
+    .rankings-intro:has([open]) {
+        flex-wrap: wrap;
+    }
+
+    .rankings-toolbar .btn,
+    .rankings-toolbar .form-control,
+    .rankings-toolbar .form-select,
+    .organization-filter {
+        min-height: 44px;
+    }
+
+    .organization-filter {
+        gap: .375rem;
+        padding-inline: .625rem;
+        font-size: .875rem;
+    }
+
+    .homepage-container {
+        padding-top: .25rem;
+    }
+
+    .how-ranking-works--inline > .how-ranking-works-summary {
+        min-height: 32px;
+    }
+
+    /* The loading words fit beside the count on a 375px phone, so the line
+       keeps its height while they show. */
+    .rankings-toolbar-count-text {
+        min-height: 0;
+        column-gap: .375rem;
+    }
+
+    .rankings-toolbar-count-text .choices-status {
+        gap: .375rem;
+        font-size: .75rem;
+    }
+
+    .rankings-toolbar-count-text .choices-status .spinner-border {
+        --bs-spinner-width: .75rem;
+        --bs-spinner-height: .75rem;
+    }
+}

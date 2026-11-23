@@ -29,12 +29,12 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             await page.goto('/');
             const list = results(page);
             const beta = list.getByRole('button', {name: 'View details for E2E Beta Labs'}).locator('visible=true').first();
-            await expect(beta).toContainText('2 of 2 rated');
+            await expect(beta).toContainText('Rated on 2 of 2');
             await expect(beta).toContainText('2 stale');
             await expect(beta).toContainText('5 unknown');
             await expect(beta).toContainText('Pending review');
             const gamma = list.getByRole('button', {name: 'View details for E2E Gamma Works'}).locator('visible=true').first();
-            await expect(gamma).toContainText('1 of 2 rated');
+            await expect(gamma).toContainText('Rated on 1 of 2');
             // Nothing verified: one muted chip, never a row of zero counts.
             await expect(gamma).toContainText('Not yet verified');
             await expect(gamma.locator('.organization-evidence')).not.toContainText('0 verified');

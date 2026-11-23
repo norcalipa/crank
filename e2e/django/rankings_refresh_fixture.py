@@ -11,7 +11,7 @@ cleared on commit exactly as a published score would clear them.
   gave it (a no-op when nothing moved), so the other specs' pinned order holds.
 - ``pad``: extra scored companies (``PAD_PREFIX``; twelve, or ``COUNT``), so the
   list has a second page (or a three-digit total); ``unpad`` removes them again and clears the result caches. The
-  other specs pin "Showing 1-4 of 4 organizations", so a spec that pads always
+  other specs pin "Showing 1–4 of 4 companies", so a spec that pads always
   unpads in ``afterEach``.
 """
 import os

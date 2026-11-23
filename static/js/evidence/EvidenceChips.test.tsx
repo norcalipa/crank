@@ -37,8 +37,8 @@ describe('EvidenceChips', () => {
 
     it('adds pending review and the first-vesting profile chip when they apply', () => {
         expect(texts(evidence({verified: 1, unknown: 0, pending_review: 2}), true))
-            .toEqual(['✓ 1 verified', '… Pending review', '✓ First vesting < 1 yr']);
-        expect(texts(undefined, true)).toEqual(['? Not yet verified', '✓ First vesting < 1 yr']);
+            .toEqual(['✓ 1 verified', '… Pending review', '◷ First vesting < 1 yr']);
+        expect(texts(undefined, true)).toEqual(['? Not yet verified', '◷ First vesting < 1 yr']);
     });
 
     it('renders status classes, hidden markers and explanatory titles', () => {
@@ -48,5 +48,14 @@ describe('EvidenceChips', () => {
         expect(chips.querySelector('.crank-chip--unknown')).toHaveAttribute('title', 'No accepted evidence for this fact.');
         expect(chips.querySelector('.crank-chip--vesting')).toHaveAttribute('title', 'First vesting comes in under one year.');
         chips.querySelectorAll('.crank-chip-marker').forEach(marker => expect(marker).toHaveAttribute('aria-hidden', 'true'));
+    });
+
+    it('folds chips past three into one "+N" chip that names them', () => {
+        render(<EvidenceChips evidence={evidence({verified: 1, stale: 1, unknown: 2, pending_review: 1})} acceleratedVesting/>);
+        const chips = screen.getByTestId('evidence-chips');
+        expect(chips.querySelectorAll('.crank-chip')).toHaveLength(3);
+        const more = screen.getByTestId('evidence-chips-more');
+        expect(more).toHaveTextContent('+3');
+        expect(more).toHaveAttribute('title', '2 unknown, Pending review, First vesting < 1 yr');
     });
 });

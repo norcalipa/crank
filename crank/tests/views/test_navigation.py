@@ -349,6 +349,33 @@ class NavigationShellTests(TestCase):
         self.assertIn('class="app-nav-toggle"', topbar)
         self.assertIn('aria-controls="mobile-nav"', topbar)
 
+    def test_mobile_topbar_carries_wordmark_menu_and_the_assistant_slot(self):
+        html = self._rendered_index_html()
+        start = html.index('<header class="app-mobile-topbar">')
+        topbar = html[start:html.index("</header>", start)]
+        self.assertIn('class="app-mobile-brand"', topbar)
+        self.assertIn('<span class="app-nav-toggle-label" aria-hidden="true">Menu</span>', topbar)
+        self.assertEqual(topbar.count('data-assistant-slot="topbar"'), 1)
+
+    def test_assistant_title_slot_on_help(self):
+        # Wide screens carry the Assistant entry in the page's title row, so
+        # it never floats over a row action (issue #617); the rankings page's
+        # slot is covered in test_index.py.
+        help_html = self.client.get(reverse("help")).content.decode()
+        self.assertIn('<div class="page-title-row">', help_html)
+        self.assertEqual(help_html.count('data-assistant-slot="title"'), 1)
+
+    def test_drawer_brand_has_no_second_rule_and_logout_is_not_red(self):
+        import os
+        css_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            "static", "css", "popup.css",
+        )
+        with open(css_path) as f:
+            css = f.read()
+        self.assertRegex(css, r"\[data-nav-drawer\] \.app-nav-brand \{\s*border-bottom: 0;")
+        self.assertNotIn("danger-text-emphasis, #f0958c", css)
+
     def test_hamburger_rendered_once_and_precedes_main_content(self):
         html = self._rendered_index_html()
         # Exactly one toggle, inside the topbar (not a free-floating direct

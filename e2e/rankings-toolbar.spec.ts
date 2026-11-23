@@ -37,7 +37,7 @@ test('How ranking works is collapsed by default and keyboard operable', async ({
 
 test('single page renders no pager', async ({page}) => {
     await page.goto(ORG_FIXTURE);
-    await expect(page.getByText('Showing 1-6 of 6 organizations')).toBeVisible();
+    await expect(page.getByText('Showing 1–6 of 6 companies')).toBeVisible();
     await expect(page.getByRole('navigation', {name: 'Organization pagination'})).toHaveCount(0);
     await expect(page.getByText(/Page \d+ of/)).toHaveCount(0);
 });
@@ -57,8 +57,8 @@ test('pager works with the keyboard', async ({page}) => {
 
 test('removing a filter chip updates count and URL', async ({page}) => {
     await page.goto(`${PAGED_FIXTURE}?accelerated_vesting=1`);
-    await expect(page.getByText('Showing 1-8 of 8 organizations')).toBeVisible();
+    await expect(page.getByText('Showing 1–8 of 8 companies')).toBeVisible();
     await page.getByRole('button', {name: 'Remove filter: first vesting in under 1 year'}).click();
-    await expect(page.getByText('Showing 1-15 of 16 organizations')).toBeVisible();
+    await expect(page.getByText('Showing 1–15 of 16 companies')).toBeVisible();
     expect(page.url()).not.toContain('accelerated_vesting');
 });

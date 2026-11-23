@@ -40,20 +40,34 @@ export const evidenceChipSpecs = (evidence?: EvidenceSummaryData | null, acceler
         chips.push({key: 'pending', status: 'pending', marker: EVIDENCE_STATUS_META.pending.marker, text: EVIDENCE_STATUS_META.pending.label});
     }
     if (acceleratedVesting) {
-        chips.push({key: 'vesting', status: 'vesting', marker: '✓', text: 'First vesting < 1 yr'});
+        chips.push({key: 'vesting', status: 'vesting', marker: '◷', text: 'First vesting < 1 yr'});
     }
     return chips;
 };
 
-const EvidenceChips: React.FC<EvidenceChipsProps> = ({evidence, acceleratedVesting}) => (
+// A row never wraps its chips (issue #617): past this many the rest fold into
+// one "+N" chip, whose title names them.
+export const MAX_VISIBLE_CHIPS = 3;
+
+const EvidenceChips: React.FC<EvidenceChipsProps> = ({evidence, acceleratedVesting}) => {
+    const all = evidenceChipSpecs(evidence, acceleratedVesting);
+    const folded = all.length > MAX_VISIBLE_CHIPS;
+    const shown = folded ? all.slice(0, MAX_VISIBLE_CHIPS - 1) : all;
+    const hidden = folded ? all.slice(MAX_VISIBLE_CHIPS - 1) : [];
+    return (
     <span className="crank-chips" data-testid="evidence-chips">
-        {evidenceChipSpecs(evidence, acceleratedVesting).map(chip => (
+        {shown.map(chip => (
             <span key={chip.key} className={`crank-chip crank-chip--${chip.status}`} data-status={chip.status}
                   title={chip.status === 'vesting' ? 'First vesting comes in under one year.' : EVIDENCE_STATUS_META[chip.status].meaning}>
                 <span className="crank-chip-marker" aria-hidden="true">{chip.marker}</span>{chip.text}
             </span>
         ))}
+        {hidden.length > 0 && (
+            <span className="crank-chip crank-chip--more" data-status="more" data-testid="evidence-chips-more"
+                  title={hidden.map(chip => chip.text).join(', ')}>+{hidden.length}</span>
+        )}
     </span>
-);
+    );
+};
 
 export default EvidenceChips;

@@ -419,7 +419,7 @@ describe('WorkspaceShell', () => {
         // (visual review #472 round 1, item 7: icon-only was ambiguous).
         await waitFor(() => expect(screen.queryByTestId('assistant-panel')).not.toBeInTheDocument());
         const restore = screen.getByTestId('assistant-restore');
-        expect(restore).toHaveTextContent('Reopen assistant');
+        expect(restore).toHaveTextContent('Assistant');
         expect(document.body.classList.contains('assistant-sheet')).toBe(false);
         fireEvent.click(restore);
         await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
@@ -452,5 +452,44 @@ describe('WorkspaceShell', () => {
         await waitFor(() => expect(screen.getByTestId('assistant-restore')).toBeInTheDocument());
         expect(screen.getByTestId('assistant-dock')).toContainElement(screen.getByTestId('assistant-restore'));
         expect(screen.queryByTestId('assistant-launcher')).not.toBeInTheDocument();
+    });
+});
+
+describe('WorkspaceShell entry placement (issue #617)', () => {
+    const withSlots = () => {
+        document.body.innerHTML = '<div class="app-shell"><header><span data-assistant-slot="topbar"></span></header></div>'
+            + '<main class="app-content"><span data-assistant-slot="title"></span></main>';
+    };
+
+    test('phones carry the launcher in the top bar slot', () => {
+        withSlots();
+        mockMode = 'sheet';
+        renderShell();
+        const launcher = screen.getByTestId('assistant-launcher');
+        expect(launcher.closest('[data-assistant-slot="topbar"]')).not.toBeNull();
+        expect(launcher).not.toHaveClass('assistant-launcher--floating');
+        expect(launcher).toHaveAccessibleName('Assistant');
+    });
+
+    test('wider pages carry the launcher and the minimized chip in the title slot', async () => {
+        withSlots();
+        mockMode = 'drawer';
+        renderShell();
+        expect(screen.getByTestId('assistant-launcher').closest('[data-assistant-slot="title"]')).not.toBeNull();
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        fireEvent.click(screen.getByTestId('assistant-minimize'));
+        await waitFor(() => expect(screen.getByTestId('assistant-restore')).toBeInTheDocument());
+        expect(screen.getByTestId('assistant-restore').closest('[data-assistant-slot="title"]')).not.toBeNull();
+        expect(screen.getByTestId('assistant-restore')).toHaveAccessibleName('Assistant');
+    });
+
+    test('a page with no slot gets the floating icon-only circle, still named Assistant', () => {
+        mockMode = 'docked';
+        renderShell();
+        const launcher = screen.getByTestId('assistant-launcher');
+        expect(launcher).toHaveClass('assistant-launcher--floating');
+        expect(launcher).toHaveAccessibleName('Assistant');
+        expect(launcher.closest('.assistant-dock--floating')).not.toBeNull();
     });
 });

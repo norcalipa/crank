@@ -31,9 +31,10 @@ organizations), never in a fixture shell.
 
 | Surface | Budget |
 | --- | --- |
-| Company row, 1280px and 1440px wide | at most **96px** tall |
+| Company row, 1280px and 1440px wide | **58–64px** target, at most **96px** hard, every row the same height |
 | Companies fully visible above the fold, 1440x900, signed out | at least **7** |
-| Company card, 375px wide | at most **180px** tall, no horizontal overflow |
+| Company card, 375px wide | about **118px**, at most **180px** hard, no horizontal overflow |
+| First card, 375x812, signed out | top at or above about y=280, at least **3** cards fully visible |
 | Horizontal overflow, any page, any width | none |
 | Touch targets | at least 44px tall (form controls, pager links, buttons) |
 
@@ -54,26 +55,43 @@ correctly.
 | Rank | `.organization-rank` | Decorative; the rank is spoken through the summary and the ordered list |
 | Logo tile | `.organization-tile` | The company's first letter (no logo is stored) |
 | Name | `.organization-name` | One line, ellipsis, full name in `title` |
-| Meta line | `.organization-meta` | Funding round, office policy, rating coverage ("N of M rated") |
-| Evidence chips | `.crank-chips` > `.crank-chip--verified \| stale \| unknown \| pending \| vesting` | From `static/js/evidence/EvidenceChips.tsx` |
+| Meta line | `.organization-meta` | Funding round, office policy, rating coverage ("Rated on N of M") |
+| Evidence cell | `.organization-evidence` | Chips, then `.organization-checked` ("Checked Nov 20, 2026" or "Never checked") |
+| Evidence chips | `.crank-chips` > `.crank-chip--verified \| stale \| unknown \| pending \| vesting \| more` | From `static/js/evidence/EvidenceChips.tsx`; never wrap, past three the rest fold into a `+N` chip |
+| List header | `.organization-list-header` | "Company · Evidence · Company score (<preset>)", 11px uppercase, on the row grid from 34rem of container width |
 | Score | `.organization-score` | `4.30 / 5` with `.organization-score-bar` |
-| Action | `.organization-cta` | "View company"; the whole row opens the company |
+| Action | `.organization-cta` | "View company", quiet (transparent, `#93c5fd`) until the row is hovered or focused, then filled `#60a5fa`; the whole row opens the company |
 
 Chip rules: every chip is a marker plus a word (`✓ 2 verified`, `! 1 stale`,
 `? 5 unknown`), so status is never colour alone. When nothing is verified or
-stale the row shows one muted dashed `? Not yet verified` chip instead of zero
-counts. Chip colours reuse the evidence palette (`EvidenceBadge`) and meet 4.5:1
+stale the row shows one muted `? Not yet verified` chip instead of zero
+counts. Chips are filled tint pills with no border (`color-mix(currentColor 16%)`).
+`✓` only ever means verified: the first-vesting chip is neutral with a `◷`
+marker. Chip colours reuse the evidence palette (`EvidenceBadge`) and meet 4.5:1
 on the row surface.
 
+Palette: dark theme is one blue on navy. `--bs-body-bg #0c1620`, `--bs-tertiary-bg
+#101b26` (cards, rows), `--bs-secondary-bg #142235`, `--bs-border-color #1f2d3d`,
+`--bs-primary #60a5fa` (dark `#0b1220` text on it), links `#93c5fd`. The score bar
+is flat `#94a3b8`. Do not add other blues.
+
+The Assistant entry never floats over content: wide screens put it in the page's
+title row (`[data-assistant-slot="title"]`), phones in the top bar beside Menu
+(`[data-assistant-slot="topbar"]`). A page with neither slot gets a 44px
+icon-only circle named "Assistant" and reserves matching bottom padding.
+
 Toolbar: one control row (search, "Sort by" preset select, the vesting filter as
-a toggle chip), then one line holding the result count and the compact pager;
-the second pager sits under the list. "How ranking works" is a small inline
+a toggle chip), then one line holding the result count and the compact pager
+(both pagers right-aligned); a label-loading or error message takes its own full-width line after
+them, so the pager never moves. Below 576px the top pager and "Page N of M" are
+hidden, "Sort by" is visually hidden (still the select's name) and shares a line
+with the vesting toggle, and "Suggest a company" moves under the list. "How ranking works" is a small inline
 disclosure link beside the subtitle (`.how-ranking-works--inline`), never a
 full-width bar.
 
 Every changed dynamic component implements and tests four states: populated
 default, shape-matched loading skeleton (`.choices-skeleton` inside the meta
-line while labels load), an explanatory empty state with a primary action
+line while labels load), an explanatory empty state with one action
 ("Clear search and filters"), and inline error feedback (the label error with
 "Retry labels").
 

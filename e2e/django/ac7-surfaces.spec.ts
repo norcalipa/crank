@@ -136,7 +136,7 @@ test.describe('shared request form', () => {
         await login(page);
         await page.goto('/?search=E2E+Nonexistent+Company+Probe');
 
-        const emptyState = page.getByRole('alert').filter({hasText: 'No organizations found'});
+        const emptyState = page.getByRole('alert').filter({hasText: 'No companies found'});
         await expect(emptyState).toBeVisible();
         await emptyState.getByRole('button', {name: 'Suggest a company'}).click();
         await expect(page.getByTestId('suggest-company-modal')).toBeVisible();

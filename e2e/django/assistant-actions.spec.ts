@@ -88,19 +88,19 @@ test.describe('assistant actions (issue #484)', () => {
 
     test('a filter suggestion is a button; applying it filters, survives reload and Back restores', async ({page}) => {
         await login(page);
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         await openAssistant(page);
         await ask(page, 'Show only remote companies');
 
         const button = applyRemote(page);
         await expect(button).toBeVisible();
         // Nothing changes until the button is pressed.
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
 
         await button.focus();
         await button.press('Enter');
-        await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
+        await expect(page.getByText(/Showing 1–1 of 1 companies/)).toBeVisible();
         await expect(page.getByTestId('filter-chip-rto')).toContainText('RTO policy: Remote');
         expect(new URL(page.url()).searchParams.get('rto')).toBe('R');
         // Keyboard focus stays on the button, which reports the outcome.
@@ -109,27 +109,27 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(applied).toBeDisabled();
 
         await page.reload();
-        await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
+        await expect(page.getByText(/Showing 1–1 of 1 companies/)).toBeVisible();
         await expect(page.getByTestId('filter-chip-rto')).toBeVisible();
 
         await page.goBack();
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         await expect(page.getByTestId('filter-chip-rto')).toHaveCount(0);
     });
 
     test('removing the RTO chip clears the filter and the URL', async ({page}) => {
         await login(page);
         await page.goto('/?rto=R');
-        await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
+        await expect(page.getByText(/Showing 1–1 of 1 companies/)).toBeVisible();
         await page.getByRole('button', {name: 'Remove filter: RTO policy Remote'}).click();
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
     });
 
     test('an unknown rto value in the URL is ignored', async ({page}) => {
         await login(page);
         await page.goto('/?rto=ZZZ');
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         await expect(page.getByTestId('filter-chip-rto')).toHaveCount(0);
     });
 

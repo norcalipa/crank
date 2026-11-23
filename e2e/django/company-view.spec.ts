@@ -498,8 +498,10 @@ test.describe('company view (issue #486b)', () => {
 
     for (const path of ['/', '/algo/2/']) {
         for (const size of [
-            {width: 1280, height: 900, top: 56},
-            {width: 1024, height: 800, top: 56},
+            // Wide: the title row stays above the view, carrying the Assistant
+            // entry (a 44px control), so the view starts below that band.
+            {width: 1280, height: 900, top: 104},
+            {width: 1024, height: 800, top: 104},
             {width: 375, height: 667, top: 80},
             {width: 320, height: 640, top: 80},
         ]) {
@@ -745,17 +747,21 @@ test.describe('company view (issue #486b)', () => {
     });
 
     for (const size of [{width: 375, height: 667}, {width: 320, height: 640}, {width: 390, height: 844}]) {
-        test(`on a phone at ${size.width}x${size.height} the Assistant bar stays at the bottom edge while the view loads, is not found or fails`, async ({page}) => {
+        test(`on a phone at ${size.width}x${size.height} the Assistant entry stays in the top bar, with no bottom bar, while the view loads, is not found or fails`, async ({page}) => {
             await page.setViewportSize(size);
             await login(page);
             const settle = async (name: string) => {
                 await expect(view(page)).toBeVisible();
                 const m = await page.evaluate(() => {
-                    const dock = document.querySelector('.assistant-dock')!.getBoundingClientRect();
-                    return {dockBottom: dock.bottom, vh: window.innerHeight, scrollHeight: document.documentElement.scrollHeight};
+                    const entry = document.querySelector('[data-testid="assistant-launcher"]')!.getBoundingClientRect();
+                    const bar = document.querySelector('.app-mobile-topbar')!.getBoundingClientRect();
+                    return {entryTop: entry.top, entryBottom: entry.bottom, barBottom: bar.bottom, barHeight: bar.height, vh: window.innerHeight,
+                        floating: !!document.querySelector('.assistant-dock--floating')};
                 });
-                expect(Math.abs(m.dockBottom - m.vh), `${name}: bar bottom ${m.dockBottom} vs ${m.vh}`).toBeLessThanOrEqual(1);
-                expect(m.scrollHeight, `${name}: document height`).toBeLessThanOrEqual(m.vh);
+                expect(m.floating, `${name}: no floating or bottom entry`).toBe(false);
+                expect(m.barHeight, `${name}: top bar height`).toBeGreaterThanOrEqual(56);
+                expect(m.entryTop, `${name}: entry inside the bar`).toBeGreaterThanOrEqual(0);
+                expect(m.entryBottom, `${name}: entry inside the bar`).toBeLessThanOrEqual(m.barBottom);
             };
 
             let release: () => void = () => undefined;

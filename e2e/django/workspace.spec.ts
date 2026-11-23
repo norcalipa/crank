@@ -97,7 +97,13 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await page.setViewportSize({width: 375, height: 700});
         await login(page);
         await page.goto('/');
-        await page.evaluate(() => window.scrollTo(0, 300));
+        // Compact rows leave the seeded list short: scroll to the middle of what can scroll.
+        const target = await page.evaluate(() => {
+            const to = Math.floor((document.documentElement.scrollHeight - window.innerHeight) / 2);
+            window.scrollTo(0, to);
+            return to;
+        });
+        expect(target).toBeGreaterThan(0);
         await page.locator('[data-testid="assistant-launcher"]').click();
         const panel = page.locator('[data-testid="assistant-panel"]');
         await expect(panel).toBeVisible();
@@ -109,7 +115,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await page.locator('[data-testid="assistant-back-to-results"]').click();
         await expect(panel).toHaveCount(0);
         const scrollY = await page.evaluate(() => window.scrollY);
-        expect(scrollY).toBe(300);
+        expect(scrollY).toBe(target);
     });
 
     test('lazy load: no assistant chunk before first open, exactly one after, none on reopen', async ({page}) => {

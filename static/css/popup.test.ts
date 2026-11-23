@@ -345,25 +345,21 @@ describe('company view visual review round 1 (issue #486)', () => {
     });
 
     it('hides the rankings introduction while a company is open but keeps the h1 for assistive technology', () => {
-        const heading = block('.homepage-container:has(.company-view) > h1');
+        const heading = block('.homepage-container:has(.company-view) .rankings-title', popupCss);
         expect(heading).toMatch(/position:\s*absolute/);
         expect(heading).toMatch(/clip:\s*rect\(0, 0, 0, 0\)/);
         expect(heading).not.toMatch(/display:\s*none/);
         const intro = block('.homepage-container:has(.company-view) > .rankings-intro');
         expect(intro).toMatch(/display:\s*none/);
+        // The Assistant entry lives in the title row, which stays while the h1 steps aside.
+        expect(block('.homepage-container:has(.company-view) > .rankings-title-row', popupCss)).toMatch(/justify-content:\s*flex-end/);
     });
 
-    it('keeps the Assistant bar at the bottom edge of a short phone page, from the bar\'s own height', () => {
-        const phone = section.slice(section.indexOf('body:has(.assistant-dock) .app-content:has(.company-view)'));
-        const declarations = block('body:has(.assistant-dock) .app-content:has(.company-view)', phone) as string;
-        // The bar's button is 44.5px tall, so the bar is 2px (not 1px) over 44px + 1rem.
-        const bar = '(44px + 1rem + 2px + var(--safe-area-inset-bottom))';
-        expect(declarations).toContain(`min-height: calc(100vh - 49px - ${bar});`);
-        expect(declarations).toContain(`min-height: calc(100dvh - 49px - ${bar});`);
-        expect(declarations.indexOf('100vh')).toBeLessThan(declarations.indexOf('100dvh'));
-        expect(section.slice(0, section.indexOf('body:has(.assistant-dock) .app-content:has(.company-view)')))
-            .toMatch(/@media \(max-width: 767\.98px\)\s*\{\s*$/);
-        expect(popupCss).toMatch(/body:has\(\.assistant-dock\) \.app-content \{\s*padding-bottom: calc\(44px \+ 1rem \+ 1px \+ var\(--safe-area-inset-bottom\)\)/);
+    it('puts the Assistant entry in a page slot; only a slotless page floats a 44px icon-only circle and reserves room', () => {
+        expect(block('.assistant-launcher--floating,\n.assistant-restore--floating', popupCss)).toMatch(/position:\s*fixed[\s\S]*width:\s*44px[\s\S]*border-radius:\s*50%/);
+        expect(block('.assistant-launcher,\n.assistant-restore', popupCss)).not.toMatch(/position:\s*fixed/);
+        expect(popupCss).toMatch(/body:has\(\.assistant-dock--floating\) \.app-content \{\s*padding-bottom: calc\(44px \+ 2rem/);
+        expect(popupCss).not.toMatch(/\.assistant-dock \{\s*display: flex;\s*justify-content: flex-end;\s*position: sticky/);
     });
 
     it('makes not found and load error a compact block of at most 40rem', () => {
@@ -559,12 +555,12 @@ describe('rankings responsive layout, name clamping and disclosure (issue #478 v
     it('restacks the row on the results container width, not the viewport', () => {
         expect(popupCss).toMatch(/\.organization-results\s*\{[^}]*container:\s*organization-results\s*\/\s*inline-size/);
         expect(mediumBlock).toMatch(/"\.\s+\.\s+evidence evidence evidence"/);
-        expect(phoneBlock).toMatch(/"evidence evidence evidence evidence"\s+"cta cta cta cta"/);
+        expect(phoneBlock).toMatch(/"rank tile main score"\s+"evidence evidence evidence cta"/);
     });
 
-    it('keeps names on one line with an ellipsis and the CTA full width on phones', () => {
+    it('keeps names on one line with an ellipsis and the CTA auto width, right-aligned, on phones', () => {
         expect(popupCss).toMatch(/\.organization-name\s*\{[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/);
-        expect(phoneBlock).toMatch(/\.organization-cta\s*\{[^}]*width:\s*100%/);
+        expect(phoneBlock).toMatch(/\.organization-cta\s*\{[^}]*justify-self:\s*end[^}]*width:\s*auto/);
     });
 
     it('turns "How ranking works" into a small inline link on the rankings page', () => {
@@ -889,7 +885,7 @@ describe('job-match figures, notices and contained transcript (issue #473 visual
     });
 
     it('gives the legend the panel\u2019s sky focus ring and a denser type size on narrow panels', () => {
-        expect(popupCss).toMatch(/#job-match-panel \.how-ranking-works-summary:focus-visible\s*\{\s*outline-color:\s*#38bdf8/);
+        expect(popupCss).toMatch(/#job-match-panel \.how-ranking-works-summary:focus-visible\s*\{\s*outline-color:\s*#93c5fd/);
         const narrow = containerBlocks('26rem');
         expect(narrow).toMatch(/\.job-match-legend \.how-ranking-works-content\s*\{\s*font-size:\s*\.875rem;\s*line-height:\s*1\.45/);
         expect(narrow).toMatch(/\.job-match-legend \.ranking-definitions dt\s*\{\s*margin-top:\s*\.5rem/);
@@ -976,16 +972,17 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
         const section = popupCss.slice(start, next);
         expect(section).toMatch(/#rankings-heading \{\s*width: fit-content;\s*\}/);
-        // Under 576px the mark has a reserved line of its own under the count, so
-        // its arrival moves nothing; wider it shares the count's line (issue #617).
-        expect(popupCss).toMatch(/@media \(max-width: 575\.98px\) \{\s*\.organization-results-count \{\s*position: relative;\s*padding-bottom: 1\.5rem;\s*\}\s*\.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*bottom: 0;\s*margin-left: 0 !important;/);
+        // The mark sits after the count on the same line at every width, its room reserved
+        // while invisible, so its arrival moves nothing (issue #617).
+        expect(popupCss).toMatch(/\.organization-results-count \.badge \{ white-space: nowrap; \}/);
+        // Under 360px the mark keeps a reserved line of its own under the count.
+        expect(popupCss).toMatch(/@media \(max-width: 359\.98px\) \{\s*\.organization-results-count \{\s*position: relative;\s*padding-bottom: 1\.5rem;\s*\}\s*\.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*bottom: 0;\s*margin-left: 0 !important;/);
         expect(popupCss).toMatch(/\.choices-status-slot:empty\s*\{\s*display:\s*none/);
-        // The loading status takes no room of its own: the line is tall enough for it and,
-        // on a phone, it is the spinner alone.
-        expect(popupCss).toMatch(/\.rankings-toolbar-count-text \{[^}]*min-height: 1\.5rem/);
-        expect(popupCss).toMatch(/\.choices-status-slot:has\(> \[data-testid="choices-status-loading"\]\) \{\s*position: absolute;\s*inset-inline-end: 0;\s*top: 0;/);
-        expect(popupCss).toMatch(/\.rankings-toolbar-count-text \{\s*position: relative;\s*padding-inline-end: 1\.75rem;/);
-        expect(popupCss).toMatch(/\.choices-status:not\(\.choices-status-error\) \.choices-status-text \{\s*position: absolute;/);
+        // The status takes a full-width line of its own after the count and the pager, so the
+        // top pager never moves between states; its words stay at every width.
+        expect(popupCss).toMatch(/\.rankings-toolbar-count > \.choices-status-slot \{\s*flex: 1 1 100%;\s*order: 3;/);
+        expect(popupCss).toMatch(/\.rankings-toolbar-pager \{\s*order: 2;/);
+        expect(popupCss).not.toMatch(/\.choices-status:not\(\.choices-status-error\) \.choices-status-text/);
         expect(popupCss).toMatch(/\.organization-meta > span:not\(:last-child\)::after \{\s*content: "\\00b7"/);
     });
 
@@ -1014,5 +1011,64 @@ describe('auth action links keep the touch floor, the amber focus ring and balan
         expect(popupCss).toMatch(
             /\.auth-container \.auth-note \{\s*text-wrap: balance;\s*text-wrap: pretty;\s*\}/,
         );
+    });
+});
+
+describe('rankings round 2 palette, header and mobile first screen (issue #617)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const block = (selector: string, from: string) => {
+        const match = from.match(new RegExp(`${escape(selector)}\\s*\\{([^}]*)\\}`));
+        return match ? match[1] : null;
+    };
+    const dark = popupCss.slice(popupCss.indexOf('Issue #617 round 2: one blue on navy surfaces'));
+
+    it('declares one blue and navy surfaces under the dark theme and keeps stray blues out', () => {
+        for (const decl of ['--bs-body-bg: #0c1620', '--bs-tertiary-bg: #101b26', '--bs-secondary-bg: #142235',
+            '--bs-border-color: #1f2d3d', '--bs-primary: #60a5fa', '--bs-primary-rgb: 96, 165, 250', '--bs-link-color: #93c5fd']) {
+            expect(dark).toContain(decl);
+        }
+        expect(dark).toMatch(/\.btn-primary \{\s*--bs-btn-color: #0b1220;\s*--bs-btn-bg: #60a5fa;/);
+        expect(dark).toMatch(/--bs-pagination-active-color: #0b1220;\s*--bs-pagination-active-bg: #60a5fa;/);
+        expect(popupCss).not.toMatch(/#0d6efd/i);
+        expect(popupCss).not.toMatch(/#38bdf8/i);
+    });
+
+    it('draws the score bar flat neutral, the chips as borderless tints and the CTA quiet until hover or focus', () => {
+        expect(block('.organization-score-bar > span', popupCss)).toMatch(/background:\s*#94a3b8/);
+        expect(block('.crank-chip', popupCss)).toMatch(/border:\s*0[\s\S]*color-mix\(in srgb, currentColor 16%, transparent\)/);
+        expect(popupCss).not.toMatch(/\.crank-chip--[a-z]+ \{[^}]*dashed/);
+        expect(block('.organization-cta', popupCss)).toMatch(/background:\s*transparent;\s*color:\s*#93c5fd/);
+        expect(popupCss).toMatch(/\.organization-row:hover \.organization-cta,\s*\.organization-row:focus-visible \.organization-cta \{[^}]*background:\s*#60a5fa;[^}]*color:\s*#0b1220/);
+    });
+
+    it('lays the wide row on one grid with a header row on it from 34rem, and no row grows past its chips', () => {
+        expect(block('.organization-row', popupCss)).toContain('grid-template-columns: 2rem 2.5rem minmax(14rem, 19rem) minmax(0, 1fr) 6.5rem auto;');
+        expect(block('.organization-list-header', popupCss)).toMatch(/font-size:\s*11px;[\s\S]*letter-spacing:\s*\.06em;[\s\S]*text-transform:\s*uppercase/);
+        expect(popupCss).toMatch(/@container organization-results \(min-width: 34rem\) \{\s*\.organization-list-header \{ display: grid; \}/);
+        expect(block('.crank-chips', popupCss)).toMatch(/flex-wrap:\s*nowrap;[\s\S]*overflow:\s*hidden/);
+        expect(block('.organization-evidence', popupCss)).toMatch(/display:\s*grid;\s*gap:\s*\.125rem/);
+        expect(block('.organization-checked', popupCss)).toMatch(/font-size:\s*\.75rem;[\s\S]*white-space:\s*nowrap/);
+    });
+
+    it('gives the title its type, the controls .75rem corners and the bottom pager the top one\'s alignment', () => {
+        expect(block('.rankings-title,\n.page-title-row > h1', popupCss)).toMatch(/font-size:\s*1\.75rem;\s*font-weight:\s*700;\s*letter-spacing:\s*-\.01em;\s*line-height:\s*1\.2/);
+        expect(block('.organization-search .form-control', popupCss)).toMatch(/border-radius:\s*\.75rem/);
+        expect(block('.rankings-toolbar .form-select', popupCss)).toMatch(/border-radius:\s*\.75rem/);
+        expect(block('.rankings-suggest', popupCss)).toMatch(/border-radius:\s*\.75rem;\s*font-size:\s*\.875rem/);
+        expect(block('.rankings-pager-bottom .pagination', popupCss)).toMatch(/justify-content:\s*flex-end/);
+    });
+
+    it('builds the phone first screen: 56px bar, one line for Sort by and the vesting toggle, no top pager', () => {
+        const phone = dark.slice(dark.indexOf('@media (max-width: 575.98px)'));
+        expect(dark).toMatch(/\.app-mobile-topbar \{\s*justify-content: space-between;\s*gap: \.5rem;\s*min-height: 56px/);
+        expect(phone).toMatch(/\.rankings-toolbar \{\s*display: grid;\s*grid-template-columns: 1fr auto;/);
+        expect(phone).toMatch(/\.rankings-toolbar-pager,\s*\.organization-page-count \{\s*display: none;/);
+        expect(phone).toMatch(/\.visually-hidden-narrow \{\s*position: absolute;/);
+    });
+
+    it('drops the stray line above the menu divider and mutes Logout', () => {
+        expect(block('[data-nav-drawer] .app-nav-brand', popupCss)).toMatch(/border-bottom:\s*0/);
+        expect(block('.app-nav-link--logout', popupCss)).toMatch(/color:\s*var\(--bs-secondary-color\)/);
     });
 });

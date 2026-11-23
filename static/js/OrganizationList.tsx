@@ -7,7 +7,7 @@ import {CompanyDetailsOrganization, CorrectionSource} from './company/CompanyDet
 import {isCompanyId, parseCompanyId} from './company/companyId';
 import EvidenceChips from './evidence/EvidenceChips';
 import {evidenceDescription} from './evidence/EvidenceSummary';
-import {EvidenceSummaryData, RTO_POLICY_LABELS} from './labels';
+import {EvidenceSummaryData, formatEvidenceDate, RTO_POLICY_LABELS} from './labels';
 import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './suggestCompany/controller';
 import {createPoller, PollInfo, Poller} from './workspace/poller';
 import {shouldAutoApplyRefresh} from './workspace/refreshRules';
@@ -60,6 +60,10 @@ const ratingCoverageText = (org: Organization): string =>
     org.rating_dimensions_total !== undefined && org.rating_dimensions_covered !== undefined
         ? `${org.rating_dimensions_covered} of ${org.rating_dimensions_total}`
         : `${org.profile_completeness.toFixed(0)}%`;
+
+// The row's freshness line: the day the newest accepted source was re-checked.
+const checkedText = (org: Organization): string =>
+    org.evidence?.last_verified_at ? `Checked ${formatEvidenceDate(org.evidence.last_verified_at, false, RANKINGS_DATE_ZONE)}` : 'Never checked';
 
 // Company scores run 0-5 (the score thresholds); the bar is that share, clamped.
 const SCORE_SCALE = 5;
@@ -1372,23 +1376,22 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                  data-testid="organization-results-region">
             <div className="rankings-toolbar" data-testid="rankings-toolbar">
                 <div className="rankings-toolbar-search">
-                    <label className="visually-hidden" htmlFor="organization-search">Search organizations</label>
+                    <label className="visually-hidden" htmlFor="organization-search">Search companies</label>
                     <div className="organization-search">
                         <i className="fa-solid fa-magnifying-glass organization-search-icon" aria-hidden="true"></i>
                         <input
                             id="organization-search"
                             type="text"
                             className="form-control"
-                            placeholder="Search organizations"
+                            placeholder="Search companies"
                             value={searchTerm}
                             onChange={this.handleSearchChange}
                         />
-                        {searchTerm && <button type="button" className="btn btn-outline-secondary" onClick={this.handleClearFilters} aria-label="Clear search">Clear search</button>}
                     </div>
                 </div>
                 {presets.length > 0 && (
                     <div className="rankings-toolbar-preset">
-                        <label className="rankings-toolbar-preset-label" htmlFor="ranking-preset">Sort by</label>
+                        <label className="rankings-toolbar-preset-label visually-hidden-narrow" htmlFor="ranking-preset">Sort by</label>
                         <select id="ranking-preset" className="form-select" data-testid="ranking-preset-select"
                                 value={this.props.currentAlgorithmId ?? ''} onChange={this.handlePresetChange}>
                             {presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
@@ -1407,7 +1410,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     <span>First vesting &lt; 1 year</span>
                 </label>
                 {this.props.isAuthenticated && !isEmpty && (
-                    <button type="button" className="btn btn-outline-primary btn-sm"
+                    <button type="button" className="btn btn-outline-secondary rankings-suggest"
                             data-testid="suggest-company-btn"
                             onClick={() => this.handleOpenSuggestModal('rankings')}>
                         Suggest a company
@@ -1416,7 +1419,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 {this.renderChips()}
                 <div className="rankings-toolbar-count">
                     <div className="rankings-toolbar-count-text" role="status" aria-live="polite">
-                        <div className="organization-results-count">{isEmpty ? 'Showing 0 organizations' : `Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}
+                        <div className="organization-results-count">{isEmpty ? 'Showing 0 companies' : `Showing ${firstResult}–${lastResult} of ${filteredOrganizations.length} companies`}
                             {updatedMark !== 'off' && (
                                 <span className={`badge text-bg-info ms-2${updatedMark === 'seen' ? ' invisible' : ''}`}
                                       data-testid={updatedMark === 'on' ? 'rankings-updated-badge' : 'rankings-updated-badge-seen'}
@@ -1425,15 +1428,15 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         </div>
                         <div className="visually-hidden" data-testid="rankings-announcement"><span key={announcementKey}>{announcement}</span></div>
                         {pageCount > 1 && <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>}
+                        {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span className="choices-status-text">Loading labels…</span></div>}
+                    </div>
+                    {pageCount > 1 && <div className="rankings-toolbar-pager">{renderPager('top')}</div>}
                     <div className="choices-status-slot">
-                    {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span className="choices-status-text">Loading funding round and RTO labels…</span></div>}
-                    {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">
-                        <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
-                        <button type="button" className="btn btn-outline-danger btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry labels</button>
-                    </div>}
+                        {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-warning py-1 px-2 mb-0" data-testid="choices-status-error">
+                            <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
+                            <button type="button" className="btn btn-outline-light btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry labels</button>
+                        </div>}
                     </div>
-                    </div>
-                    {pageCount > 1 && renderPager('top')}
                 </div>
             </div>
             {newerRevision !== null && newerRevision !== shownRevision && (
@@ -1453,14 +1456,19 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 </div>
             )}
             {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary organization-empty-state" role="alert">
-                <h2 className="h5">No organizations found</h2>
+                <h2 className="h5 organization-empty-title">No companies found</h2>
                 <p>{searchTerm || acceleratedVesting || rtoPolicy
-                    ? 'There are no organizations that match your search or filters.'
+                    ? 'There are no companies that match your search or filters.'
                     : 'No companies are ranked with this preset right now.'}</p>
-                {(searchTerm || acceleratedVesting || rtoPolicy) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
+                {(searchTerm || acceleratedVesting || rtoPolicy) && <button type="button" className="btn btn-outline-light" onClick={this.handleClearFilters}>Clear search and filters</button>}
                 {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
                 <div className="organization-results">
+                <div className="organization-list-header" aria-hidden="true">
+                    <span className="organization-list-header-company">Company</span>
+                    <span className="organization-list-header-evidence">Evidence</span>
+                    <span className="organization-list-header-score">{scoreLabel}</span>
+                </div>
                 <ol className="organization-list" aria-label="Organization rankings">
                     {currentOrganizations.map(org => {
                         const score = Number(org.avg_score);
@@ -1488,11 +1496,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                                 <span className="organization-meta" aria-hidden="true">
                                     <span>{choiceLabel(fundingRoundChoices, org.funding_round)}</span>
                                     <span>{choiceLabel(rtoPolicyChoices, org.rto_policy)}</span>
-                                    <span>{ratingCoverageText(org)} rated</span>
+                                    <span>Rated on {ratingCoverageText(org)}</span>
                                 </span>
                             </span>
                             <span className="organization-evidence" aria-hidden="true">
                                 <EvidenceChips evidence={org.evidence} acceleratedVesting={org.accelerated_vesting}/>
+                                <span className="organization-checked">{checkedText(org)}</span>
                             </span>
                             <span className="organization-score" aria-hidden="true">
                                 <span className="organization-score-line">
@@ -1507,7 +1516,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     })}
                 </ol>
                 </div>
-                {pageCount > 1 && renderPager('bottom')}
+                {pageCount > 1 && <div className="rankings-pager-bottom">{renderPager('bottom')}</div>}
+                {this.props.isAuthenticated && (
+                    <button type="button" className="btn btn-outline-secondary rankings-suggest rankings-suggest--footer"
+                            data-testid="suggest-company-footer-btn"
+                            onClick={() => this.handleOpenSuggestModal('rankings')}>
+                        Suggest a company
+                    </button>
+                )}
             </>)}
             </div>
         </div>);

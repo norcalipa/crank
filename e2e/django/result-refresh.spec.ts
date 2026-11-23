@@ -500,7 +500,7 @@ test.describe('Updated rankings available (company rankings)', () => {
             const seen = countRankingsRequests(page);
             await openRankings(page);
             expect(await firstThree(page)).toEqual(SEEDED_ORDER);
-            await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+            await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
 
             raiseGamma();
             await page.clock.runFor(POLL_INTERVAL_MS + 1000);
@@ -510,7 +510,7 @@ test.describe('Updated rankings available (company rankings)', () => {
             expect(seen.list).toBe(0);
             // Nothing else changed: same order, same count, one polite region.
             expect(await firstThree(page)).toEqual(SEEDED_ORDER);
-            await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+            await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
             await expect(page.getByTestId('rankings-announcement')).toHaveText('Updated results available.');
             expect(await page.locator('[aria-live="polite"]:has([data-testid="rankings-announcement"])').count()).toBe(1);
             const button = notice(page).getByRole('button', {name: 'Refresh results'});
@@ -752,8 +752,8 @@ test.describe('Updated rankings available (company rankings)', () => {
     // count long enough to meet the mark; the short 16-row list fits on the old CSS as well.
     for (const [width, height] of [[320, 640], [375, 667], [412, 915]] as const) {
         for (const [path, count] of [
-            ['/', 'Showing 1-15 of 126 organizations'],
-            ['/?page=8', 'Showing 106-120 of 126 organizations'],
+            ['/', 'Showing 1–15 of 126 companies'],
+            ['/?page=8', 'Showing 106–120 of 126 companies'],
         ] as const) {
             test(`the "Updated" mark sits under a long count on a phone without moving the toolbar at ${width}px, ${count}`, async ({page}) => {
                 await page.setViewportSize({width, height});
@@ -866,12 +866,12 @@ test.describe('Updated rankings available (company rankings)', () => {
     test('a list on page 2 that shrinks to one page lands on page 1 and the URL says so', async ({page}) => {
         rankingsFixture('pad');
         await openRankings(page, '/?page=2');
-        await expect(page.getByText('Showing 16-16 of 16 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 16–16 of 16 companies')).toBeVisible();
         rankingsFixture('unpad');
         await page.clock.runFor(POLL_INTERVAL_MS + 1000);
         await expect(notice(page)).toBeVisible();
         await notice(page).getByRole('button', {name: 'Refresh results'}).click();
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         expect(new URL(page.url()).searchParams.get('page')).toBe('1');
         // A stale ?page=2 would be a 404 on reload.
         const reloaded = await page.reload();
