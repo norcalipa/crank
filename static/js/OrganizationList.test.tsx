@@ -133,8 +133,7 @@ describe('OrganizationList', () => {
             expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
             expect(screen.getAllByText('Organization 2').length).toBeGreaterThan(0);
             expect(screen.getByRole('textbox', { name: 'Search organizations' })).toBeInTheDocument();
-            expect(screen.getByRole('table')).toBeInTheDocument();
-            expect(screen.getByText('Organizations ranked by the selected scoring algorithm')).toBeInTheDocument();
+            expect(screen.getByRole('list', { name: 'Organization rankings' })).toBeInTheDocument();
         });
     });
 
@@ -147,47 +146,70 @@ describe('OrganizationList', () => {
         });
     });
 
-    test('renders mobile card view alongside desktop table', async () => {
+    test('renders one compact row per organization in an ordered list', async () => {
         render(<OrganizationList organizations={organizations} />);
 
         await waitFor(() => {
-            // Table view (desktop)
-            expect(screen.getByRole('table')).toBeInTheDocument();
-            expect(document.querySelector('.organization-table-wrap')).toBeInTheDocument();
-
-            // Card view (mobile)
-            const cards = document.querySelectorAll('.organization-card');
-            expect(cards.length).toBe(2);
-            expect(screen.getAllByText('Company score').length).toBe(3);
-            expect(screen.getAllByText('RTO policy').length).toBe(2);
-            expect(screen.getAllByText('Funding round').length).toBe(2);
-            expect(screen.getAllByText('Rating coverage').length).toBe(3);
+            const list = screen.getByRole('list', { name: 'Organization rankings' });
+            expect(list.tagName).toBe('OL');
+            const rows = list.querySelectorAll('li > .organization-row');
+            expect(rows.length).toBe(2);
+            // One layout at every width: no table, no second card copy.
+            expect(screen.queryByRole('table')).not.toBeInTheDocument();
+            expect(document.querySelector('.organization-card')).toBeNull();
+            expect(document.querySelector('.organization-cards')).toBeNull();
         });
     });
 
-    test('card view shows organization score and ranking', async () => {
+    test('each row shows tile, name, meta line, score with bar and the View company action', async () => {
         render(<OrganizationList organizations={organizations} />);
 
+        const row = (await screen.findByRole('button', { name: 'View details for Organization 1' }));
+        expect(within(row).getByText('O')).toBeInTheDocument();
+        expect(row.querySelector('.organization-tile')).toHaveTextContent('O');
+        expect(row.querySelector('.organization-rank')).toHaveTextContent('1');
+        expect(row.querySelector('.organization-score-value')).toHaveTextContent('4.50');
+        expect(row.querySelector('.organization-score-max')).toHaveTextContent('/ 5');
+        expect(row.querySelector('.organization-score-bar > span')).toHaveStyle({width: '90%'});
+        expect(row.querySelector('.organization-cta')).toHaveTextContent('View company');
         await waitFor(() => {
-            expect(screen.getByText('#1 · 4.50')).toBeInTheDocument();
-            expect(screen.getByText('#2 · 3.50')).toBeInTheDocument();
+            expect(row.querySelector('.organization-meta')).toHaveTextContent('SeedRemote80% rated');
         });
     });
 
-    test('card view labels are present for all organizations', async () => {
+    test('a score above 5 or below 0 never overflows its bar', async () => {
+        render(<OrganizationList organizations={[
+            {...organizations[0], id: 11, name: 'Over', avg_score: 7},
+            {...organizations[0], id: 12, name: 'Under', avg_score: -1},
+        ]} />);
+
+        const over = await screen.findByRole('button', { name: 'View details for Over' });
+        const under = screen.getByRole('button', { name: 'View details for Under' });
+        expect(over.querySelector('.organization-score-bar > span')).toHaveStyle({width: '100%'});
+        expect(under.querySelector('.organization-score-bar > span')).toHaveStyle({width: '0%'});
+    });
+
+    test('a name without a letter still gets a tile mark', async () => {
+        render(<OrganizationList organizations={[{...organizations[0], id: 13, name: '   '}]} />);
+
+        const row = await screen.findByRole('button', { name: /View details for/ });
+        expect(row.querySelector('.organization-tile')).toHaveTextContent('?');
+    });
+
+    test('the rows are announced with rank and score', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        await waitFor(() => {
-            // Each card has labels for rank/score, RTO policy, funding round, profile completeness
-            const labels = screen.getAllByText('Company score');
-            expect(labels.length).toBe(3);
-            const rtoLabels = screen.getAllByText('RTO policy');
-            expect(rtoLabels.length).toBe(2);
-            const fundingLabels = screen.getAllByText('Funding round');
-            expect(fundingLabels.length).toBe(2);
-            const completenessLabels = screen.getAllByText('Rating coverage');
-            expect(completenessLabels.length).toBe(3);
-        });
+        const row = await screen.findByRole('button', { name: 'View details for Organization 2' });
+        const summary = document.getElementById(row.getAttribute('aria-describedby') as string) as HTMLElement;
+        expect(summary).toHaveTextContent('Rank 2. Company score 3.50 of 5.');
+        expect(summary).toHaveClass('visually-hidden');
+    });
+
+    test('a string score from the server renders as a number', async () => {
+        render(<OrganizationList organizations={[{...organizations[0], avg_score: '4.31' as unknown as number}]} />);
+
+        const row = await screen.findByRole('button', { name: 'View details for Organization 1' });
+        expect(row.querySelector('.organization-score-value')).toHaveTextContent('4.31');
     });
 
     test('pagination nav has accessible label', async () => {
@@ -199,31 +221,11 @@ describe('OrganizationList', () => {
         });
     });
 
-    test('table wrapper has region role and aria-label', async () => {
-        render(<OrganizationList organizations={organizations} />);
-
-        await waitFor(() => {
-            const region = screen.getByRole('region', { name: 'Organization rankings' });
-            expect(region).toBeInTheDocument();
-        });
-    });
-
-    test('card view has aria-label for the container', async () => {
-        render(<OrganizationList organizations={organizations} />);
-
-        await waitFor(() => {
-            const cardContainer = document.querySelector('.organization-cards');
-            expect(cardContainer?.getAttribute('aria-label')).toBe('Organization ranking cards');
-        });
-    });
-
     test('opens organization details from the keyboard-accessible row control', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        // Both table rows and cards have role=button with the same aria-label.
-        // Verify the table row specifically is keyboard accessible.
         const rows = await screen.findAllByRole('button', { name: 'View details for Organization 1' });
-        expect(rows.length).toBe(2);
+        expect(rows.length).toBe(1);
         expect(rows[0]).toHaveAttribute('tabindex', '0');
 
         fireEvent.keyDown(rows[0], { key: 'Enter' });
@@ -238,64 +240,36 @@ describe('OrganizationList', () => {
             expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
 
-        // Click on the first occurrence (table row) of the organization name
+        // Click on the organization name
         fireEvent.click(screen.getAllByText('Organization 1')[0]);
 
         // Verify API call was made
         expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
     });
 
-    test('opens popup when clicking a mobile card', async () => {
+    test.each([['Enter', 'Enter'], ['Space', ' ']])('row keyboard navigation opens popup on %s', async (_name, key) => {
         render(<OrganizationList organizations={organizations} />);
 
-        await waitFor(() => {
-            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
-        });
-
-        const cards = document.querySelectorAll('.organization-card');
-        fireEvent.click(cards[0]);
-
+        const row = await screen.findByRole('button', { name: 'View details for Organization 1' });
+        fireEvent.keyDown(row, { key });
         expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
     });
 
-    test('card keyboard navigation opens popup on Enter', async () => {
+    test('other keys on a row do nothing', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        await waitFor(() => {
-            const cards = document.querySelectorAll('.organization-card');
-            expect(cards.length).toBe(2);
-        });
-
-        const card = document.querySelector('.organization-card') as HTMLElement;
-        fireEvent.keyDown(card, { key: 'Enter' });
-
-        expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
+        const row = await screen.findByRole('button', { name: 'View details for Organization 1' });
+        fireEvent.keyDown(row, { key: 'a' });
+        expect(global.fetch).not.toHaveBeenCalledWith('/api/organizations/1/');
     });
 
-    test('card keyboard navigation opens popup on Space', async () => {
+    test('row has role button, tabindex and aria-label', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        await waitFor(() => {
-            const cards = document.querySelectorAll('.organization-card');
-            expect(cards.length).toBe(2);
-        });
-
-        const card = document.querySelector('.organization-card') as HTMLElement;
-        fireEvent.keyDown(card, { key: ' ' });
-
-        expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
-    });
-
-    test('card has role button and tabindex', async () => {
-        render(<OrganizationList organizations={organizations} />);
-
-        await waitFor(() => {
-            const cards = document.querySelectorAll('.organization-card');
-            expect(cards.length).toBe(2);
-            expect(cards[0].getAttribute('role')).toBe('button');
-            expect(cards[0].getAttribute('tabindex')).toBe('0');
-            expect(cards[0].getAttribute('aria-label')).toBe('View details for Organization 1');
-        });
+        const row = await screen.findByRole('button', { name: 'View details for Organization 1' });
+        expect(row.tagName).toBe('ARTICLE');
+        expect(row.getAttribute('role')).toBe('button');
+        expect(row.getAttribute('tabindex')).toBe('0');
     });
 
     test('filters organizations by search term', async () => {
@@ -1331,10 +1305,7 @@ describe('OrganizationList', () => {
             window.scrollBy = scrollBy as unknown as typeof window.scrollBy;
             // Rows sit 100px apart from y = 200; the notice, when up, pushes them 80px down.
             rectSpy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-                if (this.classList?.contains('organization-row') || this.classList?.contains('organization-card')) {
-                    if (this.classList.contains('organization-card')) {
-                        return {height: 0, top: 0, bottom: 0} as DOMRect;
-                    }
+                if (this.classList?.contains('organization-row')) {
                     const index = Array.from(document.querySelectorAll('.organization-row')).indexOf(this as Element);
                     const shift = document.querySelector('[data-testid="rankings-updated-notice"]') ? 80 : 0;
                     const top = 200 + index * 100 + shift;
@@ -1390,7 +1361,7 @@ describe('OrganizationList', () => {
             expect(screen.getByRole('button', {name: 'Refresh results'})).toBeInTheDocument();
             // The only announcement is inside the toolbar's existing polite region.
             const region = screen.getByTestId('rankings-announcement').closest('[aria-live="polite"]');
-            expect(region).toBe(document.querySelector('.rankings-toolbar-count'));
+            expect(region).toBe(document.querySelector('.rankings-toolbar-count-text'));
             expect(region).toHaveTextContent('Updated results available.');
             expect(document.querySelectorAll('[aria-live]').length).toBe(1);
             // Rows, order and the count are untouched, and the notice sits below the toolbar.
@@ -1450,13 +1421,13 @@ describe('OrganizationList', () => {
             expect(listCalls()).toBe(1);
             // New order and scores; Delta (even id, no vesting) stays filtered out.
             expect(names()).toEqual(['Alpha Co', 'Gamma Co']);
-            expect(screen.getAllByText('Alpha Co')[0].closest('tr')).toHaveTextContent('2');
+            expect(screen.getAllByText('Alpha Co')[0].closest('.organization-row')).toHaveTextContent('2');
             expect(screen.getByPlaceholderText('Search organizations')).toHaveValue('Co');
             expect(screen.getByTestId('accelerated-vesting-checkbox')).toBeChecked();
             expect(screen.queryByTestId('rankings-updated-notice')).not.toBeInTheDocument();
             expect(screen.getByTestId('rankings-announcement')).toHaveTextContent('Showing updated rankings.');
             // The row put back takes focus (Alpha kept its place), not the heading that may be off screen.
-            expect(document.activeElement).toBe(screen.getAllByText('Alpha Co')[0].closest('tr'));
+            expect(document.activeElement).toBe(screen.getAllByText('Alpha Co')[0].closest('.organization-row'));
             // No "Updated" mark after a press.
             expect(screen.queryByTestId('rankings-updated-badge')).not.toBeInTheDocument();
             // The notice left (-80px) and the first row was put back.
@@ -1498,7 +1469,7 @@ describe('OrganizationList', () => {
             // Row 2 (380 under the notice, first now: 200) is held, not Row 1 (280, now 1100).
             expect(scrollBy).toHaveBeenCalledTimes(1);
             expect(scrollBy).toHaveBeenCalledWith({top: -180, left: 0, behavior: 'instant'});
-            expect(document.activeElement).toBe(screen.getAllByText('Row 2')[0].closest('tr'));
+            expect(document.activeElement).toBe(screen.getAllByText('Row 2')[0].closest('.organization-row'));
         });
 
         test('a row that shows only a sliver above the phone’s Assistant button is not the one held', async () => {
@@ -1539,8 +1510,21 @@ describe('OrganizationList', () => {
             mount();
             await foundNotice();
             expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
-            // 80px to hold plus the 40px the window already had.
-            expect(region().style.paddingBottom).toBe('120px');
+            // 80px to hold plus the 40px the window already had, and 2px of margin.
+            expect(region().style.paddingBottom).toBe('122px');
+            height.mockRestore();
+        });
+
+        test('a compact list leaves a lot of slack: the room is found by doubling, then the overshoot is given back', async () => {
+            const region = () => screen.getByTestId('organization-results-region');
+            const height = jest.spyOn(document.documentElement, 'scrollHeight', 'get');
+            // The content ends 500px above the bottom of the window until padding is added.
+            height.mockImplementation(() => Math.max(window.innerHeight, window.innerHeight - 500 + (parseFloat(region().style.paddingBottom) || 0)));
+            mount();
+            await foundNotice();
+            expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
+            // 80px to hold plus the 500px the window already had, and 2px of margin.
+            expect(region().style.paddingBottom).toBe('582px');
             height.mockRestore();
         });
 
@@ -3371,11 +3355,11 @@ describe('OrganizationList', () => {
         const rowNames = () => screen.getAllByRole('button', {name: /View details for/})
             .map((el) => el.getAttribute('aria-label'));
 
-        test('rto=R in the URL filters rows and cards, shows the chip and reports the filter', async () => {
+        test('rto=R in the URL filters the rows, shows the chip and reports the filter', async () => {
             window.history.replaceState({}, '', '/?rto=R');
             render(<OrganizationList organizations={organizations} currentAlgorithmId={3} />);
-            // One row and one card for the single remote organization.
-            expect(rowNames()).toEqual(['View details for Organization 1', 'View details for Organization 1']);
+            // One row for the single remote organization.
+            expect(rowNames()).toEqual(['View details for Organization 1']);
             expect(screen.getByText(/Showing 1-1 of 1 organizations/)).toBeInTheDocument();
             await waitFor(() => expect(screen.getByTestId('filter-chip-rto')).toHaveTextContent('RTO policy: Remote'));
             expect(screen.getByRole('button', {name: 'Remove filter: RTO policy Remote'})).toBeInTheDocument();
@@ -3414,7 +3398,7 @@ describe('OrganizationList', () => {
             expect(applied).toBe(true);
             expect(pushSpy).toHaveBeenCalledTimes(1);
             expect(pushSpy).toHaveBeenCalledWith({}, '', expect.stringMatching(/[?&]rto=R(&|$)/));
-            expect(rowNames()).toEqual(['View details for Organization 1', 'View details for Organization 1']);
+            expect(rowNames()).toEqual(['View details for Organization 1']);
             expect(screen.getByRole('button', {name: 'Remove filter: RTO policy Remote'})).toBeInTheDocument();
             await waitFor(() => expect(getWorkspaceSnapshot().context?.filters).toEqual({rtoPolicy: 'R'}));
             // Re-applying the same filter changes nothing and adds no entry.
@@ -3465,7 +3449,7 @@ describe('OrganizationList', () => {
             window.history.replaceState({}, '', '/?rto=H');
             render(<OrganizationList organizations={organizations}
                                      rankingPresets={[{id: 1, name: 'A'}, {id: 2, name: 'B'}]} currentAlgorithmId={1} />);
-            expect(rowNames()).toEqual(['View details for Organization 2', 'View details for Organization 2']);
+            expect(rowNames()).toEqual(['View details for Organization 2']);
             Object.defineProperty(window, 'location', {
                 value: {...originalLocation, pathname: '/', search: '?rto=H', hash: '', assign},
                 writable: true, configurable: true,
@@ -3858,11 +3842,11 @@ describe('OrganizationList', () => {
             expect(screen.queryByTestId('ranking-preset-select')).not.toBeInTheDocument();
         });
 
-        test('score column and card label name the current preset', () => {
+        test('the score is named after the current preset and the select reads Sort by', () => {
             render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={2} />);
-            expect(screen.getByRole('columnheader', {name: 'Company score (Culture)'})).toBeInTheDocument();
-            expect(document.querySelector('.col-score-algorithm')).toHaveTextContent('Culture');
-            expect(document.querySelectorAll('.organization-card-score .organization-card-label')[0]).toHaveTextContent('Company score (Culture)');
+            const row = screen.getByRole('button', {name: 'View details for Organization 1'});
+            expect(document.getElementById(row.getAttribute('aria-describedby') as string)).toHaveTextContent('Company score (Culture) 4.50 of 5.');
+            expect(screen.getByLabelText('Sort by')).toHaveValue('2');
         });
 
         test('zero results shows exactly one suggest action with the search term prefilled', () => {
@@ -3959,6 +3943,51 @@ describe('OrganizationList', () => {
             consoleSpy.mockRestore();
         });
 
+        test('while labels load, each row keeps its shape with skeleton placeholders in the meta line', async () => {
+            let release: (value: unknown) => void = () => {};
+            global.fetch = jest.fn().mockImplementation((url: string) => (
+                url === '/api/funding-round-choices/' ? new Promise(resolve => { release = resolve; }) : okChoices(url)
+            ));
+            render(<OrganizationList organizations={organizations} />);
+            const row = screen.getByRole('button', {name: 'View details for Organization 1'});
+            expect(row.querySelectorAll('.organization-meta [data-testid="choice-skeleton"]').length).toBeGreaterThan(0);
+            // The rest of the row is already real: name, score, chips and action.
+            expect(row.querySelector('.organization-score-value')).toHaveTextContent('4.50');
+            expect(row.querySelector('.organization-cta')).toBeInTheDocument();
+            await act(async () => { release({ok: true, json: () => Promise.resolve({S: 'Seed'})}); });
+            await waitFor(() => expect(row.querySelector('.organization-meta [data-testid="choice-skeleton"]')).toBeNull());
+        });
+
+        test('on a label error the rows fall back to the raw codes next to the inline error', async () => {
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            global.fetch = jest.fn().mockImplementation(() => Promise.resolve({ok: false, status: 500, json: () => Promise.resolve({})}));
+            render(<OrganizationList organizations={organizations} />);
+            await screen.findByTestId('choices-status-error');
+            const row = screen.getByRole('button', {name: 'View details for Organization 1'});
+            expect(row.querySelector('.organization-meta')).toHaveTextContent('SR80% rated');
+            consoleSpy.mockRestore();
+        });
+
+        test('one control row (search, Sort by, vesting toggle chip), then the count line with the pager', async () => {
+            render(<OrganizationList organizations={organizations} itemsPerPage={1}
+                                     rankingPresets={[{id: 1, name: 'Balanced'}]} currentAlgorithmId={1} />);
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            const toolbar = screen.getByTestId('rankings-toolbar');
+            expect(within(toolbar).getByLabelText('Sort by')).toHaveValue('1');
+            const toggle = within(toolbar).getByLabelText('First vesting < 1 year');
+            expect(toggle).toBe(screen.getByTestId('accelerated-vesting-checkbox'));
+            const chip = toggle.closest('label') as HTMLElement;
+            expect(chip).toHaveClass('organization-filter');
+            expect(chip).not.toHaveClass('organization-filter--on');
+            // Count, page number and the compact pager share the one line.
+            const line = toolbar.querySelector('.rankings-toolbar-count') as HTMLElement;
+            expect(within(line).getByText(/Showing 1-1 of 2 organizations/)).toBeInTheDocument();
+            expect(within(line).getByText('Page 1 of 2')).toBeInTheDocument();
+            expect(within(line).getByRole('navigation', {name: 'Organization pagination'})).toBeInTheDocument();
+            fireEvent.click(toggle);
+            expect(screen.getByTestId('accelerated-vesting-checkbox').closest('label')).toHaveClass('organization-filter--on');
+        });
+
         test('renders a second pager after the list when there is more than one page', async () => {
             render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
             await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
@@ -4015,14 +4044,12 @@ describe('OrganizationList', () => {
             expect(screen.getByRole('alert')).toHaveClass('organization-empty-state');
         });
 
-        test('rows and cards carry the full name in title and the table and cards share one results container', () => {
+        test('rows carry the full name in title and sit in the one results container', () => {
             const {container} = render(<OrganizationList organizations={organizations} />);
             const name = organizations[0].name;
             expect(container.querySelector('.organization-name')).toHaveAttribute('title', name);
-            expect(container.querySelector('.organization-card-name')).toHaveAttribute('title', name);
             const results = container.querySelector('.organization-results')!;
-            expect(results.querySelector('.organization-table-wrap')).not.toBeNull();
-            expect(results.querySelector('.organization-cards')).not.toBeNull();
+            expect(results.querySelector('ol.organization-list')).not.toBeNull();
         });
     });
 
@@ -4042,26 +4069,25 @@ describe('OrganizationList', () => {
             {...organizations[1], id: 14, name: 'Legacy Co'},
         ];
 
-        test('table rows and cards show coverage, facts, last verified and pending review', async () => {
+        test('rows show coverage and evidence chips, never zero counts', async () => {
             render(<OrganizationList organizations={evidenceOrgs}/>);
-            const table = await screen.findByRole('table');
-            const row = (name: string) => within(table).getByRole('button', {name: `View details for ${name}`});
-            expect(row('Verified Co')).toHaveTextContent('2 of 2');
-            expect(within(row('Verified Co')).getByTestId('evidence-facts')).toHaveTextContent('3 verified · 0 stale · 4 unknown');
-            expect(within(row('Verified Co')).getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Jan 5, 2025');
-            expect(row('Stale Co')).toHaveTextContent('1 of 2');
-            expect(row('Stale Co').querySelector('.evidence-badge-stale')).not.toBeNull();
-            expect(within(row('Stale Co')).getByTestId('evidence-pending')).toHaveTextContent('Pending review');
-            expect(within(row('Unknown Co')).getByTestId('evidence-last-verified')).toHaveTextContent('Never verified');
-            expect(within(row('Unknown Co')).queryByTestId('evidence-pending')).toBeNull();
-            expect(row('Legacy Co')).toHaveTextContent('Unknown');
-            expect(row('Legacy Co')).toHaveTextContent('70%');
-            expect(document.querySelectorAll('.organization-card-evidence').length).toBe(4);
+            const list = await screen.findByRole('list', {name: 'Organization rankings'});
+            const row = (name: string) => within(list).getByRole('button', {name: `View details for ${name}`});
+            const chips = (name: string) => Array.from(row(name).querySelectorAll('.crank-chip')).map(chip => chip.textContent);
+            expect(row('Verified Co')).toHaveTextContent('2 of 2 rated');
+            expect(chips('Verified Co')).toEqual(['✓3 verified', '?4 unknown', '✓First vesting < 1 yr']);
+            expect(row('Stale Co')).toHaveTextContent('1 of 2 rated');
+            expect(chips('Stale Co')).toEqual(['!2 stale', '?5 unknown', '…Pending review', '✓First vesting < 1 yr']);
+            expect(row('Stale Co').querySelector('.crank-chip--stale')).not.toBeNull();
+            // Nothing verified: one muted chip, not "0 verified · 0 stale · 7 unknown".
+            expect(chips('Unknown Co')).toEqual(['?Not yet verified', '✓First vesting < 1 yr']);
+            expect(row('Unknown Co').querySelector('.organization-evidence')).not.toHaveTextContent('0 verified');
+            expect(chips('Legacy Co')).toEqual(['?Not yet verified']);
+            expect(row('Legacy Co')).toHaveTextContent('70% rated');
         });
 
-        test('the rankings print the UTC day of the last verification for a reader in Los Angeles, as the revision digests it', async () => {
-            // 03:00Z on Jan 5 is still Jan 4 in Los Angeles; the list says Jan 5 on the row,
-            // the card and the spoken description, and says which day it is.
+        test('the rankings say the UTC day of the last verification in the spoken description, for a reader in Los Angeles, as the revision digests it', async () => {
+            // 03:00Z on Jan 5 is still Jan 4 in Los Angeles; the list says Jan 5.
             const original = Date.prototype.toLocaleDateString;
             const spy = jest.spyOn(Date.prototype, 'toLocaleDateString').mockImplementation(
                 function (this: Date, locale?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
@@ -4070,23 +4096,16 @@ describe('OrganizationList', () => {
             try {
                 const late = {...evidenceOrgs[0], evidence: summary({verified: 3, unknown: 4, last_verified_at: '2025-01-05T03:00:00Z'})};
                 render(<OrganizationList organizations={[late]}/>);
-                const fresh = await screen.findAllByTestId('evidence-last-verified');
-                expect(fresh).toHaveLength(2); // table row and card
-                fresh.forEach((node) => {
-                    expect(node).toHaveTextContent('Last verified Jan 5, 2025');
-                    expect(node).toHaveAttribute('title', 'Day in UTC');
-                });
-                const summaries = Array.from(document.querySelectorAll('[id^="organization-"][id*="summary-"]'));
-                expect(summaries.length).toBe(2);
-                summaries.forEach((node) => expect(node).toHaveTextContent('Last verified Jan 5, 2025.'));
+                const row = await screen.findByRole('button', {name: 'View details for Verified Co'});
+                expect(document.getElementById(row.getAttribute('aria-describedby') as string)).toHaveTextContent('Last verified Jan 5, 2025.');
             } finally {
                 spy.mockRestore();
             }
         });
 
-        test('rows and cards expose coverage, counts, freshness and review to assistive tech via aria-describedby', async () => {
+        test('rows expose rank, coverage, counts, freshness and review to assistive tech via aria-describedby', async () => {
             render(<OrganizationList organizations={evidenceOrgs}/>);
-            const table = await screen.findByRole('table');
+            const table = await screen.findByRole('list', {name: 'Organization rankings'});
             const describe = (element: HTMLElement) => {
                 const ids = (element.getAttribute('aria-describedby') || '').split(' ').filter(Boolean);
                 expect(ids.length).toBeGreaterThan(0);
@@ -4094,14 +4113,11 @@ describe('OrganizationList', () => {
             };
             const row = (name: string) => within(table).getByRole('button', {name: `View details for ${name}`});
             expect(describe(row('Verified Co'))).toBe(
-                'Rating coverage 2 of 2. Facts: 3 verified, 0 stale, 4 unknown. Last verified Jan 5, 2025.');
+                'Rank 1. Company score 4.50 of 5. Rating coverage 2 of 2. Facts: 3 verified, 0 stale, 4 unknown. Last verified Jan 5, 2025.');
             expect(describe(row('Stale Co'))).toBe(
-                'Rating coverage 1 of 2. Facts: 0 verified, 2 stale, 5 unknown. Last verified Feb 1, 2024. Pending review.');
+                'Rank 1. Company score 4.50 of 5. Rating coverage 1 of 2. Facts: 0 verified, 2 stale, 5 unknown. Last verified Feb 1, 2024. Pending review.');
             expect(describe(row('Unknown Co'))).toContain('Never verified.');
-            expect(describe(row('Legacy Co'))).toBe('Rating coverage 70%. Facts: Unknown.');
-            const card = Array.from(document.querySelectorAll<HTMLElement>('.organization-card'))
-                .find(element => element.getAttribute('aria-label') === 'View details for Stale Co') as HTMLElement;
-            expect(describe(card)).toBe(describe(row('Stale Co')));
+            expect(describe(row('Legacy Co'))).toBe('Rank 2. Company score 3.50 of 5. Rating coverage 70%. Facts: Unknown.');
             const ids = Array.from(document.querySelectorAll('[id^="organization-"]')).map(element => element.id);
             expect(new Set(ids).size).toBe(ids.length);
         });

@@ -58,13 +58,40 @@ test('changing preset keeps search and drops page', async ({page}) => {
     await page.getByTestId('ranking-preset-select').selectOption({label: 'E2E Culture Preset'});
     await page.waitForURL(/\/algo\/\d+\/\?search=E2E$/);
     await expect(page.getByTestId('ranking-preset-select').locator('option:checked')).toHaveText('E2E Culture Preset');
-    await expect(page.getByRole('columnheader', {name: 'Company score (E2E Culture Preset)'})).toBeVisible();
+    const firstRow = page.locator('.organization-row').first();
+    await expect(page.locator(`#${await firstRow.getAttribute('aria-describedby')}`)).toContainText('Company score (E2E Culture Preset)');
 });
 
-test('the 100-character company name wraps without horizontal overflow', async ({page}) => {
+test('the 100-character company name is cut inside its row without horizontal overflow', async ({page}) => {
     await page.setViewportSize({width: 375, height: 800});
     await page.goto('/?search=Longname');
-    await expect(page.locator('.organization-card-name').first()).toBeVisible();
+    await expect(page.locator('.organization-name').first()).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
+});
+
+// Density budgets (issue #617, docs/design-system.md): a company row is at most
+// 96px tall on desktop and 180px on a phone, including the 100-character name.
+for (const [width, height, budget] of [[1440, 900, 96], [1280, 800, 96], [375, 812, 180]] as const) {
+    test(`every company row fits the ${budget}px budget at ${width}px with no horizontal overflow`, async ({page}) => {
+        await page.setViewportSize({width, height});
+        await page.goto('/');
+        const rows = page.locator('ol.organization-list > li > .organization-row');
+        await expect(rows).toHaveCount(4);
+        const heights = await rows.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().height));
+        for (const h of heights) {
+            expect(h).toBeLessThanOrEqual(budget);
+        }
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        expect(overflow).toBeLessThanOrEqual(1);
+    });
+}
+
+test('signed out, the rail offers exactly one entry, Sign in, which opens the login page', async ({page}) => {
+    await page.goto('/');
+    const footer = page.locator('.app-nav-rail .app-nav-footer a, .app-nav-rail .app-nav-footer button');
+    await expect(footer).toHaveCount(1);
+    await expect(footer.first()).toHaveText('Sign in');
+    await expect(footer.first()).toHaveAttribute('href', '/accounts/login/');
+    await expect(page.locator('.app-nav-link--google')).toHaveCount(0);
 });

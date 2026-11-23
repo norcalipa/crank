@@ -81,29 +81,6 @@
     word-break: break-word;
 }
 
-.organization-name {
-    color: #007bff;
-    text-decoration: none;
-    cursor: pointer;
-    padding: 2px 4px;
-    border-radius: 3px;
-}
-
-.organization-name:hover {
-    background-color: rgba(0, 123, 255, 0.1);
-}
-
-/* Add hover effect for entire organization row */
-table.organization-table tr.organization-row:hover {
-    background-color: rgba(255, 255, 255, 0.05) !important;
-    transition: background-color 0.2s ease;
-}
-
-/* Make sure all table cells in the row also get the hover effect */
-table.organization-table tr.organization-row:hover td {
-    background-color: rgba(255, 255, 255, 0.05) !important;
-}
-
 /* Override any Bootstrap table hover styles */
 .table-hover tbody tr:hover td,
 .table tbody tr:hover td {
@@ -437,6 +414,48 @@ body.app-nav-drawer-open {
     }
 }
 
+/* Issue #617: on the rankings page the explanation is a small inline link
+   beside the subtitle, not a full-width bar; open, it spans the full line. */
+.rankings-intro {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .25rem .75rem;
+    margin-bottom: .75rem;
+}
+
+.rankings-subtitle { min-width: 0; }
+
+.how-ranking-works--inline {
+    border: 0;
+    background: transparent;
+}
+
+.how-ranking-works--inline[open] {
+    flex: 1 1 100%;
+    border: 1px solid var(--bs-border-color);
+    background: var(--bs-body-bg);
+}
+
+.how-ranking-works--inline > .how-ranking-works-summary {
+    min-height: 0;
+    padding: .25rem 0;
+    gap: .375rem;
+    color: var(--bs-link-color);
+    font-size: .875rem;
+    font-weight: 500;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.how-ranking-works--inline[open] > .how-ranking-works-summary {
+    padding: .5rem .75rem;
+}
+
+@media (pointer: coarse) {
+    .how-ranking-works--inline > .how-ranking-works-summary { min-height: 44px; }
+}
+
 .how-ranking-works-content {
     padding: 0 .75rem .75rem;
     overflow-wrap: anywhere;
@@ -489,7 +508,9 @@ body.app-nav-drawer-open {
     white-space: nowrap;
 }
 
-/* Touch-target floor (44px) for every rankings control at every width. */
+/* Rankings toolbar (issue #617): one control row (search, Sort by, the vesting
+   toggle chip), then one line with the count and the compact pager. Every
+   control keeps the 44px touch-target floor. */
 .rankings-toolbar .form-control,
 .rankings-toolbar .form-select,
 .rankings-toolbar .btn,
@@ -511,20 +532,17 @@ body.app-nav-drawer-open {
     min-width: 44px;
 }
 
-.organization-filter {
-    min-height: 44px;
-}
-
 .pagination {
     flex-wrap: wrap;
+    margin-bottom: 0;
 }
 
 .rankings-toolbar {
     display: flex;
     flex-wrap: wrap;
-    gap: .75rem;
-    align-items: flex-end;
-    margin-bottom: 1rem;
+    gap: .5rem .75rem;
+    align-items: center;
+    margin-bottom: .5rem;
 }
 
 .rankings-toolbar > * {
@@ -532,71 +550,42 @@ body.app-nav-drawer-open {
 }
 
 .rankings-toolbar-search {
-    flex: 2 1 16rem;
+    flex: 2 1 12rem;
 }
 
 .rankings-toolbar-preset {
-    flex: 1 1 12rem;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    flex: 1 1 18rem;
+}
+
+.rankings-toolbar-preset-label {
+    flex: 0 0 auto;
+    margin: 0;
+    color: var(--bs-secondary-color);
+    font-size: .875rem;
+    white-space: nowrap;
 }
 
 .rankings-toolbar-count {
-    flex: 1 1 100%;
-}
-
-.filter-chips {
     display: flex;
-    flex-wrap: wrap;
-    gap: .5rem;
-    list-style: none;
-    margin: 0;
-    padding: 0;
     flex: 1 1 100%;
-}
-
-.filter-chip {
-    display: inline-flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: .375rem;
-    max-width: 100%;
-    padding: .25rem .625rem;
-    border: 1px solid var(--bs-border-color);
-    border-radius: 999px;
-    background: var(--bs-secondary-bg);
-    color: inherit;
+    justify-content: space-between;
+    gap: .25rem .75rem;
 }
 
-.organization-search {
-    flex: 1 1 14rem;
-    min-width: 0;
+.rankings-toolbar-count-text {
     display: flex;
     flex-wrap: wrap;
-    gap: .5rem;
-}
-
-.organization-search .form-control {
-    flex: 1 1 10rem;
-    min-width: 0;
-}
-
-.organization-filter {
-    display: flex;
-    align-items: flex-start;
-    gap: .5rem;
-    flex: 1 1 18rem;
-    min-width: 0;
-    padding: .5rem .75rem;
-    border: 1px solid var(--bs-border-color);
-    border-radius: var(--bs-border-radius);
-}
-
-.organization-filter .form-check-input {
-    flex: 0 0 auto;
-    margin-top: .25rem;
-}
-
-.organization-filter label {
-    margin: 0;
-    overflow-wrap: anywhere;
+    align-items: baseline;
+    gap: 0 .75rem;
+    /* Tall enough for the label-loading status, so it moves nothing in or out. */
+    min-height: 1.5rem;
+    color: var(--bs-secondary-color);
+    font-size: .875rem;
 }
 
 .organization-results-count,
@@ -605,123 +594,99 @@ body.app-nav-drawer-open {
     overflow-wrap: anywhere;
 }
 
-.organization-page-count {
-    margin-top: .25rem;
+/* On phones the "Updated" mark takes a line of its own under the count, whose
+   room is always reserved, so its arrival and departure move nothing however
+   long the count is (issue #485c). Wider, it shares the count's line. */
+@media (max-width: 575.98px) {
+    .organization-results-count {
+        position: relative;
+        padding-bottom: 1.5rem;
+    }
+
+    .organization-results-count .badge {
+        position: absolute;
+        left: 0;
+        bottom: 0;
+        margin-left: 0 !important;
+    }
 }
 
-.organization-table-wrap {
-    overflow-x: auto;
-    /* Prevent an inner vertical scrollbar: `overflow-x: auto` alone makes
-       `overflow-y` compute to `auto`, which produces a needless vertical
-       scrollbar when a horizontal scrollbar is present. The wrapper sizes
-       to its content, so `hidden` never clips real rows. */
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
+.filter-chips {
+    display: flex;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: .5rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .375rem;
+    max-width: 100%;
+    padding: .25rem .75rem;
     border: 1px solid var(--bs-border-color);
-    border-radius: var(--bs-border-radius);
+    border-radius: 999px;
+    background: var(--bs-secondary-bg);
+    color: inherit;
 }
 
-.organization-table {
-    table-layout: fixed;
-    width: 100%;
-    min-width: 56rem;
-    margin-bottom: 0;
+.organization-search {
+    position: relative;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: .5rem;
+    min-width: 0;
 }
 
-.organization-table .col-rank { width: 3.75rem; }
-.organization-table .col-score { width: 7rem; }
-.organization-table .col-funding { width: 8rem; }
-.organization-table .col-rto { width: 6.5rem; }
-.organization-table .col-profile { width: 6.5rem; }
-.organization-table .col-evidence { width: 14rem; }
-.organization-table .col-name { width: auto; }
-
-.organization-table th,
-.organization-table td {
-    overflow-wrap: anywhere;
+.organization-search .form-control {
+    flex: 1 1 10rem;
+    min-width: 0;
+    padding-inline-start: 2.5rem;
+    border-radius: 999px;
 }
 
-/* Extreme names stay bounded in the table row (full name in the title
-   attribute and the row's accessible label). */
-.organization-table .organization-name {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
-    overflow: hidden;
-    overflow-wrap: anywhere;
+.organization-search-icon {
+    position: absolute;
+    inset-inline-start: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--bs-secondary-color);
+    pointer-events: none;
 }
 
-.organization-cards {
-    display: none;
-}
-
-/* The table-to-card switch follows the width available to the results (not
-   the viewport), so it also holds when a side panel narrows the page (#479).
-   56rem is the table's minimum width. */
-.organization-results {
-    container: organization-results / inline-size;
-}
-
-@container organization-results (max-width: 56rem) {
-    .organization-table-wrap {
-        display: none;
-    }
-
-    .organization-cards {
-        display: grid;
-        gap: .75rem;
-    }
-
-    .organization-card .card-body {
-        display: grid;
-        /* Two columns on phones, all three facts on one row when wider. */
-        grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
-        gap: .375rem 1rem;
-        padding: .75rem 1rem;
-    }
-
-    /* Company names keep the same link affordance as the desktop table and
-       clamp to two lines; the full name stays in the title attribute and the
-       card's accessible label. */
-    .organization-card .organization-card-name {
-        grid-column: 1 / -1;
-        margin: 0;
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        line-clamp: 2;
-        overflow: hidden;
-        overflow-wrap: anywhere;
-        color: var(--bs-link-color);
-        text-decoration: underline;
-        text-underline-offset: 2px;
-    }
-
-    .organization-card .organization-card-score {
-        font-size: 1.25rem;
-        font-weight: 700;
-    }
-
-    .organization-card .organization-card-label {
-        display: block;
-        color: var(--bs-secondary-color);
-        font-size: .75rem;
-        font-weight: 400;
-    }
-
-    .organization-card .card-body > div {
-        min-width: 0;
-        overflow-wrap: anywhere;
-    }
-}
-
-.organization-card {
+/* The vesting filter is a toggle chip: a real checkbox in a pill. */
+.organization-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    flex: 0 0 auto;
+    min-height: 44px;
+    margin: 0;
+    padding: .25rem .875rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: 999px;
+    background: var(--bs-tertiary-bg);
     cursor: pointer;
 }
 
-.organization-card:focus-visible,
-.organization-table-wrap:focus-visible,
+.organization-filter--on {
+    border-color: #60a5fa;
+    background: rgba(96, 165, 250, .16);
+}
+
+.organization-filter .form-check-input {
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+.organization-filter:has(:focus-visible) {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
 .how-ranking-works-summary:focus-visible,
 .filter-chip:focus-visible,
 .app-nav-toggle:focus-visible,
@@ -730,33 +695,222 @@ body.app-nav-drawer-open {
     outline-offset: 2px;
 }
 
-/* Desktop restored-focus indicator: a `tr` outline clips at the rounded,
-   horizontally scrollable table wrapper (left/right edges disappear), so
-   draw the complete perimeter as inset shadows on the row's cells instead
-   (issue #464, visual critique round 1). The mobile card keeps its
-   outline ring in the group above. */
+/* Ranked company rows (issue #617). One ordered list of compact rows at every
+   width; the layout follows the width the results have, not the viewport
+   (a side panel narrows it too, #479). Budgets: a row is at most 96px tall on
+   desktop and 180px on a phone. See docs/design-system.md. */
+.organization-results {
+    container: organization-results / inline-size;
+}
+
+.organization-list {
+    display: grid;
+    gap: .5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.organization-row {
+    display: grid;
+    grid-template-columns: 2rem 2.5rem minmax(0, 1fr) minmax(10rem, 17rem) 7.5rem auto;
+    grid-template-areas: "rank tile main evidence score cta";
+    align-items: center;
+    gap: .75rem;
+    padding: .5rem .875rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: 12px;
+    background: var(--bs-tertiary-bg);
+    cursor: pointer;
+    transition: border-color .15s ease, background-color .15s ease;
+}
+
+.organization-row:hover {
+    border-color: #60a5fa;
+    background: var(--bs-secondary-bg);
+}
+
 .organization-row:focus-visible {
-    outline: none;
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
 }
 
-.organization-row:focus-visible > * {
-    box-shadow:
-        inset 0 3px 0 var(--bs-warning),
-        inset 0 -3px 0 var(--bs-warning);
+.organization-rank {
+    grid-area: rank;
+    color: var(--bs-secondary-color);
+    font-size: .875rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
 }
 
-.organization-row:focus-visible > :first-child {
-    box-shadow:
-        inset 3px 0 0 var(--bs-warning),
-        inset 0 3px 0 var(--bs-warning),
-        inset 0 -3px 0 var(--bs-warning);
+.organization-tile {
+    grid-area: tile;
+    display: grid;
+    place-items: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border: 1px solid rgba(96, 165, 250, .45);
+    border-radius: 10px;
+    background: linear-gradient(135deg, #172554, #1e3a8a);
+    color: #bfdbfe;
+    font-size: 1.125rem;
+    font-weight: 700;
 }
 
-.organization-row:focus-visible > :last-child {
-    box-shadow:
-        inset -3px 0 0 var(--bs-warning),
-        inset 0 3px 0 var(--bs-warning),
-        inset 0 -3px 0 var(--bs-warning);
+.organization-main {
+    grid-area: main;
+    display: grid;
+    gap: .125rem;
+    min-width: 0;
+}
+
+.organization-name {
+    overflow: hidden;
+    color: var(--bs-emphasis-color);
+    font-size: 1.0625rem;
+    font-weight: 700;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.organization-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 .25rem;
+    min-width: 0;
+    color: var(--bs-secondary-color);
+    font-size: .8125rem;
+    line-height: 1.3;
+}
+
+/* The separator trails its item, so a wrapped line never starts with one. */
+.organization-meta > span:not(:last-child)::after {
+    content: "\00b7";
+    margin-inline-start: .25rem;
+}
+
+.organization-evidence {
+    grid-area: evidence;
+    min-width: 0;
+}
+
+.crank-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .25rem;
+}
+
+.crank-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .25rem;
+    padding: .0625rem .5rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .04);
+    font-size: .75rem;
+    font-weight: 600;
+    line-height: 1.5;
+    white-space: nowrap;
+}
+
+.crank-chip-marker { font-variant-emoji: text; }
+
+.crank-chip--verified { color: var(--bs-success-text-emphasis); }
+.crank-chip--stale { color: var(--bs-warning-text-emphasis); }
+.crank-chip--unknown { color: var(--bs-secondary-color); border-style: dashed; }
+.crank-chip--pending { color: var(--bs-info-text-emphasis); border-style: dashed; }
+.crank-chip--vesting { color: var(--bs-primary-text-emphasis); }
+
+[data-bs-theme="dark"] .crank-chip--verified { color: #86efac; }
+[data-bs-theme="dark"] .crank-chip--stale { color: #fcd34d; }
+[data-bs-theme="dark"] .crank-chip--unknown { color: #d1d5db; }
+[data-bs-theme="dark"] .crank-chip--pending { color: #c4b5fd; }
+[data-bs-theme="dark"] .crank-chip--vesting { color: #bfdbfe; }
+
+.organization-score {
+    grid-area: score;
+    display: grid;
+    gap: .25rem;
+}
+
+.organization-score-line { white-space: nowrap; }
+
+.organization-score-value {
+    color: var(--bs-emphasis-color);
+    font-size: 1.25rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.organization-score-max {
+    color: var(--bs-secondary-color);
+    font-size: .875rem;
+}
+
+.organization-score-bar {
+    display: block;
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .16);
+}
+
+.organization-score-bar > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #38bdf8, #60a5fa);
+}
+
+.organization-cta {
+    grid-area: cta;
+    display: inline-flex;
+    align-items: center;
+    gap: .375rem;
+    padding: .375rem .75rem;
+    border: 1px solid #60a5fa;
+    border-radius: 8px;
+    background: #60a5fa;
+    color: #0b1220;
+    font-size: .875rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* Medium: two lines; the chips drop under the name. */
+@container organization-results (max-width: 52rem) {
+    .organization-row {
+        grid-template-columns: 2rem 2.5rem minmax(0, 1fr) 7.5rem auto;
+        grid-template-areas:
+            "rank tile main score cta"
+            ". . evidence evidence evidence";
+        row-gap: .375rem;
+    }
+}
+
+/* Phones: a stacked card, full width, at most 180px. */
+@container organization-results (max-width: 34rem) {
+    .organization-row {
+        grid-template-columns: 1.5rem 2.5rem minmax(0, 1fr) auto;
+        grid-template-areas:
+            "rank tile main score"
+            "evidence evidence evidence evidence"
+            "cta cta cta cta";
+        gap: .5rem .5rem;
+    }
+
+    .organization-cta {
+        justify-content: center;
+        width: 100%;
+        padding: .25rem .75rem;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .organization-row { transition: none; }
 }
 
 .readable-page-container {
@@ -1602,25 +1756,6 @@ body.app-nav-drawer-open {
    hugs the title instead of spanning the column. */
 #rankings-heading {
     width: fit-content;
-}
-
-/* On phones the "Updated" mark sits in the line the toolbar reserves under
-   the count whenever that line is empty, so its arrival and departure move
-   nothing however long the count is; with a label error in that line (or
-   the loading line, while the labels are still loading) it follows the
-   count instead of hiding under the alert: the `:empty` gate falls back
-   whenever the status slot holds anything. */
-.organization-results-count {
-    position: relative;
-}
-
-@media (max-width: 575.98px) {
-    .rankings-toolbar-count:has(> .choices-status-slot:empty) .organization-results-count .badge {
-        position: absolute;
-        left: 0;
-        top: calc(100% + 0.125rem);
-        margin-left: 0 !important;
-    }
 }
 
 #rankings-heading:focus-visible {
@@ -3108,20 +3243,8 @@ body.assistant-open .app-content {
     container-type: inline-size;
 }
 
-@container app-content (max-width: 46rem) {
-    body.assistant-open .organization-table-wrap {
-        display: none;
-    }
-
-    body.assistant-open .organization-cards {
-        display: grid;
-        gap: .75rem;
-    }
-}
-
 /* Any host table wrapper that still scrolls shows a scroll affordance. */
-body.assistant-open .app-content .table-responsive,
-.organization-table-wrap {
+body.assistant-open .app-content .table-responsive {
     background:
         linear-gradient(90deg, var(--bs-body-bg) 30%, transparent) left center / 2rem 100% no-repeat local,
         linear-gradient(270deg, var(--bs-body-bg) 30%, transparent) right center / 2rem 100% no-repeat local,
@@ -4000,18 +4123,36 @@ body.assistant-open .app-content .table-responsive,
     }
 }
 
-/* Rankings toolbar: stable grid, full preset label, loading placeholders. */
-.rankings-toolbar-preset {
-    flex: 1 1 16rem;
-    min-width: min(16rem, 100%);
+/* Rankings toolbar loading placeholders. */
+.choices-status-slot:empty {
+    display: none;
 }
 
-.organization-search {
-    flex-wrap: nowrap;
-}
+/* On phones the loading status is the spinner alone (the words stay for
+   assistive technology), so it never wraps onto a line of its own. */
+@media (max-width: 575.98px) {
+    /* The spinner sits at the end of the count's first line, in room that is
+       always reserved, so it adds no line of its own and moves nothing. */
+    .rankings-toolbar-count-text {
+        position: relative;
+        padding-inline-end: 1.75rem;
+    }
 
-.choices-status-slot {
-    min-height: 1.5rem;
+    .choices-status-slot:has(> [data-testid="choices-status-loading"]) {
+        position: absolute;
+        inset-inline-end: 0;
+        top: 0;
+    }
+
+    .choices-status:not(.choices-status-error) .choices-status-text {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
 }
 
 .choices-skeleton {
@@ -4032,18 +4173,6 @@ body.assistant-open .app-content .table-responsive,
     .choices-skeleton {
         animation: none;
     }
-}
-
-.organization-table .col-score-algorithm {
-    display: block;
-    font-size: .75rem;
-    font-weight: 400;
-    color: var(--bs-secondary-color);
-}
-
-.organization-table .organization-name {
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
 }
 
 /* issue #477 correction form */
@@ -5113,8 +5242,6 @@ span.priority-chip-button { cursor: default; }
 
 .evidence-summary-fresh { color: var(--bs-secondary-color); }
 
-.organization-card .organization-card-evidence { grid-column: 1 / -1; }
-
 .evidence-coverage > div + div { margin-top: .25rem; }
 
 .evidence-row-value .evidence-value,
@@ -5459,8 +5586,7 @@ span.priority-chip-button { cursor: default; }
     border: 0;
 }
 
-.homepage-container:has(.company-view) > h1 + p,
-.homepage-container:has(.company-view) > .how-ranking-works {
+.homepage-container:has(.company-view) > .rankings-intro {
     display: none;
 }
 

@@ -25,19 +25,23 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             await page.setViewportSize({width, height});
         });
 
-        test('rankings show coverage, facts, last verified and pending review without overflow', async ({page}) => {
+        test('rankings show coverage, evidence chips and pending review without overflow', async ({page}) => {
             await page.goto('/');
             const list = results(page);
             const beta = list.getByRole('button', {name: 'View details for E2E Beta Labs'}).locator('visible=true').first();
-            await expect(beta).toContainText('2 of 2');
-            await expect(beta).toContainText('Stale');
-            await expect(beta).toContainText('0 verified · 2 stale · 5 unknown');
+            await expect(beta).toContainText('2 of 2 rated');
+            await expect(beta).toContainText('2 stale');
+            await expect(beta).toContainText('5 unknown');
             await expect(beta).toContainText('Pending review');
             const gamma = list.getByRole('button', {name: 'View details for E2E Gamma Works'}).locator('visible=true').first();
-            await expect(gamma).toContainText('1 of 2');
-            await expect(gamma).toContainText('Never verified');
-            await expect(gamma).toContainText('Unknown');
+            await expect(gamma).toContainText('1 of 2 rated');
+            // Nothing verified: one muted chip, never a row of zero counts.
+            await expect(gamma).toContainText('Not yet verified');
+            await expect(gamma.locator('.organization-evidence')).not.toContainText('0 verified');
             await expect(gamma).not.toContainText('Pending review');
+            // The spoken description still carries the counts and freshness.
+            const described = await gamma.getAttribute('aria-describedby');
+            await expect(page.locator(`#${described}`)).toContainText('Never verified');
             await expectNoHorizontalOverflow(page);
         });
 

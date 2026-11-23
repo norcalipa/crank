@@ -5,7 +5,8 @@ import {createRoot} from "react-dom/client";
 import CompanyView, {CompanyViewStatus} from './company/CompanyView';
 import {CompanyDetailsOrganization, CorrectionSource} from './company/CompanyDetails';
 import {isCompanyId, parseCompanyId} from './company/companyId';
-import EvidenceSummary, {evidenceDescription} from './evidence/EvidenceSummary';
+import EvidenceChips from './evidence/EvidenceChips';
+import {evidenceDescription} from './evidence/EvidenceSummary';
 import {EvidenceSummaryData, RTO_POLICY_LABELS} from './labels';
 import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './suggestCompany/controller';
 import {createPoller, PollInfo, Poller} from './workspace/poller';
@@ -59,6 +60,14 @@ const ratingCoverageText = (org: Organization): string =>
     org.rating_dimensions_total !== undefined && org.rating_dimensions_covered !== undefined
         ? `${org.rating_dimensions_covered} of ${org.rating_dimensions_total}`
         : `${org.profile_completeness.toFixed(0)}%`;
+
+// Company scores run 0-5 (the score thresholds); the bar is that share, clamped.
+const SCORE_SCALE = 5;
+const scoreBarPercent = (score: number): number =>
+    Math.min(100, Math.max(0, (score / SCORE_SCALE) * 100));
+
+// The logo tile's stand-in: the company's first letter (no logo is stored).
+const companyInitial = (name: string): string => (name.trim().charAt(0) || '?').toUpperCase();
 
 interface RankingPreset {
     id: number;
@@ -119,9 +128,9 @@ interface CompanyViewState {
 const VIEW_ENTRY_KEY = 'crankCompanyView';
 // Where the scroll tracker keeps its result position (workspace/position.ts).
 const POSITION_STATE_KEY = 'crankPosition';
-// Result rows and cards only: the company view and the correction form carry
+// Result rows only: the company view and the correction form carry
 // the attribute too, and neither is a place the results can be restored to.
-const RESULT_ANCHOR_SELECTOR = '.organization-row[data-organization-id], .organization-card[data-organization-id]';
+const RESULT_ANCHOR_SELECTOR = '.organization-row[data-organization-id]';
 // `:root` smooths scrolling; a restored row must be where it is read at once.
 const INSTANT = 'instant' as ScrollBehavior;
 
@@ -413,11 +422,19 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             if (region) {
                 // A document is never shorter than the window, so padding is
                 // absorbed by slack until the content passes the window's
-                // bottom: add the shortfall again until the room is there.
+                // bottom: add the shortfall again, doubling each pass (a
+                // compact list leaves a lot of slack), until the room is
+                // there. Past the slack padding adds room one for one, so
+                // what overshoots is given back, keeping 2px for the rounding
+                // of the document height and of the scroll position.
                 let padding = 0;
-                for (let pass = 0; pass < 4 && delta > room(); pass += 1) {
-                    padding += delta - room();
+                for (let pass = 0; pass < 8 && delta > room(); pass += 1) {
+                    padding += (delta - room()) * 2 ** pass;
                     region.style.paddingBottom = `${padding}px`;
+                }
+                const spare = room() - delta - 2;
+                if (padding > 0 && spare > 0) {
+                    region.style.paddingBottom = `${Math.max(0, padding - spare)}px`;
                 }
             }
             window.scrollBy({top: delta, left: 0, behavior: INSTANT});
@@ -1355,8 +1372,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                  data-testid="organization-results-region">
             <div className="rankings-toolbar" data-testid="rankings-toolbar">
                 <div className="rankings-toolbar-search">
-                    <label className="form-label" htmlFor="organization-search">Search organizations</label>
+                    <label className="visually-hidden" htmlFor="organization-search">Search organizations</label>
                     <div className="organization-search">
+                        <i className="fa-solid fa-magnifying-glass organization-search-icon" aria-hidden="true"></i>
                         <input
                             id="organization-search"
                             type="text"
@@ -1370,14 +1388,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 </div>
                 {presets.length > 0 && (
                     <div className="rankings-toolbar-preset">
-                        <label className="form-label" htmlFor="ranking-preset">Ranking preset</label>
+                        <label className="rankings-toolbar-preset-label" htmlFor="ranking-preset">Sort by</label>
                         <select id="ranking-preset" className="form-select" data-testid="ranking-preset-select"
                                 value={this.props.currentAlgorithmId ?? ''} onChange={this.handlePresetChange}>
                             {presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
                         </select>
                     </div>
                 )}
-                <div className="organization-filter">
+                <label className={`organization-filter${acceleratedVesting ? ' organization-filter--on' : ''}`} htmlFor="acceleratedVesting">
                     <input
                         type="checkbox"
                         className="form-check-input"
@@ -1386,27 +1404,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         checked={acceleratedVesting}
                         onChange={this.handleFilterChange}
                     />
-                    <label className="form-check-label" htmlFor="acceleratedVesting">Show only companies with first vesting in &lt; 1 year</label>
-                </div>
-                {this.renderChips()}
-                <div className="rankings-toolbar-count" role="status" aria-live="polite">
-                    <div className="organization-results-count">{isEmpty ? 'Showing 0 organizations' : `Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}
-                        {updatedMark !== 'off' && (
-                            <span className={`badge text-bg-info ms-2${updatedMark === 'seen' ? ' invisible' : ''}`}
-                                  data-testid={updatedMark === 'on' ? 'rankings-updated-badge' : 'rankings-updated-badge-seen'}
-                                  aria-hidden="true">Updated</span>
-                        )}
-                    </div>
-                    <div className="visually-hidden" data-testid="rankings-announcement"><span key={announcementKey}>{announcement}</span></div>
-                    <div className="choices-status-slot">
-                    {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Loading funding round and RTO labels…</span></div>}
-                    {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">
-                        <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
-                        <button type="button" className="btn btn-outline-danger btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry labels</button>
-                    </div>}
-                    </div>
-                    {pageCount > 1 && <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>}
-                </div>
+                    <span>First vesting &lt; 1 year</span>
+                </label>
                 {this.props.isAuthenticated && !isEmpty && (
                     <button type="button" className="btn btn-outline-primary btn-sm"
                             data-testid="suggest-company-btn"
@@ -1414,6 +1413,28 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         Suggest a company
                     </button>
                 )}
+                {this.renderChips()}
+                <div className="rankings-toolbar-count">
+                    <div className="rankings-toolbar-count-text" role="status" aria-live="polite">
+                        <div className="organization-results-count">{isEmpty ? 'Showing 0 organizations' : `Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}
+                            {updatedMark !== 'off' && (
+                                <span className={`badge text-bg-info ms-2${updatedMark === 'seen' ? ' invisible' : ''}`}
+                                      data-testid={updatedMark === 'on' ? 'rankings-updated-badge' : 'rankings-updated-badge-seen'}
+                                      aria-hidden="true">Updated</span>
+                            )}
+                        </div>
+                        <div className="visually-hidden" data-testid="rankings-announcement"><span key={announcementKey}>{announcement}</span></div>
+                        {pageCount > 1 && <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>}
+                    <div className="choices-status-slot">
+                    {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span className="choices-status-text">Loading funding round and RTO labels…</span></div>}
+                    {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">
+                        <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
+                        <button type="button" className="btn btn-outline-danger btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry labels</button>
+                    </div>}
+                    </div>
+                    </div>
+                    {pageCount > 1 && renderPager('top')}
+                </div>
             </div>
             {newerRevision !== null && newerRevision !== shownRevision && (
                 <div className="alert alert-info rankings-updated-notice" data-testid="rankings-updated-notice"
@@ -1431,8 +1452,6 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     </button>
                 </div>
             )}
-            {pageCount > 1 && renderPager('top')}
-
             {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary organization-empty-state" role="alert">
                 <h2 className="h5">No organizations found</h2>
                 <p>{searchTerm || acceleratedVesting || rtoPolicy
@@ -1442,23 +1461,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
                 <div className="organization-results">
-                <div className="organization-table-wrap" role="region" aria-label="Organization rankings" tabIndex={0}>
-                    <table className="table organization-table">
-                        <caption className="visually-hidden">Organizations ranked by the selected scoring algorithm</caption>
-                        <thead>
-                        <tr>
-                            <th className="col-rank">Rank</th>
-                            <th className="col-name">Name</th>
-                            <th className="col-score" aria-label={scoreLabel}>Company score{currentPreset && <>{' '}<span className="col-score-algorithm">{currentPreset.name}</span></>}</th>
-                            <th className="col-funding">Funding Round</th>
-                            <th className="col-rto">RTO Policy</th>
-                            <th className="col-profile">Rating coverage</th>
-                            <th className="col-evidence">Evidence</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        {currentOrganizations.map(org => (<tr
-                            key={org.id}
+                <ol className="organization-list" aria-label="Organization rankings">
+                    {currentOrganizations.map(org => {
+                        const score = Number(org.avg_score);
+                        return (<li key={org.id} className="organization-item">
+                        <article
+                            className="organization-row"
                             onClick={() => this.handleOrganizationClick(org)}
                             onKeyDown={(event) => {
                                 if (event.key === 'Enter' || event.key === ' ') {
@@ -1470,65 +1478,34 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             role="button"
                             aria-label={`View details for ${org.name}`}
                             aria-describedby={`organization-summary-${org.id}`}
-                            className="organization-row"
                             data-organization-id={org.id}
                         >
-                            <td className="col-rank">{org.ranking}</td>
-                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span><span className="visually-hidden" id={`organization-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence, RANKINGS_DATE_ZONE)}</span></td>
-                            <td className="col-score">{org.avg_score.toFixed(2)}</td>
-                            <td className="col-funding">{choiceLabel(fundingRoundChoices, org.funding_round)}</td>
-                            <td className="col-rto">{choiceLabel(rtoPolicyChoices, org.rto_policy)}</td>
-                            <td className="col-profile">{ratingCoverageText(org)}</td>
-                            <td className="col-evidence"><EvidenceSummary evidence={org.evidence} timeZone={RANKINGS_DATE_ZONE}/></td>
-                        </tr>))}
-                        </tbody>
-                    </table>
-                </div>
-                <div className="organization-cards" aria-label="Organization ranking cards">
-                    {currentOrganizations.map(org => (
-                        <article
-                            key={`card-${org.id}`}
-                            className="card organization-card"
-                            data-organization-id={org.id}
-                            onClick={() => this.handleOrganizationClick(org)}
-                            onKeyDown={(event) => {
-                                if (event.key === 'Enter' || event.key === ' ') {
-                                    event.preventDefault();
-                                    this.handleOrganizationClick(org);
-                                }
-                            }}
-                            tabIndex={0}
-                            role="button"
-                            aria-label={`View details for ${org.name}`}
-                            aria-describedby={`organization-card-summary-${org.id}`}
-                        >
-                            <div className="card-body">
-                                <span className="visually-hidden" id={`organization-card-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence, RANKINGS_DATE_ZONE)}</span>
-                                <h2 className="h5 organization-card-name" title={org.name}>{org.name}</h2>
-                                <div className="organization-card-score">
-                                    <span className="organization-card-label">Company score{currentPreset && <span className="visually-hidden"> ({currentPreset.name})</span>}</span>
-                                    #{org.ranking} · {org.avg_score.toFixed(2)}
-                                </div>
-                                <div>
-                                    <span className="organization-card-label">Rating coverage</span>
-                                    {ratingCoverageText(org)}
-                                </div>
-                                <div>
-                                    <span className="organization-card-label">RTO policy</span>
-                                    {choiceLabel(rtoPolicyChoices, org.rto_policy)}
-                                </div>
-                                <div>
-                                    <span className="organization-card-label">Funding round</span>
-                                    {choiceLabel(fundingRoundChoices, org.funding_round)}
-                                </div>
-                                <div className="organization-card-evidence">
-                                    <span className="organization-card-label">Facts</span>
-                                    <EvidenceSummary evidence={org.evidence} variant="card" timeZone={RANKINGS_DATE_ZONE}/>
-                                </div>
-                            </div>
+                            <span className="visually-hidden" id={`organization-summary-${org.id}`}>{`Rank ${org.ranking}. ${scoreLabel} ${score.toFixed(2)} of ${SCORE_SCALE}. `}{evidenceDescription(ratingCoverageText(org), org.evidence, RANKINGS_DATE_ZONE)}</span>
+                            <span className="organization-rank" aria-hidden="true">{org.ranking}</span>
+                            <span className="organization-tile" aria-hidden="true">{companyInitial(org.name)}</span>
+                            <span className="organization-main">
+                                <span className="organization-name" title={org.name}>{org.name}</span>
+                                <span className="organization-meta" aria-hidden="true">
+                                    <span>{choiceLabel(fundingRoundChoices, org.funding_round)}</span>
+                                    <span>{choiceLabel(rtoPolicyChoices, org.rto_policy)}</span>
+                                    <span>{ratingCoverageText(org)} rated</span>
+                                </span>
+                            </span>
+                            <span className="organization-evidence" aria-hidden="true">
+                                <EvidenceChips evidence={org.evidence} acceleratedVesting={org.accelerated_vesting}/>
+                            </span>
+                            <span className="organization-score" aria-hidden="true">
+                                <span className="organization-score-line">
+                                    <span className="organization-score-value">{score.toFixed(2)}</span>
+                                    <span className="organization-score-max"> / {SCORE_SCALE}</span>
+                                </span>
+                                <span className="organization-score-bar"><span style={{width: `${scoreBarPercent(score)}%`}}></span></span>
+                            </span>
+                            <span className="organization-cta" aria-hidden="true">View company <i className="fa-solid fa-arrow-right"></i></span>
                         </article>
-                    ))}
-                </div>
+                        </li>);
+                    })}
+                </ol>
                 </div>
                 {pageCount > 1 && renderPager('bottom')}
             </>)}

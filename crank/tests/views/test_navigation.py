@@ -69,9 +69,27 @@ class NavigationShellTests(TestCase):
         self.assertContains(response, "Company Rankings")
         self.assertContains(response, "Job Search")
         self.assertContains(response, "Help")
-        self.assertContains(response, "Login")
+        self.assertContains(response, "Sign in")
         self.assertNotContains(response, "Logout")
         self.assertNotContains(response, "Admin")
+
+    def test_anonymous_rail_has_one_sign_in_entry_and_no_google_link(self):
+        """Issue #617: signed out, the rail and the mobile menu each offer
+        exactly one auth entry, Sign in, even when a Google app is
+        configured; Google is offered on the login page itself."""
+        response = self.client.get(reverse("index"))
+        html = response.content.decode()
+        login_url = reverse("account_login")
+        self.assertEqual(html.count(f'href="{login_url}"'), 2)  # rail + mobile drawer
+        self.assertEqual(html.count('<span class="app-nav-label">Sign in</span>'), 2)
+        self.assertNotIn("Login</span>", html)
+        self.assertNotIn("app-nav-link--google", html)
+        self.assertNotIn("/accounts/google/login/", html)
+        self.assertNotIn("fa-google", html)
+
+    def test_login_page_still_offers_google(self):
+        response = self.client.get(reverse("account_login"))
+        self.assertContains(response, "Continue with Google")
 
     def test_anonymous_does_not_see_admin_link(self):
         response = self.client.get(reverse("index"))

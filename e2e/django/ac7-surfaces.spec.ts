@@ -146,7 +146,7 @@ test.describe('shared request form', () => {
         await login(page);
         await page.goto('/');
 
-        await page.locator('tr[aria-label="View details for E2E Alpha Corp"]').click();
+        await page.locator('article[aria-label="View details for E2E Alpha Corp"]').click();
         const details = page.getByTestId('company-view');
         await expect(details).toBeVisible();
 

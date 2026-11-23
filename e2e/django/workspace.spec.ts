@@ -86,7 +86,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         // The rankings switch table→cards on the results container width
         // (#478) once the drawer narrows it (#479 host reflow), so target
         // whichever layout is visible.
-        const firstRow = page.locator('.organization-row:visible, .organization-card:visible').first();
+        const firstRow = page.locator('.organization-row:visible').first();
         await firstRow.focus();
         await expect(firstRow).toBeFocused();
         await page.keyboard.press('Escape');
@@ -204,7 +204,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await login(page);
         await page.goto('/');
         await page.evaluate(() => {
-            document.querySelector<HTMLElement>('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')?.click();
+            document.querySelector<HTMLElement>('article[aria-label="View details for E2E Alpha Corp"]')?.click();
         });
         await expect(page.getByTestId('company-view')).toBeVisible();
         const before = await page.evaluate(() => Math.round(window.scrollY));

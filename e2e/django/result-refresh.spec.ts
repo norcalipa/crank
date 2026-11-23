@@ -623,6 +623,13 @@ test.describe('Updated rankings available (company rankings)', () => {
             await openRankings(page);
             const alphaId = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('[data-organization-id]'))
                 .find((row) => row.getBoundingClientRect().height > 0 && /E2E Alpha Corp/.test(row.textContent ?? ''))!.dataset.organizationId!);
+            // Read the list as a reader does: with the first rows filling the screen, not
+            // with one card peeking above the phone's Assistant button (the compact rows
+            // of issue #617 leave the first screen to the header on a phone).
+            await page.evaluate(() => {
+                const first = document.querySelector<HTMLElement>('article.organization-row')!;
+                window.scrollTo({top: window.scrollY + first.getBoundingClientRect().top - 100, behavior: 'instant' as ScrollBehavior});
+            });
             // Alpha, rank 1, falls below the other seeded companies (the padding rows score lower
             // but the fall must stay on page 1).
             rankingsFixture('set', {ORG: 'E2E Alpha Corp', VALUE: '2.0'});
@@ -649,6 +656,8 @@ test.describe('Updated rankings available (company rankings)', () => {
 
     test('a hidden tab sends nothing, and a return finds the change', async ({page}) => {
         const seen = countRankingsRequests(page);
+        // Sixteen compact rows: the page is long enough to scroll away from the top.
+        rankingsFixture('pad');
         await openRankings(page);
         await setTabVisibility(page, 'hidden');
         await page.clock.runFor(10 * 60_000);
@@ -871,7 +880,7 @@ test.describe('Updated rankings available (company rankings)', () => {
 
     test('with a company open nothing is applied; the notice is waiting after Back to results', async ({page}) => {
         await openRankings(page);
-        await page.locator('.organization-row, .organization-card').filter({visible: true}).first().click();
+        await page.locator('.organization-row').filter({visible: true}).first().click();
         await expect(page.getByTestId('company-view')).toBeVisible();
         raiseGamma();
         await page.clock.runFor(POLL_INTERVAL_MS + 1000);

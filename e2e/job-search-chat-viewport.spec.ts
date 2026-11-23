@@ -216,28 +216,13 @@ for (const vp of viewports) {
         test('organization list shows no inner vertical scrollbar', async ({page}) => {
             await mockOrganizationListApi(page);
             await page.goto(ORG_FIXTURE);
-            const wrap = page.locator('.organization-table-wrap');
-            const cards = page.locator('.organization-cards');
-            // The table-to-card switch follows the results container width
-            // (issues #478, #473): cards when it is at most 56rem (896px) wide.
-            // The width and the layout it implies are read together and
-            // retried: a width read while the page is still laying out (seen
-            // in WebKit) must not be paired with the settled layout.
-            await expect(async () => {
-                const resultsWidth = await page.locator('.organization-results').evaluate((el) => el.getBoundingClientRect().width);
-                if (resultsWidth <= 896) {
-                    // Narrow results: cards are shown, table is hidden.
-                    await expect(cards).toBeVisible({timeout: 500});
-                    await expect(wrap).toBeHidden({timeout: 500});
-                } else {
-                    // Wide results: table is shown and the wrapper owns horizontal
-                    // scrolling with no inner vertical scrollbar (overflow-y hidden).
-                    await expect(wrap).toBeVisible({timeout: 500});
-                    await expect(cards).toBeHidden({timeout: 500});
-                    const overflowY = await wrap.evaluate((el) => getComputedStyle(el).overflowY);
-                    expect(overflowY, 'organization list must not introduce an inner vertical scrollbar').toBe('hidden');
-                }
-            }).toPass({timeout: 10_000});
+            // One compact row list at every width (issue #617): no table
+            // wrapper, so no inner scroller of any kind.
+            const list = page.locator('ol.organization-list');
+            await expect(list).toBeVisible();
+            await expect(page.locator('.organization-table-wrap')).toHaveCount(0);
+            const overflowY = await list.evaluate((el) => getComputedStyle(el).overflowY);
+            expect(overflowY, 'organization list must not introduce an inner vertical scrollbar').toBe('visible');
             await expectNoHorizontalOverflow(page);
         });
     });

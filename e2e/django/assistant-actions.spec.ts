@@ -247,7 +247,7 @@ test.describe('assistant actions (issue #484)', () => {
     test('an assistant company card has "View company": it opens the view on the rankings and navigates from the chat page', async ({page}) => {
         await login(page);
         await page.goto('/');
-        const alphaId = await page.locator('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')
+        const alphaId = await page.locator('article[aria-label="View details for E2E Alpha Corp"]')
             .locator('visible=true').first().getAttribute('data-organization-id');
         expect(alphaId).not.toBeNull();
         // The reply is the real one; only its results gain a company card. The page's own fetch is

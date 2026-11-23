@@ -6,12 +6,10 @@ import path from 'path';
 describe('rankings toolbar and disclosure styles (issue #478)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
 
-    it('fixes desktop column geometry and floors touch targets at 44px', () => {
-        expect(popupCss).toMatch(/\.organization-table\s*\{[^}]*table-layout:\s*fixed/);
-        for (const col of ['rank', 'score', 'funding', 'rto', 'profile']) {
-            expect(popupCss).toMatch(new RegExp(`\\.col-${col}\\s*\\{\\s*width:`));
-        }
+    it('floors touch targets at 44px and lays the compact row out on a six-track grid', () => {
         expect(popupCss).toMatch(/\.rankings-toolbar \.filter-chip,[^{]*\.pagination \.page-link[^{]*\{\s*min-height:\s*44px/);
+        expect(popupCss).toMatch(/\.organization-row\s*\{[^}]*grid-template-areas:\s*"rank tile main evidence score cta"/);
+        expect(popupCss).not.toMatch(/\.organization-table|\.organization-card\b|\.col-rank/);
     });
 
     it('defines the toolbar, chip and disclosure rules and drops the side-column scoring panel', () => {
@@ -25,35 +23,27 @@ describe('rankings toolbar and disclosure styles (issue #478)', () => {
 describe('organization listing overflow and focus (issue #409)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
 
-    it('does not force a vertical scrollbar on the desktop table wrapper', () => {
-        const rule = popupCss.match(/\.organization-table-wrap\s*\{[^}]*\}/);
-        expect(rule).not.toBeNull();
-
-        const body = rule![0];
-        expect(body).toMatch(/overflow-x:\s*auto/);
-        expect(body).toMatch(/overflow-y:\s*hidden/);
-        // Forbid any fixed / max vertical sizing that could reintroduce the
-        // inner scrollbar, but allow `min-height` for layout stability with
-        // very few rows (anchored so `min-height:` is not matched).
-        expect(body).not.toMatch(/^\s*(?:height|max-height)\s*:/m);
+    it('has no table wrapper left to scroll or clip the rows', () => {
+        expect(popupCss).not.toMatch(/\.organization-table-wrap/);
+        const list = popupCss.match(/\.organization-list\s*\{[^}]*\}/);
+        expect(list).not.toBeNull();
+        expect(list![0]).toMatch(/display:\s*grid/);
+        expect(list![0]).not.toMatch(/overflow/);
     });
 
     it('does not suppress focus outlines or carets on organization listing elements', () => {
         // Scope the assertion to the organization-listing rules so a legitimate
         // focus/caret suppression elsewhere in the stylesheet cannot break it.
         const listingRules = (popupCss.match(/[^{}]+\{[^}]*\}/g) ?? []).filter((rule) =>
-            /\.organization-(row|card|table|table-wrap)\b/.test(rule),
+            /\.organization-(row|list|item)\b/.test(rule),
         );
         expect(listingRules.length).toBeGreaterThan(0);
         expect(listingRules.join('\n')).not.toMatch(/outline:\s*none\s*!important/);
         expect(listingRules.join('\n')).not.toMatch(/caret-color:\s*transparent\s*!important/);
     });
 
-    it('keeps visible keyboard focus indicators for rows, cards, and the table region', () => {
-        expect(popupCss).toMatch(/\.organization-row:focus-visible/);
-        expect(popupCss).toMatch(/\.organization-card:focus-visible/);
-        expect(popupCss).toMatch(/\.organization-table-wrap:focus-visible/);
-        expect(popupCss).toMatch(/outline:\s*3px\s+solid\s+var\(--bs-warning\)/);
+    it('keeps a visible keyboard focus ring on the row', () => {
+        expect(popupCss).toMatch(/\.organization-row:focus-visible\s*\{[^}]*outline:\s*3px\s+solid\s+var\(--bs-warning\)/);
     });
 });
 
@@ -274,28 +264,12 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
         );
     });
 
-    it('draws the focused row perimeter on cells so the wrapper cannot clip it', () => {
-        // The `tr` outline would clip at the rounded, horizontally scrollable
-        // wrapper; cells carry the ring instead.
-        expect(popupCss).toMatch(
-            /\.organization-row:focus-visible\s*\{\s*outline:\s*none;/,
-        );
-        expect(popupCss).toMatch(
-            /\.organization-row:focus-visible > \*\s*\{[^}]*inset 0 3px 0 var\(--bs-warning\)[^}]*inset 0 -3px 0 var\(--bs-warning\)/,
-        );
-        expect(popupCss).toMatch(
-            /\.organization-row:focus-visible > :first-child\s*\{[^}]*inset 3px 0 0 var\(--bs-warning\)/,
-        );
-        expect(popupCss).toMatch(
-            /\.organization-row:focus-visible > :last-child\s*\{[^}]*inset -3px 0 0 var\(--bs-warning\)/,
-        );
-    });
-
-    it('keeps the complete outline ring on the mobile organization card', () => {
-        const grouped = popupCss.match(
-            /\.organization-card:focus-visible[\s\S]*?\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
-        );
-        expect(grouped).not.toBeNull();
+    it('draws the complete outline ring on the focused row, which no wrapper clips', () => {
+        const ring = popupCss.match(/\.organization-row:focus-visible\s*\{([^}]*)\}/);
+        expect(ring).not.toBeNull();
+        expect(ring![1]).toMatch(/outline:\s*3px solid var\(--bs-warning\)/);
+        expect(ring![1]).toMatch(/outline-offset:\s*2px/);
+        expect(popupCss).not.toMatch(/\.organization-row:focus-visible > /);
     });
 });
 
@@ -375,7 +349,7 @@ describe('company view visual review round 1 (issue #486)', () => {
         expect(heading).toMatch(/position:\s*absolute/);
         expect(heading).toMatch(/clip:\s*rect\(0, 0, 0, 0\)/);
         expect(heading).not.toMatch(/display:\s*none/);
-        const intro = block('.homepage-container:has(.company-view) > h1 + p,\n.homepage-container:has(.company-view) > .how-ranking-works');
+        const intro = block('.homepage-container:has(.company-view) > .rankings-intro');
         expect(intro).toMatch(/display:\s*none/);
     });
 
@@ -579,19 +553,29 @@ describe('company view fit sentences never end on one word (issue #584a visual r
 
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
-    const containerBlock = popupCss.match(/@container organization-results \(max-width: 56rem\) \{[\s\S]*?\n\}\n/)![0];
+    const phoneBlock = popupCss.match(/@container organization-results \(max-width: 34rem\) \{[\s\S]*?\n\}\n/)![0];
+    const mediumBlock = popupCss.match(/@container organization-results \(max-width: 52rem\) \{[\s\S]*?\n\}\n/)![0];
 
-    it('switches table to cards on the results container width, not the viewport', () => {
+    it('restacks the row on the results container width, not the viewport', () => {
         expect(popupCss).toMatch(/\.organization-results\s*\{[^}]*container:\s*organization-results\s*\/\s*inline-size/);
-        expect(containerBlock).toMatch(/\.organization-table-wrap\s*\{\s*display:\s*none/);
-        expect(containerBlock).toMatch(/\.organization-cards\s*\{[^}]*display:\s*grid/);
-        expect(popupCss).not.toMatch(/@media[^{]*\{[^@]*\.organization-cards\s*\{[^}]*display:\s*grid/);
+        expect(mediumBlock).toMatch(/"\.\s+\.\s+evidence evidence evidence"/);
+        expect(phoneBlock).toMatch(/"evidence evidence evidence evidence"\s+"cta cta cta cta"/);
     });
 
-    it('clamps card and table names and lays card metadata out in a compact auto-fill grid', () => {
-        expect(containerBlock).toMatch(/\.organization-card-name\s*\{[^}]*-webkit-line-clamp:\s*2[^}]*overflow-wrap:\s*anywhere/);
-        expect(containerBlock).toMatch(/\.organization-card \.card-body\s*\{[^}]*repeat\(auto-fill,\s*minmax\(6\.5rem/);
-        expect(popupCss).toMatch(/\.organization-table \.organization-name\s*\{[^}]*-webkit-line-clamp:\s*3/);
+    it('keeps names on one line with an ellipsis and the CTA full width on phones', () => {
+        expect(popupCss).toMatch(/\.organization-name\s*\{[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/);
+        expect(phoneBlock).toMatch(/\.organization-cta\s*\{[^}]*width:\s*100%/);
+    });
+
+    it('turns "How ranking works" into a small inline link on the rankings page', () => {
+        expect(popupCss).toMatch(/\.how-ranking-works--inline\s*\{[^}]*border:\s*0/);
+        expect(popupCss).toMatch(/\.how-ranking-works--inline\[open\]\s*\{[^}]*flex:\s*1 1 100%/);
+        expect(popupCss).toMatch(/\.how-ranking-works--inline > \.how-ranking-works-summary\s*\{[^}]*text-decoration:\s*underline/);
+        expect(popupCss).toMatch(/\.homepage-container:has\(\.company-view\) > \.rankings-intro\s*\{\s*display:\s*none/);
+    });
+
+    it('honours reduced motion on the row and its skeleton', () => {
+        expect(popupCss).toMatch(/prefers-reduced-motion: reduce\)\s*\{\s*\.organization-row\s*\{\s*transition:\s*none/);
     });
 
     it('draws a rotating disclosure chevron at every width and honours reduced motion', () => {
@@ -987,13 +971,22 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         expect(section).toMatch(/\.rankings-updated-refresh\[aria-disabled="true"\] \{\s*cursor: progress;/);
     });
 
-    it('keeps the heading ring around the title and the "Updated" mark in its reserved line under 375px (485c)', () => {
+    it('keeps the heading ring around the title and the "Updated" mark in its reserved line (485c, 617)', () => {
         const start = popupCss.indexOf('/* issue #485 result refresh */');
         const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
         const section = popupCss.slice(start, next);
         expect(section).toMatch(/#rankings-heading \{\s*width: fit-content;\s*\}/);
-        expect(section).toMatch(/\.organization-results-count \{\s*position: relative;\s*\}/);
-        expect(section).toMatch(/@media \(max-width: 575\.98px\) \{\s*\.rankings-toolbar-count:has\(> \.choices-status-slot:empty\) \.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*top: calc\(100% \+ 0\.125rem\);\s*margin-left: 0 !important;/);
+        // Under 576px the mark has a reserved line of its own under the count, so
+        // its arrival moves nothing; wider it shares the count's line (issue #617).
+        expect(popupCss).toMatch(/@media \(max-width: 575\.98px\) \{\s*\.organization-results-count \{\s*position: relative;\s*padding-bottom: 1\.5rem;\s*\}\s*\.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*bottom: 0;\s*margin-left: 0 !important;/);
+        expect(popupCss).toMatch(/\.choices-status-slot:empty\s*\{\s*display:\s*none/);
+        // The loading status takes no room of its own: the line is tall enough for it and,
+        // on a phone, it is the spinner alone.
+        expect(popupCss).toMatch(/\.rankings-toolbar-count-text \{[^}]*min-height: 1\.5rem/);
+        expect(popupCss).toMatch(/\.choices-status-slot:has\(> \[data-testid="choices-status-loading"\]\) \{\s*position: absolute;\s*inset-inline-end: 0;\s*top: 0;/);
+        expect(popupCss).toMatch(/\.rankings-toolbar-count-text \{\s*position: relative;\s*padding-inline-end: 1\.75rem;/);
+        expect(popupCss).toMatch(/\.choices-status:not\(\.choices-status-error\) \.choices-status-text \{\s*position: absolute;/);
+        expect(popupCss).toMatch(/\.organization-meta > span:not\(:last-child\)::after \{\s*content: "\\00b7"/);
     });
 
     it('scopes the heading scroll margin to the widths that show the sticky top bar', () => {

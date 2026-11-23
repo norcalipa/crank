@@ -184,23 +184,24 @@ for (const width of mobileViewports) {
 
             await expectHitTestable(page, '#organization-search', 'organization search input');
             await expectHitTestable(page, '#acceleratedVesting', 'accelerated vesting checkbox');
-            // Mobile shows the card list; the opener is a card article (role=button).
+            // Mobile shows the same row list as a stacked card; the opener is an article (role=button).
             await expectHitTestable(page, 'article[aria-label^="View details for"]', 'organization card details opener');
 
-            // Long names wrap instead of widening the document. Target the
-            // deliberately long fixture record (Zephyr, id 6) — the audit found
-            // this assertion was picking the first short card ("Acme Robotics"),
-            // so it never exercised long-name overflow. The record carries both
-            // spaced words and one unbroken token so `overflow-wrap: anywhere`
-            // is genuinely exercised, not just ordinary space wrapping.
-            const cardName = page.locator('.organization-card-name', {hasText: 'Zephyr Quintessence'}).first();
+            // Long names are cut with an ellipsis (the full name stays in the
+            // title) instead of widening the document. Target the deliberately
+            // long fixture record (Zephyr, id 6) — the audit found this
+            // assertion was picking the first short card ("Acme Robotics"), so
+            // it never exercised long-name overflow. The record carries both
+            // spaced words and one unbroken token.
+            const cardName = page.locator('.organization-name', {hasText: 'Zephyr Quintessence'}).first();
             await expect(cardName).toBeVisible();
             await expect(cardName).toContainText('NanotechnologicalBiopharmaceuticalResearchLaboratories');
-            const nameOverflow = await cardName.evaluate((el) => {
-                const style = getComputedStyle(el);
-                return {wrap: style.overflowWrap || style.wordWrap, scrollW: el.scrollWidth, clientW: el.clientWidth};
+            await expect(cardName).toHaveAttribute('title', /NanotechnologicalBiopharmaceuticalResearchLaboratories/);
+            const fit = await cardName.evaluate((el) => {
+                const row = el.closest('.organization-row') as HTMLElement;
+                return {nameRight: el.getBoundingClientRect().right, rowRight: row.getBoundingClientRect().right};
             });
-            expect(nameOverflow.scrollW, 'long organization names must not force horizontal overflow').toBeLessThanOrEqual(nameOverflow.clientW + 1);
+            expect(fit.nameRight, 'long organization names must stay inside their row').toBeLessThanOrEqual(fit.rowRight + 1);
         });
 
         test('chat composer stays reachable and messages wrap', async ({page}) => {

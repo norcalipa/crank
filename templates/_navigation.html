@@ -1,8 +1,6 @@
 <!-- Copyright (c) 2024 Isaac Adams -->
 <!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 {% load static %}
-{% load socialaccount %}
-{% load socialapp_cache %}
 <!-- Skip-to-content link: first focusable element on the page -->
 <a href="#main-content" class="skip-to-content" data-skip-to-content>Skip to content</a>
 
@@ -76,16 +74,8 @@
                            class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
                            {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
                             <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
-                            <span class="app-nav-label">Login</span>
+                            <span class="app-nav-label">Sign in</span>
                         </a>
-                        {% get_cached_social_app 'google' as social_app %}
-                        {% if social_app %}
-                            <a href="{% provider_login_url 'google' %}"
-                               class="app-nav-link app-nav-link--google">
-                                <i class="fab fa-google" aria-hidden="true"></i>
-                                <span class="app-nav-label">Google</span>
-                            </a>
-                        {% endif %}
                     </div>
                 {% endif %}
             </div>
@@ -169,16 +159,8 @@
                            class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
                            {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
                             <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
-                            <span class="app-nav-label">Login</span>
+                            <span class="app-nav-label">Sign in</span>
                         </a>
-                        {% get_cached_social_app 'google' as social_app %}
-                        {% if social_app %}
-                            <a href="{% provider_login_url 'google' %}"
-                               class="app-nav-link app-nav-link--google">
-                                <i class="fab fa-google" aria-hidden="true"></i>
-                                <span class="app-nav-label">Google</span>
-                            </a>
-                        {% endif %}
                     </div>
                 {% endif %}
             </div>

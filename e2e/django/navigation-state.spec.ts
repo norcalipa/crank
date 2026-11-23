@@ -363,18 +363,22 @@ test.describe('navigation state (issue #479)', () => {
         await page.evaluate(() => {
             document.body.style.minHeight = '3000px';
         });
-        // Scroll a result far down into view and remember which one it is.
-        const rows = page.locator('tr.organization-row');
-        const total = await rows.count();
-        const target = rows.nth(Math.max(0, total - 1));
-        await target.scrollIntoViewIfNeeded();
+        // Compact rows (issue #617) all fit a short window, so scroll the page
+        // itself until the first rows have left the top of the screen, then
+        // remember which result is being read.
+        const rows = page.locator('article.organization-row');
+        await expect(rows.first()).toBeVisible();
+        await page.evaluate(() => {
+            const row = document.querySelector('article.organization-row') as HTMLElement;
+            window.scrollTo(0, window.scrollY + row.getBoundingClientRect().bottom + 40);
+        });
         await expect.poll(() => page.evaluate(() => window.history.state?.crankPosition?.anchor ?? null)).not.toBeNull();
         const targetId = await page.evaluate(() => window.history.state.crankPosition.anchor as string);
         await page.goto('/help/');
         await page.goBack();
         await expect(page.locator('#organization-list')).toBeVisible();
         // The same organization — not merely some scroll offset — is on screen.
-        await expect(page.locator(`tr.organization-row[data-organization-id="${targetId}"]`)).toBeInViewport();
+        await expect(page.locator(`article.organization-row[data-organization-id="${targetId}"]`)).toBeInViewport();
     });
 
     test('the company is in the store before the first /api/agent/ request (AC-2, #484 ordering)', async ({page}) => {

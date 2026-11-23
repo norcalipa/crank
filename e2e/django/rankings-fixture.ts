@@ -61,7 +61,7 @@ export async function openRankings(page: Page, path = '/'): Promise<void> {
     await page.clock.install({time: new Date()});
     await page.goto(path);
     await expect(page.getByTestId('organization-results-region')).toBeVisible();
-    await expect(page.locator('.organization-row, .organization-card').filter({visible: true}).first()).toBeVisible();
+    await expect(page.locator('.organization-row').filter({visible: true}).first()).toBeVisible();
 }
 
 /** Company names in list order (the table and the cards list the same rows). */
@@ -75,7 +75,7 @@ export async function readingOrg(page: Page) {
         const bar = document.querySelector<HTMLElement>('.app-mobile-topbar');
         const floor = bar ? Math.max(0, bar.getBoundingClientRect().bottom) : 0;
         const rows = Array.from(document.querySelectorAll<HTMLElement>(
-            '.organization-row[data-organization-id], .organization-card[data-organization-id]'));
+            '.organization-row[data-organization-id]'));
         const row = rows.find((candidate) => {
             const rect = candidate.getBoundingClientRect();
             return rect.height > 0 && rect.top >= floor && rect.top < window.innerHeight;
@@ -92,7 +92,7 @@ export const orgTop = (page: Page, id: string) => page.evaluate((organizationId)
 
 /** Where every displayed row sits in the viewport, by organization id. */
 export const rowTops = (page: Page) => page.evaluate(() => Object.fromEntries(Array.from(document.querySelectorAll<HTMLElement>(
-    '.organization-row[data-organization-id], .organization-card[data-organization-id]'))
+    '.organization-row[data-organization-id]'))
     .filter((row) => row.getBoundingClientRect().height > 0)
     .map((row) => [row.dataset.organizationId!, row.getBoundingClientRect().top])) as Record<string, number>);
 
@@ -103,7 +103,7 @@ export type ReaderPosition = 'top' | 'heading-at-top' | 'mid-list';
 export async function placeRankingsReader(page: Page, position: ReaderPosition): Promise<void> {
     await page.evaluate((where) => {
         const heading = document.getElementById('rankings-heading')!;
-        const second = document.querySelectorAll<HTMLElement>('.organization-row, .organization-card');
+        const second = document.querySelectorAll<HTMLElement>('.organization-row');
         const visibleSecond = Array.from(second).filter((row) => row.getBoundingClientRect().height > 0)[1];
         let top = 0;
         if (where === 'heading-at-top') top = window.scrollY + heading.getBoundingClientRect().top - 72;
