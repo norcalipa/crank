@@ -450,10 +450,6 @@ body.app-nav-drawer-open {
 }
 
 .homepage-container:has(.company-view) > .rankings-title-row {
-    justify-content: flex-end;
-}
-
-.homepage-container:has(.company-view) .rankings-title {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -675,8 +671,7 @@ body.app-nav-drawer-open {
 
 .visually-hidden-narrow { }
 
-.organization-results-count,
-.organization-page-count {
+.organization-results-count {
     min-width: 0;
     overflow-wrap: anywhere;
 }
@@ -805,12 +800,12 @@ body.app-nav-drawer-open {
 
 .organization-row {
     display: grid;
-    grid-template-columns: 2rem 2.5rem minmax(14rem, 19rem) minmax(0, 1fr) 6.5rem auto;
+    grid-template-columns: 2rem 2.5rem minmax(14rem, 17.5rem) minmax(15rem, 1fr) 6.5rem auto;
     grid-template-areas: "rank tile main evidence score cta";
     align-items: center;
     gap: .75rem;
     padding: .5rem .875rem;
-    border: 1px solid var(--bs-border-color);
+    border: 1px solid var(--crank-row-border, var(--bs-border-color));
     border-radius: 12px;
     background: var(--bs-tertiary-bg);
     cursor: pointer;
@@ -858,13 +853,16 @@ body.app-nav-drawer-open {
 }
 
 .organization-name {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
     overflow: hidden;
+    overflow-wrap: anywhere;
     color: var(--bs-emphasis-color);
     font-size: 1.0625rem;
     font-weight: 700;
     line-height: 1.25;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 .organization-meta {
@@ -897,17 +895,17 @@ body.app-nav-drawer-open {
 }
 
 .crank-chips {
+    container: evidence / inline-size;
     display: flex;
     flex-wrap: nowrap;
     gap: .25rem;
-    overflow: hidden;
 }
 
 /* The list header (issue #617): one line of column names on the row grid,
    shown from 34rem of container width. */
 .organization-list-header {
     display: none;
-    grid-template-columns: 2rem 2.5rem minmax(14rem, 19rem) minmax(0, 1fr) 6.5rem auto;
+    grid-template-columns: 2rem 2.5rem minmax(14rem, 17.5rem) minmax(15rem, 1fr) 6.5rem auto;
     gap: .75rem;
     margin-bottom: .25rem;
     padding: 0 calc(.875rem + 1px);
@@ -920,7 +918,7 @@ body.app-nav-drawer-open {
 
 .organization-list-header-company { grid-column: 3; }
 .organization-list-header-evidence { grid-column: 4; }
-.organization-list-header-score { grid-column: 5 / span 2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.organization-list-header-score { grid-column: 5 / span 2; white-space: nowrap; }
 
 @container organization-results (min-width: 34rem) {
     .organization-list-header { display: grid; }
@@ -929,9 +927,6 @@ body.app-nav-drawer-open {
 .crank-chip {
     display: inline-block;
     flex: 0 0 auto;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
     padding: .0625rem .5rem;
     border: 0;
     border-radius: 999px;
@@ -942,10 +937,26 @@ body.app-nav-drawer-open {
     white-space: nowrap;
 }
 
-/* Only the last chip gives way when the cell is short, with an ellipsis. */
-.crank-chip:last-child {
-    flex-shrink: 1;
-    min-width: 1.75rem;
+/* A chip is never cut (no ellipsis): when the cell is short the 3rd and later
+   chips fold into a "+N" chip. Two "+N" chips are in the markup, one for
+   each fold point; the container query shows the one that applies. */
+.crank-chip--more {
+    display: none;
+}
+
+@container evidence (width < 14rem) {
+    .crank-chip:nth-child(n+2):not(.crank-chip--more) { display: none; }
+    .crank-chip--more-tiny { display: inline-block; }
+}
+
+@container evidence (14rem <= width < 21rem) {
+    .crank-chip:nth-child(n+3):not(.crank-chip--more) { display: none; }
+    .crank-chip--more-narrow { display: inline-block; }
+}
+
+@container evidence (21rem <= width < 34rem) {
+    .crank-chip:nth-child(n+4):not(.crank-chip--more) { display: none; }
+    .crank-chip--more-mid { display: inline-block; }
 }
 
 .crank-chip-marker { margin-inline-end: .25rem; font-variant-emoji: text; }
@@ -1024,7 +1035,7 @@ body.app-nav-drawer-open {
 }
 
 /* Medium: two lines; the chips drop under the name. */
-@container organization-results (max-width: 52rem) {
+@container organization-results (max-width: 55rem) {
     .organization-row {
         grid-template-columns: 2rem 2.5rem minmax(0, 1fr) 7.5rem auto;
         grid-template-areas:
@@ -1034,18 +1045,37 @@ body.app-nav-drawer-open {
     }
 }
 
-/* Phones: a compact card of about 118px. */
+/* Phones: a card of three lines. Name and score; the chips on the full
+   width (so a pair never needs folding); the caption and the call to action.
+   Every card has all three lines, so the cards are one height. */
 @container organization-results (max-width: 34rem) {
     .organization-row {
         grid-template-columns: 1rem 2.5rem minmax(0, 1fr) auto;
         grid-template-areas:
             "rank tile main score"
-            "evidence evidence evidence cta";
+            "chips chips chips chips"
+            "checked checked checked checked";
         gap: .375rem .5rem;
         padding: .5rem;
     }
 
+    .organization-evidence {
+        display: contents;
+    }
+
+    .crank-chips {
+        grid-area: chips;
+    }
+
+    .organization-checked {
+        grid-area: checked;
+        align-self: center;
+    }
+
+    /* Wide rows keep one line (a fixed row height); a phone card has room for two. */
     .organization-name {
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
         font-size: 1rem;
     }
 
@@ -1053,11 +1083,10 @@ body.app-nav-drawer-open {
         font-size: .75rem;
     }
 
-    .organization-evidence {
-        grid-template-columns: minmax(0, 1fr);
-    }
-
+    /* The call to action shares the caption's line across the whole width,
+       so it never widens the score column. */
     .organization-cta {
+        grid-area: 3 / 1 / 4 / -1;
         justify-self: end;
         width: auto;
         padding: .25rem 0;
@@ -1075,6 +1104,19 @@ body.app-nav-drawer-open {
 
 .readable-page-container {
     max-width: 800px;
+}
+
+/* The page's H1 (1.75rem, 700) is its largest heading; sections are smaller. */
+.readable-page-container h2 {
+    margin: 2rem 0 .5rem;
+    font-size: 1.375rem;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+.readable-page-container h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
 }
 
 .auth-container {
@@ -5550,18 +5592,24 @@ span.priority-chip-button { cursor: default; }
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
-    gap: .75rem 1rem;
+    gap: .5rem;
     padding: .75rem 1rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .company-view-header h2 {
-    flex: 1 1 14rem;
+    flex: 0 1 auto;
     min-width: 0;
     margin: 0;
+    margin-inline-end: auto;
     font-size: 1.75rem;
     overflow-wrap: anywhere;
+}
+
+/* The Assistant entry sits at the end of the header; a phone has it in the
+   top bar, so its empty slot takes no room. */
+.company-view-header .assistant-slot:empty {
+    display: none;
 }
 
 /* The heading takes focus when the view opens; it is not a control. */
@@ -5947,8 +5995,9 @@ span.priority-chip-button { cursor: default; }
 [data-bs-theme="dark"] {
     --bs-body-bg: #0c1620;
     --bs-body-bg-rgb: 12, 22, 32;
-    --bs-tertiary-bg: #101b26;
-    --bs-tertiary-bg-rgb: 16, 27, 38;
+    --bs-tertiary-bg: #132131;
+    --bs-tertiary-bg-rgb: 19, 33, 49;
+    --crank-row-border: #24364b;
     --bs-secondary-bg: #142235;
     --bs-secondary-bg-rgb: 20, 34, 53;
     --bs-border-color: #1f2d3d;
@@ -6048,13 +6097,19 @@ span.priority-chip-button { cursor: default; }
     border-color: #64748b;
 }
 
+/* The long words on a wide screen; "Vests < 1 yr" on a phone (the long words
+   stay as the control's accessible name). */
+.organization-filter-short {
+    display: none;
+}
+
 .organization-empty-state .organization-empty-title {
     color: var(--bs-emphasis-color);
     font-weight: 600;
 }
 
 /* Medium rows: chips sit under the name, so the header drops that column. */
-@container organization-results (max-width: 52rem) {
+@container organization-results (max-width: 55rem) {
     .organization-list-header {
         grid-template-columns: 2rem 2.5rem minmax(0, 1fr) 7.5rem auto;
     }
@@ -6147,8 +6202,7 @@ span.priority-chip-button { cursor: default; }
         border: 0;
     }
 
-    .rankings-toolbar-pager,
-    .organization-page-count {
+    .rankings-toolbar-pager {
         display: none;
     }
 
@@ -6166,17 +6220,14 @@ span.priority-chip-button { cursor: default; }
 
     .rankings-title-row .assistant-slot { display: none; }
 
+    /* The subtitle steps aside instead of being cut with an ellipsis; "How
+       ranking works" stays. */
     .rankings-intro {
-        flex-wrap: nowrap;
-        align-items: center;
-        margin-bottom: .5rem;
+        margin-bottom: 0;
     }
 
-    .rankings-intro:not(:has([open])) .rankings-subtitle {
-        flex: 1 1 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+    .rankings-subtitle {
+        display: none;
     }
 
     .rankings-intro:not(:has([open])) .how-ranking-works--inline {
@@ -6202,27 +6253,92 @@ span.priority-chip-button { cursor: default; }
     }
 
     .homepage-container {
-        padding-top: .25rem;
+        padding-top: 0;
     }
 
     .how-ranking-works--inline > .how-ranking-works-summary {
-        min-height: 32px;
+        min-height: 44px;
     }
 
-    /* The loading words fit beside the count on a 375px phone, so the line
-       keeps its height while they show. */
+    .organization-filter-full {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
+
+    .organization-filter-short {
+        display: inline;
+    }
+
+    /* The count and "most rated on N of M" are one line at 375px. While the
+       labels load, their words take the place of "most rated on" on that
+       same line (no wrap), so the cards never move when they go. */
     .rankings-toolbar-count-text {
+        flex-wrap: nowrap;
         min-height: 0;
         column-gap: .375rem;
+        font-size: .78rem;
+    }
+
+    .organization-results-count {
+        flex: 0 1 auto;
+    }
+
+    /* While the loading words or the "Updated" mark share the line, they take
+       the place of "most rated on"; a three-digit count has no room for it on a
+       phone at all. The line is never a second row, so nothing moves. */
+    .rankings-toolbar-count-text:has(.choices-status) .organization-common-coverage,
+    .organization-results-count:has(.badge) .organization-common-coverage,
+    .organization-results-count--long .organization-common-coverage {
+        display: none;
+    }
+
+    /* A snug mark, so a long count (three digits) and it share the one line. */
+    .organization-results-count .badge {
+        margin-inline-start: .25rem !important;
+        padding: .25em .5em;
+        font-size: .6875rem;
     }
 
     .rankings-toolbar-count-text .choices-status {
-        gap: .375rem;
-        font-size: .75rem;
+        flex: 0 0 auto;
+        gap: .25rem;
+        font-size: .6875rem;
+        white-space: nowrap;
     }
 
     .rankings-toolbar-count-text .choices-status .spinner-border {
-        --bs-spinner-width: .75rem;
-        --bs-spinner-height: .75rem;
+        --bs-spinner-width: .625rem;
+        --bs-spinner-height: .625rem;
     }
+
+    .rankings-title-row {
+        margin-bottom: 0;
+    }
+
+    .app-content:has(.homepage-container) {
+        padding-top: .25rem;
+    }
+
+    .rankings-suggest--footer {
+        min-height: 44px;
+    }
+
+    .app-mobile-brand {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+    }
+}
+
+/* The narrowest phones wrap the count onto a second line; that line is
+   reserved (with the one under it for the "Updated" mark), so the loading
+   words, which share the first line, move nothing. */
+@media (max-width: 359.98px) {
+    .rankings-toolbar-count-text { font-size: .75rem; }
+    .organization-results-count { min-height: calc(3em + 1.5rem); }
 }

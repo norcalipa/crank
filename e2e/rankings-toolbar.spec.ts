@@ -44,15 +44,17 @@ test('single page renders no pager', async ({page}) => {
 
 test('pager works with the keyboard', async ({page}) => {
     await page.goto(PAGED_FIXTURE);
-    await expect(page.getByText('Page 1 of 2')).toBeVisible();
+    await expect(page.getByRole('link', {name: 'Page 1'}).first()).toHaveAttribute('aria-current', 'page');
     await expect(page.getByRole('navigation', {name: /Organization pagination/})).toHaveCount(2);
+    // The pager names the page, so "Page N of M" is not said twice.
+    await expect(page.getByText(/Page \d+ of/)).toHaveCount(0);
     await page.getByRole('link', {name: 'Next page'}).first().focus();
     await page.keyboard.press('Enter');
-    await expect(page.getByText('Page 2 of 2')).toBeVisible();
+    await expect(page.getByRole('link', {name: 'Page 2'}).first()).toHaveAttribute('aria-current', 'page');
     await expect(page.getByRole('link', {name: 'Page 2'}).first()).toHaveAttribute('aria-current', 'page');
     await page.getByRole('link', {name: 'Previous page'}).first().focus();
     await page.keyboard.press('Enter');
-    await expect(page.getByText('Page 1 of 2')).toBeVisible();
+    await expect(page.getByRole('link', {name: 'Page 1'}).first()).toHaveAttribute('aria-current', 'page');
 });
 
 test('removing a filter chip updates count and URL', async ({page}) => {

@@ -40,7 +40,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
                 }
                 await expect(panel).toBeVisible();
                 await expectNoHorizontalOverflow(page);
-                await page.locator('[data-testid="assistant-close"]').click();
+                await page.locator('[data-testid="assistant-close"], [data-testid="assistant-back-to-results"]').first().click(); // the phone sheet's one exit is Back to results
                 await expect(page.locator('[data-testid="assistant-panel"]')).toHaveCount(0);
                 // Closed again: the launcher returns as the single entry
                 // point and the closed state stays overflow-free.
@@ -133,7 +133,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await page.locator('[data-testid="assistant-launcher"]').click();
         await expect(page.locator('[data-testid="job-search-chat"]')).toBeVisible();
         expect(chunks).toHaveLength(1);
-        await page.locator('[data-testid="assistant-close"]').click();
+        await page.locator('[data-testid="assistant-close"], [data-testid="assistant-back-to-results"]').first().click(); // the phone sheet's one exit is Back to results
         await page.locator('[data-testid="assistant-launcher"]').click();
         await expect(page.locator('[data-testid="job-search-chat"]')).toBeVisible();
         expect(chunks).toHaveLength(1);
@@ -217,7 +217,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await page.locator('[data-testid="assistant-launcher"]').click();
         await expect(page.locator('[data-testid="assistant-panel"]')).toBeVisible();
         await expect(page.getByTestId('company-view')).toHaveCount(1);
-        await page.locator('[data-testid="assistant-close"]').click();
+        await page.locator('[data-testid="assistant-close"], [data-testid="assistant-back-to-results"]').first().click(); // the phone sheet's one exit is Back to results
         await expect(page.locator('[data-testid="assistant-panel"]')).toHaveCount(0);
         await expect(page.getByTestId('company-view')).toBeVisible();
         await expect.poll(() => page.evaluate((y) => Math.abs(Math.round(window.scrollY) - y), before)).toBeLessThanOrEqual(1);

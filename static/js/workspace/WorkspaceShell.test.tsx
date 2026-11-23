@@ -484,6 +484,46 @@ describe('WorkspaceShell entry placement (issue #617)', () => {
         expect(screen.getByTestId('assistant-restore')).toHaveAccessibleName('Assistant');
     });
 
+    test('uses the last visible title slot, never one in a hidden row', () => {
+        document.body.innerHTML = '<main class="app-content">'
+            + '<span id="first" data-assistant-slot="title"></span>'
+            + '<div hidden><span id="hidden" data-assistant-slot="title"></span></div>'
+            + '<span id="last" data-assistant-slot="title"></span></main>';
+        mockMode = 'drawer';
+        renderShell();
+        expect(screen.getByTestId('assistant-launcher').closest('[data-assistant-slot="title"]')?.id).toBe('last');
+    });
+
+    test('looks the slot up again when the page changes its views, and falls back when it goes', async () => {
+        document.body.innerHTML = '<main><div id="organization-list"><span id="title-row" data-assistant-slot="title"></span></div></main>';
+        mockMode = 'drawer';
+        renderShell();
+        const slotOf = () => screen.getByTestId('assistant-launcher').closest('[data-assistant-slot="title"]')?.id;
+        expect(slotOf()).toBe('title-row');
+        // A company view opens in the list with its own header slot, later in the document.
+        const view = document.createElement('section');
+        view.innerHTML = '<span id="view-header" data-assistant-slot="title"></span>';
+        await act(async () => { document.getElementById('organization-list')!.appendChild(view); });
+        await waitFor(() => expect(slotOf()).toBe('view-header'));
+        // Back to the results: the title row's slot again.
+        await act(async () => { view.remove(); });
+        await waitFor(() => expect(slotOf()).toBe('title-row'));
+        // The results row is hidden while the view shows: the entry is never put in it.
+        await act(async () => { document.getElementById('title-row')!.setAttribute('hidden', ''); });
+        await waitFor(() => expect(screen.getByTestId('assistant-launcher')).toHaveClass('assistant-launcher--floating'));
+    });
+
+    test('watches the whole document when the page has no result list', async () => {
+        document.body.innerHTML = '<main id="page"></main>';
+        mockMode = 'drawer';
+        renderShell();
+        expect(screen.getByTestId('assistant-launcher')).toHaveClass('assistant-launcher--floating');
+        await act(async () => {
+            document.getElementById('page')!.innerHTML = '<span id="late" data-assistant-slot="title"></span>';
+        });
+        await waitFor(() => expect(screen.getByTestId('assistant-launcher').closest('[data-assistant-slot="title"]')?.id).toBe('late'));
+    });
+
     test('a page with no slot gets the floating icon-only circle, still named Assistant', () => {
         mockMode = 'docked';
         renderShell();

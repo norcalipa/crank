@@ -54,26 +54,36 @@ correctly.
 | Row | `.organization-row` | `role="button"`, `tabindex="0"`, `aria-label="View details for <name>"`, `aria-describedby` points at a visually hidden summary that begins "Rank N." |
 | Rank | `.organization-rank` | Decorative; the rank is spoken through the summary and the ordered list |
 | Logo tile | `.organization-tile` | The company's first letter (no logo is stored) |
-| Name | `.organization-name` | One line, ellipsis, full name in `title` |
-| Meta line | `.organization-meta` | Funding round, office policy, rating coverage ("Rated on N of M") |
-| Evidence cell | `.organization-evidence` | Chips, then `.organization-checked` ("Checked Nov 20, 2026" or "Never checked") |
-| Evidence chips | `.crank-chips` > `.crank-chip--verified \| stale \| unknown \| pending \| vesting \| more` | From `static/js/evidence/EvidenceChips.tsx`; never wrap, past three the rest fold into a `+N` chip |
-| List header | `.organization-list-header` | "Company · Evidence · Company score (<preset>)", 11px uppercase, on the row grid from 34rem of container width |
+| Name | `.organization-name` | One line on wide rows (a fixed row height), clamped to 2 lines on a phone card; full name in `title` |
+| Meta line | `.organization-meta` | Funding round, office policy; "Rated on N of M" only when that row differs from the coverage most rows share, which is said once on the count line ("· most rated on N of M") |
+| Evidence cell | `.organization-evidence` | Chips, then `.organization-checked` ("Checked Nov 20, 2026"; a never-checked company has no caption, its chip says "? Never checked") |
+| Evidence chips | `.crank-chips` > `.crank-chip--verified \| stale \| unknown \| pending \| vesting \| more` | From `static/js/evidence/EvidenceChips.tsx`; never wrap and are never cut: a container query folds the 3rd and later chips into a `+N` chip (title names them). The vesting chip reads `◷ Vests < 1 yr`, with the full sentence in `title` |
+| List header | `.organization-list-header` | "Company · Evidence · Score", 11px uppercase, on the row grid from 34rem of container width |
 | Score | `.organization-score` | `4.30 / 5` with `.organization-score-bar` |
 | Action | `.organization-cta` | "View company", quiet (transparent, `#93c5fd`) until the row is hovered or focused, then filled `#60a5fa`; the whole row opens the company |
 
 Chip rules: every chip is a marker plus a word (`✓ 2 verified`, `! 1 stale`,
 `? 5 unknown`), so status is never colour alone. When nothing is verified or
-stale the row shows one muted `? Not yet verified` chip instead of zero
-counts. Chips are filled tint pills with no border (`color-mix(currentColor 16%)`).
+stale the row shows one muted chip instead of zero counts: `? Never checked` if the
+company was never re-checked (and then no "Checked" caption), otherwise
+`? Not yet verified`. Chips are filled tint pills with no border (`color-mix(currentColor 16%)`).
 `✓` only ever means verified: the first-vesting chip is neutral with a `◷`
 marker. Chip colours reuse the evidence palette (`EvidenceBadge`) and meet 4.5:1
 on the row surface.
 
 Palette: dark theme is one blue on navy. `--bs-body-bg #0c1620`, `--bs-tertiary-bg
-#101b26` (cards, rows), `--bs-secondary-bg #142235`, `--bs-border-color #1f2d3d`,
+#132131` (cards, rows, with a `#24364b` row border via `--crank-row-border`), `--bs-secondary-bg #142235`, `--bs-border-color #1f2d3d`,
 `--bs-primary #60a5fa` (dark `#0b1220` text on it), links `#93c5fd`. The score bar
 is flat `#94a3b8`. Do not add other blues.
+Contrast on the `#132131` row surface, measured on the rendered rankings (round 3,
+every text style, 58 at 1440px): lowest 6.23:1 (pending-review chip `#c4b5fd`),
+then 7.36:1 and up for the other chips, captions and the rank; all above 4.5:1.
+
+Headings: every page H1 is 1.75rem/700 (Rankings, Help, Privacy, company, Job Search);
+`.readable-page-container` h2 is 1.375rem/600 and h3 1.125rem/600, so the H1 is always the
+largest. On a company page the H1 is visually hidden and the Assistant pill sits in
+`.company-view-header` (no empty strip); Job Search uses `.page-title-row` (h1 + slot).
+The panel title reads "Assistant"; the phone sheet hides its x while "Back to results" shows.
 
 The Assistant entry never floats over content: wide screens put it in the page's
 title row (`[data-assistant-slot="title"]`), phones in the top bar beside Menu
@@ -83,8 +93,8 @@ icon-only circle named "Assistant" and reserves matching bottom padding.
 Toolbar: one control row (search, "Sort by" preset select, the vesting filter as
 a toggle chip), then one line holding the result count and the compact pager
 (both pagers right-aligned); a label-loading or error message takes its own full-width line after
-them, so the pager never moves. Below 576px the top pager and "Page N of M" are
-hidden, "Sort by" is visually hidden (still the select's name) and shares a line
+them, so the pager never moves. "Page N of M" is not shown whenever a pager is visible (the pager names the page). Below 576px the top pager is
+hidden, the subtitle is hidden, the count line is one line: "most rated on N of M" gives way to the loading words or the "Updated" mark and is dropped for a count of 100 or more (`.organization-results-count--long`), which has no room for it; the vesting toggle reads "Vests < 1 yr" (the full words stay its accessible name), the preset select shows a short label ("Culture-focused", not "... Algorithm"), "Sort by" is visually hidden (still the select's name) and shares a line
 with the vesting toggle, and "Suggest a company" moves under the list. "How ranking works" is a small inline
 disclosure link beside the subtitle (`.how-ranking-works--inline`), never a
 full-width bar.

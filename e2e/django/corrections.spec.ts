@@ -138,7 +138,7 @@ test.describe('with the assistant drawer open at 1024px', () => {
         await login(page);
         await page.goto('/');
         await page.getByRole('button', {name: 'Assistant'}).first().click();
-        const drawer = page.getByRole('heading', {name: 'Job Search Assistant'});
+        const drawer = page.getByRole('heading', {name: 'Assistant', exact: true});
         await expect(drawer).toBeVisible();
         await page.locator(`[aria-label="View details for ${COMPANY}"] >> visible=true`).first().click();
         await page.getByTestId('suggest-correction-link').click();

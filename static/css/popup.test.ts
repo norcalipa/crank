@@ -344,15 +344,15 @@ describe('company view visual review round 1 (issue #486)', () => {
         expect(query).toMatch(/\.popup-details-score-row,[\s\S]*your-pending-correction-[\s\S]*flex-direction:\s*column/);
     });
 
-    it('hides the rankings introduction while a company is open but keeps the h1 for assistive technology', () => {
-        const heading = block('.homepage-container:has(.company-view) .rankings-title', popupCss);
-        expect(heading).toMatch(/position:\s*absolute/);
-        expect(heading).toMatch(/clip:\s*rect\(0, 0, 0, 0\)/);
-        expect(heading).not.toMatch(/display:\s*none/);
+    it('hides the rankings introduction and the whole title strip while a company is open, keeping the h1 for assistive technology', () => {
+        const strip = block('.homepage-container:has(.company-view) > .rankings-title-row', popupCss);
+        expect(strip).toMatch(/position:\s*absolute/);
+        expect(strip).toMatch(/clip:\s*rect\(0, 0, 0, 0\)/);
+        expect(strip).not.toMatch(/display:\s*none/);
         const intro = block('.homepage-container:has(.company-view) > .rankings-intro');
         expect(intro).toMatch(/display:\s*none/);
-        // The Assistant entry lives in the title row, which stays while the h1 steps aside.
-        expect(block('.homepage-container:has(.company-view) > .rankings-title-row', popupCss)).toMatch(/justify-content:\s*flex-end/);
+        // The Assistant entry moves into the company view's own header.
+        expect(strip).not.toMatch(/justify-content/);
     });
 
     it('puts the Assistant entry in a page slot; only a slotless page floats a 44px icon-only circle and reserves room', () => {
@@ -550,17 +550,20 @@ describe('company view fit sentences never end on one word (issue #584a visual r
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const phoneBlock = popupCss.match(/@container organization-results \(max-width: 34rem\) \{[\s\S]*?\n\}\n/)![0];
-    const mediumBlock = popupCss.match(/@container organization-results \(max-width: 52rem\) \{[\s\S]*?\n\}\n/)![0];
+    const mediumBlock = popupCss.match(/@container organization-results \(max-width: 55rem\) \{[\s\S]*?\n\}\n/)![0];
 
     it('restacks the row on the results container width, not the viewport', () => {
         expect(popupCss).toMatch(/\.organization-results\s*\{[^}]*container:\s*organization-results\s*\/\s*inline-size/);
         expect(mediumBlock).toMatch(/"\.\s+\.\s+evidence evidence evidence"/);
-        expect(phoneBlock).toMatch(/"rank tile main score"\s+"evidence evidence evidence cta"/);
+        expect(phoneBlock).toMatch(/"rank tile main score"\s+"chips chips chips chips"\s+"checked checked checked checked"/);
     });
 
-    it('keeps names on one line with an ellipsis and the CTA auto width, right-aligned, on phones', () => {
-        expect(popupCss).toMatch(/\.organization-name\s*\{[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/);
-        expect(phoneBlock).toMatch(/\.organization-cta\s*\{[^}]*justify-self:\s*end[^}]*width:\s*auto/);
+    it('keeps a wide name on one line, wraps a phone name to two lines, and puts the CTA on the caption line', () => {
+        expect(popupCss).toMatch(/\.organization-name\s*\{[^}]*-webkit-line-clamp:\s*1/);
+        expect(phoneBlock).toMatch(/\.organization-name\s*\{[^}]*-webkit-line-clamp:\s*2/);
+        expect(popupCss).not.toMatch(/\.organization-name\s*\{[^}]*white-space:\s*nowrap/);
+        expect(phoneBlock).toMatch(/\.organization-cta\s*\{[^}]*grid-area:\s*3 \/ 1 \/ 4 \/ -1;[^}]*justify-self:\s*end[^}]*width:\s*auto/);
+        expect(phoneBlock).toMatch(/\.organization-evidence\s*\{\s*display:\s*contents/);
     });
 
     it('turns "How ranking works" into a small inline link on the rankings page', () => {
@@ -1014,6 +1017,36 @@ describe('auth action links keep the touch floor, the amber focus ring and balan
     });
 });
 
+describe('rankings round 3: chips never cut, headings, touch targets (issue #617)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+
+    it('folds the 3rd and later chips into a +N chip by container width instead of cutting a chip', () => {
+        expect(popupCss).toMatch(/\.crank-chip--more \{\s*display: none;/);
+        expect(popupCss).toMatch(/@container evidence \(width < 14rem\) \{\s*\.crank-chip:nth-child\(n\+2\):not\(\.crank-chip--more\) \{ display: none; \}\s*\.crank-chip--more-tiny \{ display: inline-block; \}/);
+        expect(popupCss).toMatch(/@container evidence \(14rem <= width < 21rem\) \{\s*\.crank-chip:nth-child\(n\+3\):not\(\.crank-chip--more\) \{ display: none; \}\s*\.crank-chip--more-narrow/);
+        expect(popupCss).toMatch(/@container evidence \(21rem <= width < 34rem\) \{\s*\.crank-chip:nth-child\(n\+4\):not\(\.crank-chip--more\) \{ display: none; \}\s*\.crank-chip--more-mid/);
+    });
+
+    it('keeps the page H1 the largest heading on the readable pages', () => {
+        expect(popupCss).toMatch(/\.readable-page-container h2 \{\s*margin: 2rem 0 \.5rem;\s*font-size: 1\.375rem;\s*font-weight: 600;\s*line-height: 1\.3;/);
+        expect(popupCss).toMatch(/\.readable-page-container h3 \{\s*font-size: 1\.125rem;\s*font-weight: 600;/);
+    });
+
+    it('puts the company view\'s Assistant entry in its header and hides the title strip', () => {
+        expect(popupCss).toMatch(/\.company-view-header \{[^}]*align-items: center;\s*gap: \.5rem;/);
+        expect(popupCss).toMatch(/\.company-view-header h2 \{[^}]*margin-inline-end: auto;/);
+        expect(popupCss).toMatch(/\.homepage-container:has\(\.company-view\) > \.rankings-title-row \{\s*position: absolute;/);
+    });
+
+    it('hides the subtitle on phones instead of cutting it and keeps a 44px "How ranking works"', () => {
+        const phone = popupCss.slice(popupCss.indexOf('@media (max-width: 575.98px) {\n    /* First screen'));
+        expect(phone).toMatch(/\.rankings-subtitle \{\s*display: none;/);
+        expect(phone).toMatch(/\.how-ranking-works--inline > \.how-ranking-works-summary \{\s*min-height: 44px;/);
+        expect(popupCss).not.toMatch(/min-height: 32px/);
+        expect(phone).toMatch(/\.organization-filter-short \{\s*display: inline;/);
+    });
+});
+
 describe('rankings round 2 palette, header and mobile first screen (issue #617)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
     const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1024,7 +1057,7 @@ describe('rankings round 2 palette, header and mobile first screen (issue #617)'
     const dark = popupCss.slice(popupCss.indexOf('Issue #617 round 2: one blue on navy surfaces'));
 
     it('declares one blue and navy surfaces under the dark theme and keeps stray blues out', () => {
-        for (const decl of ['--bs-body-bg: #0c1620', '--bs-tertiary-bg: #101b26', '--bs-secondary-bg: #142235',
+        for (const decl of ['--bs-body-bg: #0c1620', '--bs-tertiary-bg: #132131', '--crank-row-border: #24364b', '--bs-secondary-bg: #142235',
             '--bs-border-color: #1f2d3d', '--bs-primary: #60a5fa', '--bs-primary-rgb: 96, 165, 250', '--bs-link-color: #93c5fd']) {
             expect(dark).toContain(decl);
         }
@@ -1043,10 +1076,13 @@ describe('rankings round 2 palette, header and mobile first screen (issue #617)'
     });
 
     it('lays the wide row on one grid with a header row on it from 34rem, and no row grows past its chips', () => {
-        expect(block('.organization-row', popupCss)).toContain('grid-template-columns: 2rem 2.5rem minmax(14rem, 19rem) minmax(0, 1fr) 6.5rem auto;');
+        expect(block('.organization-row', popupCss)).toContain('grid-template-columns: 2rem 2.5rem minmax(14rem, 17.5rem) minmax(15rem, 1fr) 6.5rem auto;');
+        expect(block('.organization-list-header', popupCss)).toContain('grid-template-columns: 2rem 2.5rem minmax(14rem, 17.5rem) minmax(15rem, 1fr) 6.5rem auto;');
         expect(block('.organization-list-header', popupCss)).toMatch(/font-size:\s*11px;[\s\S]*letter-spacing:\s*\.06em;[\s\S]*text-transform:\s*uppercase/);
         expect(popupCss).toMatch(/@container organization-results \(min-width: 34rem\) \{\s*\.organization-list-header \{ display: grid; \}/);
-        expect(block('.crank-chips', popupCss)).toMatch(/flex-wrap:\s*nowrap;[\s\S]*overflow:\s*hidden/);
+        expect(block('.crank-chips', popupCss)).toMatch(/container:\s*evidence \/ inline-size;[\s\S]*flex-wrap:\s*nowrap/);
+        expect(block('.crank-chips', popupCss)).not.toMatch(/overflow/);
+        expect(block('.crank-chip', popupCss)).not.toMatch(/text-overflow/);
         expect(block('.organization-evidence', popupCss)).toMatch(/display:\s*grid;\s*gap:\s*\.125rem/);
         expect(block('.organization-checked', popupCss)).toMatch(/font-size:\s*\.75rem;[\s\S]*white-space:\s*nowrap/);
     });
@@ -1063,7 +1099,7 @@ describe('rankings round 2 palette, header and mobile first screen (issue #617)'
         const phone = dark.slice(dark.indexOf('@media (max-width: 575.98px)'));
         expect(dark).toMatch(/\.app-mobile-topbar \{\s*justify-content: space-between;\s*gap: \.5rem;\s*min-height: 56px/);
         expect(phone).toMatch(/\.rankings-toolbar \{\s*display: grid;\s*grid-template-columns: 1fr auto;/);
-        expect(phone).toMatch(/\.rankings-toolbar-pager,\s*\.organization-page-count \{\s*display: none;/);
+        expect(phone).toMatch(/\.rankings-toolbar-pager \{\s*display: none;/);
         expect(phone).toMatch(/\.visually-hidden-narrow \{\s*position: absolute;/);
     });
 

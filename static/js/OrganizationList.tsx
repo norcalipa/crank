@@ -61,9 +61,30 @@ const ratingCoverageText = (org: Organization): string =>
         ? `${org.rating_dimensions_covered} of ${org.rating_dimensions_total}`
         : `${org.profile_completeness.toFixed(0)}%`;
 
-// The row's freshness line: the day the newest accepted source was re-checked.
-const checkedText = (org: Organization): string =>
-    org.evidence?.last_verified_at ? `Checked ${formatEvidenceDate(org.evidence.last_verified_at, false, RANKINGS_DATE_ZONE)}` : 'Never checked';
+// The row's freshness caption: the day the newest accepted source was
+// re-checked. A company never checked has none: its chip says so (EvidenceChips).
+const checkedText = (org: Organization): string | null =>
+    org.evidence?.last_verified_at ? `Checked ${formatEvidenceDate(org.evidence.last_verified_at, false, RANKINGS_DATE_ZONE)}` : null;
+
+// The coverage most rows on the page share; it is said once on the count line
+// and a row repeats it only when it differs.
+const commonCoverage = (organizations: Organization[]): string | null => {
+    const counts = new Map<string, number>();
+    let best: string | null = null;
+    for (const org of organizations) {
+        const text = ratingCoverageText(org);
+        const n = (counts.get(text) ?? 0) + 1;
+        counts.set(text, n);
+        if (best === null || n > (counts.get(best) as number)) {
+            best = text;
+        }
+    }
+    return best;
+};
+
+// The sort select names a preset by what it ranks by: "Culture-focused", not
+// "Culture-focused Algorithm".
+const shortPresetName = (name: string): string => name.replace(/\s+Algorithm$/i, '') || name;
 
 // Company scores run 0-5 (the score thresholds); the bar is that share, clamped.
 const SCORE_SCALE = 5;
@@ -1317,6 +1338,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const presets = this.props.rankingPresets || [];
         const currentPreset = presets.find(preset => preset.id === this.props.currentAlgorithmId);
         const scoreLabel = currentPreset ? `Company score (${currentPreset.name})` : 'Company score';
+        const commonRated = commonCoverage(currentOrganizations);
         const isEmpty = filteredOrganizations.length === 0;
 
         // Raw codes only appear as the explained error fallback; while the
@@ -1394,7 +1416,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         <label className="rankings-toolbar-preset-label visually-hidden-narrow" htmlFor="ranking-preset">Sort by</label>
                         <select id="ranking-preset" className="form-select" data-testid="ranking-preset-select"
                                 value={this.props.currentAlgorithmId ?? ''} onChange={this.handlePresetChange}>
-                            {presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                            {presets.map(preset => <option key={preset.id} value={preset.id}>{shortPresetName(preset.name)}</option>)}
                         </select>
                     </div>
                 )}
@@ -1407,7 +1429,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         checked={acceleratedVesting}
                         onChange={this.handleFilterChange}
                     />
-                    <span>First vesting &lt; 1 year</span>
+                    <span className="organization-filter-full">First vesting &lt; 1 year</span>
+                    <span className="organization-filter-short" aria-hidden="true">Vests &lt; 1 yr</span>
                 </label>
                 {this.props.isAuthenticated && !isEmpty && (
                     <button type="button" className="btn btn-outline-secondary rankings-suggest"
@@ -1419,7 +1442,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 {this.renderChips()}
                 <div className="rankings-toolbar-count">
                     <div className="rankings-toolbar-count-text" role="status" aria-live="polite">
-                        <div className="organization-results-count">{isEmpty ? 'Showing 0 companies' : `Showing ${firstResult}–${lastResult} of ${filteredOrganizations.length} companies`}
+                        <div className={`organization-results-count${filteredOrganizations.length >= 100 ? ' organization-results-count--long' : ''}`}>{isEmpty ? 'Showing 0 companies' : `Showing ${firstResult}–${lastResult} of ${filteredOrganizations.length} companies`}{!isEmpty && commonRated && <span className="organization-common-coverage" data-testid="organization-common-coverage"><span aria-hidden="true"> · </span>most rated on {commonRated}</span>}
                             {updatedMark !== 'off' && (
                                 <span className={`badge text-bg-info ms-2${updatedMark === 'seen' ? ' invisible' : ''}`}
                                       data-testid={updatedMark === 'on' ? 'rankings-updated-badge' : 'rankings-updated-badge-seen'}
@@ -1427,7 +1450,6 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             )}
                         </div>
                         <div className="visually-hidden" data-testid="rankings-announcement"><span key={announcementKey}>{announcement}</span></div>
-                        {pageCount > 1 && <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>}
                         {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span className="choices-status-text">Loading labels…</span></div>}
                     </div>
                     {pageCount > 1 && <div className="rankings-toolbar-pager">{renderPager('top')}</div>}
@@ -1460,14 +1482,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 <p>{searchTerm || acceleratedVesting || rtoPolicy
                     ? 'There are no companies that match your search or filters.'
                     : 'No companies are ranked with this preset right now.'}</p>
-                {(searchTerm || acceleratedVesting || rtoPolicy) && <button type="button" className="btn btn-outline-light" onClick={this.handleClearFilters}>Clear search and filters</button>}
+                {(searchTerm || acceleratedVesting || rtoPolicy) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
                 {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
                 <div className="organization-results">
                 <div className="organization-list-header" aria-hidden="true">
                     <span className="organization-list-header-company">Company</span>
                     <span className="organization-list-header-evidence">Evidence</span>
-                    <span className="organization-list-header-score">{scoreLabel}</span>
+                    <span className="organization-list-header-score">Score</span>
                 </div>
                 <ol className="organization-list" aria-label="Organization rankings">
                     {currentOrganizations.map(org => {
@@ -1496,12 +1518,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                                 <span className="organization-meta" aria-hidden="true">
                                     <span>{choiceLabel(fundingRoundChoices, org.funding_round)}</span>
                                     <span>{choiceLabel(rtoPolicyChoices, org.rto_policy)}</span>
-                                    <span>Rated on {ratingCoverageText(org)}</span>
+                                    {ratingCoverageText(org) !== commonRated && <span>Rated on {ratingCoverageText(org)}</span>}
                                 </span>
                             </span>
                             <span className="organization-evidence" aria-hidden="true">
                                 <EvidenceChips evidence={org.evidence} acceleratedVesting={org.accelerated_vesting}/>
-                                <span className="organization-checked">{checkedText(org)}</span>
+                                {checkedText(org) && <span className="organization-checked">{checkedText(org)}</span>}
                             </span>
                             <span className="organization-score" aria-hidden="true">
                                 <span className="organization-score-line">

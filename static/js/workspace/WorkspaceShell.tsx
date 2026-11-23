@@ -27,6 +27,15 @@ const MODE_CLASSES = Object.values(MODE_CLASS);
 // its own container width whenever the panel occupies the viewport edge.
 const OPEN_CLASS = 'assistant-open';
 
+// The last visible slot of the mode's kind: a hidden row (the results'
+// while a company view is open) never holds the entry.
+function findSlot(mode: WorkspaceMode): HTMLElement | null {
+    const name = mode === 'sheet' ? 'topbar' : 'title';
+    const slots = Array.from(document.querySelectorAll<HTMLElement>(`[data-assistant-slot="${name}"]`))
+        .filter((element) => !element.closest('[hidden]'));
+    return slots.length > 0 ? slots[slots.length - 1] : null;
+}
+
 function useWorkspaceSnapshot(): WorkspaceSnapshot {
     const [snapshot, setSnapshot] = React.useState<WorkspaceSnapshot>(getWorkspaceSnapshot);
     React.useEffect(() => subscribeWorkspace(() => setSnapshot(getWorkspaceSnapshot())), []);
@@ -235,9 +244,22 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
     // Where the entry point lives (issue #617): phones carry it in the top
     // bar beside Menu; wider pages carry it in the page's title row. A page
     // with neither slot gets a 44px icon-only floating circle, whose room the
-    // content reserves, so the entry never covers a row action.
-    const slot = React.useMemo(() => document.querySelector<HTMLElement>(
-        mode === 'sheet' ? '[data-assistant-slot="topbar"]' : '[data-assistant-slot="title"]'), [mode]);
+    // content reserves, so the entry never covers a row action. The slot is
+    // looked up again whenever the page's view changes (a company opens in
+    // place of the results, each with its own title row) and is the last one
+    // that is visible, so the entry never sits in a hidden row.
+    const [slot, setSlot] = React.useState<HTMLElement | null>(() => findSlot(mode));
+    React.useLayoutEffect(() => {
+        const resolve = (): void => setSlot((current) => {
+            const next = findSlot(mode);
+            return next === current ? current : next;
+        });
+        resolve();
+        const watched = document.querySelector('#organization-list') ?? document.body;
+        const observer = new MutationObserver(resolve);
+        observer.observe(watched, {childList: true, subtree: true, attributes: true, attributeFilter: ['hidden']});
+        return () => observer.disconnect();
+    }, [mode]);
     const floating = slot === null;
     const renderEntry = (): React.ReactNode => {
         const entry = (

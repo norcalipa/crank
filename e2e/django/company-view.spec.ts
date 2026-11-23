@@ -290,7 +290,7 @@ test.describe('company view (issue #486b)', () => {
         expect(new URL(page.url()).searchParams.get('company')).not.toBeNull();
     });
 
-    test('Tab from the heading reaches Back to results first, then the action row', async ({page}) => {
+    test('Tab from the heading reaches Back to results first, then the Assistant entry, then the action row', async ({page}) => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page);
         await page.goto('/');
@@ -299,6 +299,9 @@ test.describe('company view (issue #486b)', () => {
         await expect(page.locator('#organization-details-title')).toBeFocused();
         await page.keyboard.press('Tab');
         await expect(view(page).getByRole('button', {name: 'Back to results'})).toBeFocused();
+        // The Assistant entry shares the header with Back to results, after it.
+        await page.keyboard.press('Tab');
+        await expect(page.getByTestId('assistant-launcher')).toBeFocused();
         await page.keyboard.press('Tab');
         const next = await page.evaluate(() => (document.activeElement as HTMLElement).getAttribute('data-testid'));
         expect(next).toBe('company-chat-cta');

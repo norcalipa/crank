@@ -135,13 +135,13 @@ test('each row shows when it was checked and the list has a header row on the wi
     const rows = page.locator('ol.organization-list > li > .organization-row');
     await expect(rows).toHaveCount(4);
     for (const text of await rows.locator('.organization-checked').allTextContents()) {
-        expect(text).toMatch(/^(Checked [A-Z][a-z]{2} \d{1,2}, \d{4}|Never checked)$/);
+        expect(text).toMatch(/^Checked [A-Z][a-z]{2} \d{1,2}, \d{4}$/);
     }
     const header = page.locator('.organization-list-header');
     await expect(header).toBeVisible();
     await expect(header).toContainText('Company');
     await expect(header).toContainText('Evidence');
-    await expect(header).toContainText('Company score (');
+    await expect(header).toContainText('Score');
     await page.setViewportSize({width: 375, height: 812});
     await expect(header).toBeHidden();
 });

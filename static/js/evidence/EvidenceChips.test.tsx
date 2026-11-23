@@ -16,17 +16,21 @@ const texts = (data?: EvidenceSummaryData | null, vesting = false) =>
     evidenceChipSpecs(data, vesting).map(chip => `${chip.marker} ${chip.text}`);
 
 describe('EvidenceChips', () => {
-    it('shows one muted "Not yet verified" chip when nothing is verified or stale', () => {
-        expect(texts(evidence())).toEqual(['? Not yet verified']);
+    it('says "Never checked" once, as the only chip, when nothing was ever checked', () => {
+        expect(texts(evidence())).toEqual(['? Never checked']);
+    });
+
+    it('shows one muted "Not yet verified" chip when it was checked but nothing is verified or stale', () => {
+        expect(texts(evidence({last_verified_at: '2026-11-20T10:00:00Z'}))).toEqual(['? Not yet verified']);
     });
 
     it('adds no first-vesting chip unless asked', () => {
         expect(evidenceChipSpecs(evidence({verified: 1, unknown: 6})).map(chip => chip.key)).toEqual(['verified', 'unknown']);
     });
 
-    it('treats a missing summary as not yet verified', () => {
-        expect(texts(undefined)).toEqual(['? Not yet verified']);
-        expect(texts(null)).toEqual(['? Not yet verified']);
+    it('treats a missing summary as never checked', () => {
+        expect(texts(undefined)).toEqual(['? Never checked']);
+        expect(texts(null)).toEqual(['? Never checked']);
     });
 
     it('shows one chip per non-empty count with a marker and a word', () => {
@@ -37,8 +41,8 @@ describe('EvidenceChips', () => {
 
     it('adds pending review and the first-vesting profile chip when they apply', () => {
         expect(texts(evidence({verified: 1, unknown: 0, pending_review: 2}), true))
-            .toEqual(['✓ 1 verified', '… Pending review', '◷ First vesting < 1 yr']);
-        expect(texts(undefined, true)).toEqual(['? Not yet verified', '◷ First vesting < 1 yr']);
+            .toEqual(['✓ 1 verified', '… Pending review', '◷ Vests < 1 yr']);
+        expect(texts(undefined, true)).toEqual(['? Never checked', '◷ Vests < 1 yr']);
     });
 
     it('renders status classes, hidden markers and explanatory titles', () => {
@@ -50,12 +54,31 @@ describe('EvidenceChips', () => {
         chips.querySelectorAll('.crank-chip-marker').forEach(marker => expect(marker).toHaveAttribute('aria-hidden', 'true'));
     });
 
-    it('folds chips past three into one "+N" chip that names them', () => {
+    it('renders every chip and both fold chips, each naming what it folds', () => {
         render(<EvidenceChips evidence={evidence({verified: 1, stale: 1, unknown: 2, pending_review: 1})} acceleratedVesting/>);
         const chips = screen.getByTestId('evidence-chips');
-        expect(chips.querySelectorAll('.crank-chip')).toHaveLength(3);
-        const more = screen.getByTestId('evidence-chips-more');
-        expect(more).toHaveTextContent('+3');
-        expect(more).toHaveAttribute('title', '2 unknown, Pending review, First vesting < 1 yr');
+        expect(chips).toHaveAttribute('data-chip-count', '5');
+        expect(chips.querySelectorAll('.crank-chip:not(.crank-chip--more)')).toHaveLength(5);
+        const tiny = screen.getByTestId('evidence-chips-more-tiny');
+        expect(tiny).toHaveTextContent('+4');
+        const narrow = screen.getByTestId('evidence-chips-more-narrow');
+        expect(narrow).toHaveTextContent('+3');
+        expect(narrow).toHaveAttribute('title', '2 unknown, Pending review, First vesting comes in under one year.');
+        const mid = screen.getByTestId('evidence-chips-more-mid');
+        expect(mid).toHaveTextContent('+2');
+        expect(mid).toHaveAttribute('title', 'Pending review, First vesting comes in under one year.');
+    });
+
+    it('has no fold chip a row has nothing to fold into', () => {
+        render(<EvidenceChips evidence={evidence({verified: 1, unknown: 0})}/>);
+        expect(screen.queryByTestId('evidence-chips-more-tiny')).toBeNull();
+        expect(screen.queryByTestId('evidence-chips-more-narrow')).toBeNull();
+        expect(screen.queryByTestId('evidence-chips-more-mid')).toBeNull();
+    });
+
+    it('keeps the vesting sentence in the title of the short chip', () => {
+        render(<EvidenceChips evidence={evidence({verified: 1, unknown: 0})} acceleratedVesting/>);
+        expect(screen.getByTestId('evidence-chips').querySelector('.crank-chip--vesting'))
+            .toHaveAttribute('title', 'First vesting comes in under one year.');
     });
 });

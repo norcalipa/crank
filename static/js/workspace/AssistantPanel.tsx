@@ -98,7 +98,7 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
             <div className="assistant-panel-header">
                 <div className="assistant-panel-heading">
                     <h2 className="assistant-panel-title" id="assistant-panel-title" tabIndex={-1}>
-                        <i className="fa-solid fa-comments" aria-hidden="true"></i> Job Search Assistant
+                        <i className="fa-solid fa-comments" aria-hidden="true"></i> Assistant
                     </h2>
                     {line && (
                         <div className={entityLabel ? 'assistant-context-strip' : undefined}
@@ -123,12 +123,15 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
                         <i className="fa-solid fa-window-minimize" aria-hidden="true"></i>
                         <span className="assistant-panel-control-label" aria-hidden="true">Minimize</span>
                     </button>
+                    {/* The phone sheet has "Back to results" as its one exit. */}
+                    {mode !== 'sheet' && (
                     <button type="button" className="btn btn-sm btn-outline-light assistant-panel-control assistant-panel-control--close"
                             onClick={closeAssistant} aria-label="Close assistant"
                             data-testid="assistant-close">
                         <i className="fa-solid fa-xmark" aria-hidden="true"></i>
                         <span className="assistant-panel-control-label" aria-hidden="true">Close</span>
                     </button>
+                    )}
                 </div>
             </div>
             <div className="assistant-panel-body">

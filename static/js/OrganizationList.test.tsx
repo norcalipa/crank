@@ -173,8 +173,22 @@ describe('OrganizationList', () => {
         expect(row.querySelector('.organization-score-bar > span')).toHaveStyle({width: '90%'});
         expect(row.querySelector('.organization-cta')).toHaveTextContent('View company');
         await waitFor(() => {
-            expect(row.querySelector('.organization-meta')).toHaveTextContent('SeedRemoteRated on 80%');
+            // 80% is what most rows share, so it is on the count line, not repeated here.
+            expect(row.querySelector('.organization-meta')?.textContent).toBe('SeedRemote');
         });
+        expect(screen.getByTestId('organization-common-coverage')).toHaveTextContent('most rated on 80%');
+        const other = screen.getByRole('button', {name: 'View details for Organization 2'});
+        expect(other.querySelector('.organization-meta')).toHaveTextContent('Rated on 70%');
+    });
+
+    test('a count of a hundred or more is marked long, so a phone lays its line out for the wrap', () => {
+        const base = organizations[0];
+        const hundred = Array.from({length: 100}, (_, i) => ({...base, id: 1000 + i, name: `Bulk ${i}`, ranking: i + 1}));
+        const {unmount} = render(<OrganizationList organizations={hundred} />);
+        expect(document.querySelector('.organization-results-count')).toHaveClass('organization-results-count--long');
+        unmount();
+        render(<OrganizationList organizations={hundred.slice(0, 99)} />);
+        expect(document.querySelector('.organization-results-count')).not.toHaveClass('organization-results-count--long');
     });
 
     test('a score above 5 or below 0 never overflows its bar', async () => {
@@ -2222,7 +2236,7 @@ describe('OrganizationList', () => {
             await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
 
             expect(screen.getByRole('textbox', {name: 'Search companies'})).toHaveValue('Organization');
-            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-2')).toHaveAttribute('aria-current', 'page');
             expect(window.history.state.crankPosition).toMatchObject({anchor: '2', anchorOffset: 120});
             await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: 380, behavior: 'instant'}));
             const row = screen.getAllByRole('button', {name: 'View details for Organization 2'})[0];
@@ -3166,6 +3180,8 @@ describe('OrganizationList', () => {
                 await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
                 act(() => setWorkspaceAccount({status: 'authenticated', key: 'bob'}));
                 await openFromRow('Organization 2');
+                // Let the first purge's own focus return to Organization 1 settle, so only this purge is counted.
+                await flush();
                 const lengthOpen = window.history.length;
                 const focusSpy = jest.spyOn(HTMLElement.prototype, 'focus');
 
@@ -3201,7 +3217,7 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
 
         await waitFor(() => {
-            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-2')).toHaveAttribute('aria-current', 'page');
         });
         expect(window.location.search).toBe('?page=2');
 
@@ -3217,12 +3233,12 @@ describe('OrganizationList', () => {
 
         fireEvent.click(screen.getAllByRole('link', {name: 'Next page'})[0]);
         await waitFor(() => {
-            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-2')).toHaveAttribute('aria-current', 'page');
         });
 
         fireEvent.click(screen.getAllByRole('link', {name: 'Previous page'})[0]);
         await waitFor(() => {
-            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-1')).toHaveAttribute('aria-current', 'page');
         });
     });
 
@@ -3245,7 +3261,7 @@ describe('OrganizationList', () => {
 
         await waitFor(() => {
             expect(screen.getByText('Showing 1–1 of 2 companies')).toBeInTheDocument();
-            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-1')).toHaveAttribute('aria-current', 'page');
         });
     });
 
@@ -3331,14 +3347,14 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
 
         await waitFor(() => {
-            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-1')).toHaveAttribute('aria-current', 'page');
         });
 
         // Navigate to page 2
         fireEvent.click(screen.getByTestId('page-link-2'));
 
         await waitFor(() => {
-            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-2')).toHaveAttribute('aria-current', 'page');
         });
 
         // Simulate browser back button (popstate)
@@ -3346,7 +3362,7 @@ describe('OrganizationList', () => {
 
         // State should be re-read from URL (which hasn't changed due to pushState mock)
         await waitFor(() => {
-            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-1')).toHaveAttribute('aria-current', 'page');
         });
     });
 
@@ -3889,7 +3905,7 @@ describe('OrganizationList', () => {
             expect(screen.queryByText(/Page \d+ of/)).not.toBeInTheDocument();
             unmount();
             render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
-            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-1')).toHaveAttribute('aria-current', 'page');
             expect(screen.getByTestId('page-link-1')).toHaveAttribute('aria-current', 'page');
         });
 
@@ -3977,7 +3993,7 @@ describe('OrganizationList', () => {
             render(<OrganizationList organizations={organizations} />);
             await screen.findByTestId('choices-status-error');
             const row = screen.getByRole('button', {name: 'View details for Organization 1'});
-            expect(row.querySelector('.organization-meta')).toHaveTextContent('SRRated on 80%');
+            expect(row.querySelector('.organization-meta')).toHaveTextContent('SR');
             consoleSpy.mockRestore();
         });
 
@@ -3987,7 +4003,7 @@ describe('OrganizationList', () => {
             await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
             const toolbar = screen.getByTestId('rankings-toolbar');
             expect(within(toolbar).getByLabelText('Sort by')).toHaveValue('1');
-            const toggle = within(toolbar).getByLabelText('First vesting < 1 year');
+            const toggle = within(toolbar).getByLabelText(/First vesting < 1 year/);
             expect(toggle).toBe(screen.getByTestId('accelerated-vesting-checkbox'));
             const chip = toggle.closest('label') as HTMLElement;
             expect(chip).toHaveClass('organization-filter');
@@ -3995,7 +4011,8 @@ describe('OrganizationList', () => {
             // Count, page number and the compact pager share the one line.
             const line = toolbar.querySelector('.rankings-toolbar-count') as HTMLElement;
             expect(within(line).getByText(/Showing 1–1 of 2 companies/)).toBeInTheDocument();
-            expect(within(line).getByText('Page 1 of 2')).toBeInTheDocument();
+            // The pager names the page, so "Page 1 of 2" is not said twice.
+            expect(within(line).queryByText(/Page 1 of 2/)).toBeNull();
             expect(within(line).getByRole('navigation', {name: 'Organization pagination'})).toBeInTheDocument();
             fireEvent.click(toggle);
             expect(screen.getByTestId('accelerated-vesting-checkbox').closest('label')).toHaveClass('organization-filter--on');
@@ -4018,7 +4035,7 @@ describe('OrganizationList', () => {
         test('empty state makes clearing filters primary and suggesting a company a link', async () => {
             render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
             fireEvent.change(screen.getByLabelText('Search companies'), {target: {value: 'zzz-no-match'}});
-            expect(screen.getByRole('button', {name: 'Clear search and filters'})).toHaveClass('btn-outline-light');
+            expect(screen.getByRole('button', {name: 'Clear search and filters'})).toHaveClass('btn-primary');
             expect(screen.getByTestId('suggest-company-empty-btn')).toHaveClass('btn-link');
         });
 
@@ -4088,16 +4105,22 @@ describe('OrganizationList', () => {
             render(<OrganizationList organizations={evidenceOrgs}/>);
             const list = await screen.findByRole('list', {name: 'Organization rankings'});
             const row = (name: string) => within(list).getByRole('button', {name: `View details for ${name}`});
-            const chips = (name: string) => Array.from(row(name).querySelectorAll('.crank-chip')).map(chip => chip.textContent);
-            expect(row('Verified Co')).toHaveTextContent('Rated on 2 of 2');
-            expect(chips('Verified Co')).toEqual(['✓3 verified', '?4 unknown', '◷First vesting < 1 yr']);
+            const chips = (name: string) => Array.from(row(name).querySelectorAll('.crank-chip:not(.crank-chip--more)')).map(chip => chip.textContent);
+            const folds = (name: string) => Array.from(row(name).querySelectorAll('.crank-chip--more')).map(chip => chip.textContent);
+            // "2 of 2" is the first of four different values, so it is the one said on the count line.
+            expect(screen.getByTestId('organization-common-coverage')).toHaveTextContent('most rated on 2 of 2');
+            expect(row('Verified Co')).not.toHaveTextContent('Rated on');
+            expect(chips('Verified Co')).toEqual(['✓3 verified', '?4 unknown', '◷Vests < 1 yr']);
+            // Three chips: the narrow tier folds the third into "+1", the tiny one the last two.
+            expect(folds('Verified Co')).toEqual(['+2', '+1']);
             expect(row('Stale Co')).toHaveTextContent('Rated on 1 of 2');
-            expect(chips('Stale Co')).toEqual(['!2 stale', '?5 unknown', '+2']);
+            expect(chips('Stale Co')).toEqual(['!2 stale', '?5 unknown', '…Pending review', '◷Vests < 1 yr']);
+            expect(folds('Stale Co')).toEqual(['+3', '+2', '+1']);
             expect(row('Stale Co').querySelector('.crank-chip--stale')).not.toBeNull();
             // Nothing verified: one muted chip, not "0 verified · 0 stale · 7 unknown".
-            expect(chips('Unknown Co')).toEqual(['?Not yet verified', '◷First vesting < 1 yr']);
+            expect(chips('Unknown Co')).toEqual(['?Never checked', '◷Vests < 1 yr']);
             expect(row('Unknown Co').querySelector('.organization-evidence')).not.toHaveTextContent('0 verified');
-            expect(chips('Legacy Co')).toEqual(['?Not yet verified']);
+            expect(chips('Legacy Co')).toEqual(['?Never checked']);
             expect(row('Legacy Co')).toHaveTextContent('Rated on 70%');
         });
 
@@ -4109,9 +4132,12 @@ describe('OrganizationList', () => {
             render(<OrganizationList organizations={withDates} rankingPresets={[{id: 3, name: 'Balanced'}]} currentAlgorithmId={3}/>);
             const row = (name: string) => screen.getByRole('button', {name: `View details for ${name}`});
             expect(row('Dated Co').querySelector('.organization-checked')).toHaveTextContent('Checked Nov 20, 2026');
-            expect(row('Undated Co').querySelector('.organization-checked')).toHaveTextContent('Never checked');
+            // Never checked is said once, by the chip: no caption repeats it.
+            expect(row('Undated Co').querySelector('.organization-checked')).toBeNull();
+            expect(row('Undated Co').querySelector('.crank-chip')).toHaveTextContent('Never checked');
+            expect(row('Dated Co')).not.toHaveTextContent('Never checked');
             const header = document.querySelector('.organization-list-header');
-            expect(header).toHaveTextContent('CompanyEvidenceCompany score (Balanced)');
+            expect(header).toHaveTextContent('CompanyEvidenceScore');
             expect(header).toHaveAttribute('aria-hidden', 'true');
         });
 

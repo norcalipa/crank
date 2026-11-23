@@ -29,14 +29,21 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             await page.goto('/');
             const list = results(page);
             const beta = list.getByRole('button', {name: 'View details for E2E Beta Labs'}).locator('visible=true').first();
-            await expect(beta).toContainText('Rated on 2 of 2');
+            // The coverage most rows share is said once, on the count line; a row
+            // repeats it only when it differs.
+            const common = (await page.getByTestId('organization-common-coverage').first().innerText()).replace(/^[\s·]*most rated on /, '').trim();
+            const coverage = async (row: typeof beta, own: string) => {
+                if (own === common) await expect(row).not.toContainText('Rated on');
+                else await expect(row).toContainText(`Rated on ${own}`);
+            };
+            await coverage(beta, '2 of 2');
             await expect(beta).toContainText('2 stale');
             await expect(beta).toContainText('5 unknown');
             await expect(beta).toContainText('Pending review');
             const gamma = list.getByRole('button', {name: 'View details for E2E Gamma Works'}).locator('visible=true').first();
-            await expect(gamma).toContainText('Rated on 1 of 2');
+            await coverage(gamma, '1 of 2');
             // Nothing verified: one muted chip, never a row of zero counts.
-            await expect(gamma).toContainText('Not yet verified');
+            await expect(gamma).toContainText(/Not yet verified|Never checked/);
             await expect(gamma.locator('.organization-evidence')).not.toContainText('0 verified');
             await expect(gamma).not.toContainText('Pending review');
             // The spoken description still carries the counts and freshness.

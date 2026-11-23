@@ -16,6 +16,9 @@ interface ChipSpec {
     text: string;
 }
 
+export const VESTING_CHIP_TEXT = 'Vests < 1 yr';
+export const VESTING_CHIP_SENTENCE = 'First vesting comes in under one year.';
+
 // The compact evidence read-out of a ranked row (issue #617): one chip per
 // non-empty status count, each a marker plus a word so no chip is colour only.
 // A company with nothing verified or stale shows the single muted
@@ -24,7 +27,9 @@ interface ChipSpec {
 export const evidenceChipSpecs = (evidence?: EvidenceSummaryData | null, acceleratedVesting = false): ChipSpec[] => {
     const chips: ChipSpec[] = [];
     if (!evidence || evidence.verified + evidence.stale === 0) {
-        chips.push({key: 'none', status: 'unknown', marker: EVIDENCE_STATUS_META.unknown.marker, text: 'Not yet verified'});
+        // Never re-checked: one chip says it, and the row has no caption.
+        chips.push({key: 'none', status: 'unknown', marker: EVIDENCE_STATUS_META.unknown.marker,
+            text: evidence?.last_verified_at ? 'Not yet verified' : 'Never checked'});
     } else {
         if (evidence.verified > 0) {
             chips.push({key: 'verified', status: 'verified', marker: EVIDENCE_STATUS_META.verified.marker, text: `${evidence.verified} verified`});
@@ -40,32 +45,37 @@ export const evidenceChipSpecs = (evidence?: EvidenceSummaryData | null, acceler
         chips.push({key: 'pending', status: 'pending', marker: EVIDENCE_STATUS_META.pending.marker, text: EVIDENCE_STATUS_META.pending.label});
     }
     if (acceleratedVesting) {
-        chips.push({key: 'vesting', status: 'vesting', marker: '◷', text: 'First vesting < 1 yr'});
+        chips.push({key: 'vesting', status: 'vesting', marker: '◷', text: VESTING_CHIP_TEXT});
     }
     return chips;
 };
 
-// A row never wraps its chips (issue #617): past this many the rest fold into
-// one "+N" chip, whose title names them.
-export const MAX_VISIBLE_CHIPS = 3;
-
+// A row never wraps its chips and never cuts one (issue #617): every chip is
+// rendered, and the row's container query (popup.css) folds the 3rd and later
+// chips (the 4th and later in a middle width, the 2nd and later in a very
+// narrow one) into a "+N" chip, whose title names them. The "+N" chips are
+// always in the markup; CSS shows the one that matches the room.
 const EvidenceChips: React.FC<EvidenceChipsProps> = ({evidence, acceleratedVesting}) => {
     const all = evidenceChipSpecs(evidence, acceleratedVesting);
-    const folded = all.length > MAX_VISIBLE_CHIPS;
-    const shown = folded ? all.slice(0, MAX_VISIBLE_CHIPS - 1) : all;
-    const hidden = folded ? all.slice(MAX_VISIBLE_CHIPS - 1) : [];
+    const more = (from: number, tier: string) => {
+        const hidden = all.slice(from);
+        return hidden.length > 0 && (
+            <span className={`crank-chip crank-chip--more crank-chip--more-${tier}`} data-status="more"
+                  data-testid={`evidence-chips-more-${tier}`}
+                  title={hidden.map(chip => (chip.status === 'vesting' ? VESTING_CHIP_SENTENCE : chip.text)).join(', ')}>+{hidden.length}</span>
+        );
+    };
     return (
-    <span className="crank-chips" data-testid="evidence-chips">
-        {shown.map(chip => (
+    <span className="crank-chips" data-testid="evidence-chips" data-chip-count={all.length}>
+        {all.map(chip => (
             <span key={chip.key} className={`crank-chip crank-chip--${chip.status}`} data-status={chip.status}
-                  title={chip.status === 'vesting' ? 'First vesting comes in under one year.' : EVIDENCE_STATUS_META[chip.status].meaning}>
+                  title={chip.status === 'vesting' ? VESTING_CHIP_SENTENCE : EVIDENCE_STATUS_META[chip.status].meaning}>
                 <span className="crank-chip-marker" aria-hidden="true">{chip.marker}</span>{chip.text}
             </span>
         ))}
-        {hidden.length > 0 && (
-            <span className="crank-chip crank-chip--more" data-status="more" data-testid="evidence-chips-more"
-                  title={hidden.map(chip => chip.text).join(', ')}>+{hidden.length}</span>
-        )}
+        {more(1, 'tiny')}
+        {more(2, 'narrow')}
+        {more(3, 'mid')}
     </span>
     );
 };
