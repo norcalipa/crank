@@ -494,6 +494,30 @@ test.describe('Updated rankings available (company rankings)', () => {
     const notice = (page: Page) => page.getByTestId('rankings-updated-notice');
     const firstThree = async (page: Page) => (await rowNames(page)).slice(0, 3);
 
+    // The count line stays inside its toolbar: the line's right edge is within
+    // .rankings-toolbar-count (+1px), and the coverage is a whole "N of M" or gone.
+    const expectCountContained = async (page: Page) => {
+        const edges = await page.evaluate(() => {
+            const count = document.querySelector('.organization-results-count')!.getBoundingClientRect();
+            const toolbar = document.querySelector('.rankings-toolbar-count')!.getBoundingClientRect();
+            const coverage = document.querySelector('.organization-common-coverage') as HTMLElement | null;
+            const value = coverage?.querySelector('.organization-common-coverage-value') as HTMLElement | null;
+            const shown = !!coverage && getComputedStyle(coverage).display !== 'none';
+            return {
+                countRight: count.right, toolbarRight: toolbar.right, shown,
+                valueText: shown ? value?.textContent ?? null : null,
+                valueRight: shown && value ? value.getBoundingClientRect().right : null,
+                valueWhole: shown && value ? value.scrollWidth <= value.clientWidth + 1 : null,
+            };
+        });
+        expect(edges.countRight).toBeLessThanOrEqual(edges.toolbarRight + 1);
+        if (edges.shown) {
+            expect(edges.valueText).toMatch(/^\d+ of \d+$/);
+            expect(edges.valueRight!).toBeLessThanOrEqual(edges.toolbarRight + 1);
+            expect(edges.valueWhole).toBe(true);
+        }
+    };
+
     // The count line keeps one height while the labels load: a font wider than
     // the runner's (letter-spacing stands in) must not wrap "most rated on" onto
     // a second line when the labels land after the reader's row was held.
@@ -513,6 +537,7 @@ test.describe('Updated rankings available (company rankings)', () => {
             const reading = (await readingOrg(page))!;
             const count = page.locator('.rankings-toolbar-count-text');
             const lineHeight = (await count.boundingBox())!.height;
+            await expectCountContained(page);
             raiseGamma();
             await page.clock.runFor(POLL_INTERVAL_MS + 1000);
             await expect(notice(page)).toBeVisible();
@@ -520,8 +545,54 @@ test.describe('Updated rankings available (company rankings)', () => {
             release();
             await expect(page.getByTestId('choices-status-loading')).toHaveCount(0);
             expect(Math.abs((await count.boundingBox())!.height - lineHeight)).toBeLessThanOrEqual(1);
+            await expectCountContained(page);
             await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
         });
+    }
+
+    // Production-like count line: 43 companies, every one rated on "10 of 10"
+    // (the page's embedded data is rewritten; the seeded rows carry fewer
+    // dimensions), at the widths where the line shares the toolbar with nothing
+    // else, in a wide-text font, on both pages, with the labels loading and loaded.
+    for (const width of [360, 375, 575]) {
+        for (const pageNumber of [1, 2]) {
+            test(`the count line stays inside the toolbar with "10 of 10", 43 companies, page ${pageNumber}, wide text, ${width}px`, async ({page}) => {
+                await page.setViewportSize({width, height: 800});
+                rankingsFixture('pad', {COUNT: '39'});
+                // The page parses its embedded company data with JSON.parse; the rows
+                // are rewritten there (route.fetch cannot reach local.crank.fyi, which
+                // only the browser's host-resolver rule maps).
+                await page.addInitScript(() => {
+                    const parse = JSON.parse;
+                    JSON.parse = function (text: string, reviver?: (key: string, value: any) => any) {
+                        const value = parse(text, reviver);
+                        if (Array.isArray(value) && value.length > 0 && value[0] && 'rating_dimensions_total' in value[0]) {
+                            for (const org of value) { org.rating_dimensions_total = 10; org.rating_dimensions_covered = 10; }
+                        }
+                        return value;
+                    };
+                });
+                let release: () => void = () => {};
+                const gate = new Promise<void>((resolve) => { release = resolve; });
+                await page.route(/\/api\/(funding-round|rto-policy)-choices\//, async (route) => {
+                    await gate;
+                    await route.continue();
+                });
+                await openRankings(page);
+                await page.addStyleTag({content: '.rankings-toolbar-count-text { letter-spacing: .7px; }'});
+                if (pageNumber === 2) {
+                    await page.locator('.rankings-pager-bottom').getByRole('link', {name: 'Next page'}).click();
+                }
+                await expect(page.locator('.organization-results-count')).toContainText(pageNumber === 1 ? 'Showing 1–15 of 43 companies' : 'Showing 16–30 of 43 companies');
+                const loadingHeight = (await page.locator('.rankings-toolbar-count-text').boundingBox())!.height;
+                await expectCountContained(page);
+                release();
+                await expect(page.getByTestId('choices-status-loading')).toHaveCount(0);
+                await expect(page.getByTestId('organization-common-coverage')).toBeAttached();
+                expect(Math.abs((await page.locator('.rankings-toolbar-count-text').boundingBox())!.height - loadingHeight)).toBeLessThanOrEqual(1);
+                await expectCountContained(page);
+            });
+        }
     }
 
     for (const [width, height] of [[1280, 800], [375, 800]] as const) {

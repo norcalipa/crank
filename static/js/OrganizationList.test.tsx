@@ -29,8 +29,24 @@ const realPushState = window.history.pushState;
 describe('OrganizationList', () => {
     let openSuggestCompanySpy: jest.SpyInstance;
     let closeSuggestCompanySpy: jest.SpyInstance;
+    // Animation frames the list schedules (showResults focuses a row from one)
+    // run on jsdom's real timers, outside any test's act(); one still pending
+    // when its test ends fires during the next test and focuses a row through
+    // the global document there (the CI flake in "a purge closes in place,
+    // once"). They are tracked here and cancelled after every test.
+    const pendingFrames = new Set<number>();
 
     beforeEach(() => {
+        pendingFrames.clear();
+        const nativeRequestFrame = window.requestAnimationFrame.bind(window);
+        jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+            const id = nativeRequestFrame((time) => {
+                pendingFrames.delete(id);
+                callback(time);
+            });
+            pendingFrames.add(id);
+            return id;
+        });
         // Spy on (not mock) the real controller: OrganizationList's triggers
         // are asserted via the spy, while the real implementation still runs
         // so tests that also mount SuggestCompanyHost see genuine state
@@ -95,6 +111,8 @@ describe('OrganizationList', () => {
     });
 
     afterEach(() => {
+        pendingFrames.forEach((id) => window.cancelAnimationFrame(id));
+        pendingFrames.clear();
         jest.restoreAllMocks();
         // The list writes `company` into the URL (issue #479); keep tests
         // independent of each other.

@@ -53,6 +53,61 @@ test('on a phone a paged list hides the top pager and keeps the bottom one', asy
     await expect(page.locator('.rankings-toolbar-pager')).toBeVisible();
 });
 
+// The count line stays inside the toolbar at phone widths (issue #617): with
+// production-like data (43 companies, every one rated on "10 of 10") "most rated
+// on" gives way, and "N of M" is whole or the coverage is gone. A wider font
+// (letter-spacing stands in) must not push it out either.
+const PRODUCTION_LIKE_FIXTURE = (html: string) => html.replace(/(<script id="organization-data" type="application\/json">)([\s\S]*?)(<\/script>)/, (_m, open, json, close) => {
+    const base = JSON.parse(json) as Array<Record<string, unknown>>;
+    const orgs = Array.from({length: 43}, (_v, i) => ({
+        ...base[i % base.length], id: i + 1, name: `Fixture Company ${String(i + 1).padStart(2, '0')}`, ranking: i + 1,
+        rating_dimensions_total: 10, rating_dimensions_covered: 10,
+    }));
+    return `${open}${JSON.stringify(orgs)}${close}`;
+});
+
+for (const width of [320, 360, 375, 575]) {
+    for (const letterSpacing of ['normal', '.7px']) {
+        for (const pageNumber of [1, 2]) {
+            test(`the count line stays inside the toolbar with "10 of 10" at ${width}px, page ${pageNumber}, letter-spacing ${letterSpacing}`, async ({page}) => {
+                await page.setViewportSize({width, height: 800});
+                await page.route('**/e2e/fixtures/organization-list-paged.html', async (route) => {
+                    const response = await route.fetch();
+                    await route.fulfill({response, body: PRODUCTION_LIKE_FIXTURE(await response.text())});
+                });
+                await page.goto(PAGED_FIXTURE);
+                await page.addStyleTag({content: `.rankings-toolbar-count-text { letter-spacing: ${letterSpacing}; }`});
+                if (pageNumber === 2) {
+                    await page.locator('.rankings-pager-bottom').getByRole('link', {name: 'Next page'}).click();
+                }
+                const range = pageNumber === 1 ? '1–15' : '16–30';
+                await expect(page.locator('.organization-results-count')).toContainText(`Showing ${range} of 43 companies`);
+                const edges = await page.evaluate(() => {
+                    const count = document.querySelector('.organization-results-count')!.getBoundingClientRect();
+                    const toolbar = document.querySelector('.rankings-toolbar-count')!.getBoundingClientRect();
+                    const coverage = document.querySelector('.organization-common-coverage') as HTMLElement | null;
+                    const value = coverage?.querySelector('.organization-common-coverage-value') as HTMLElement | null;
+                    const coverageShown = !!coverage && getComputedStyle(coverage).display !== 'none';
+                    return {
+                        countRight: count.right, toolbarRight: toolbar.right,
+                        coverageShown, valueText: coverageShown ? value?.textContent : null,
+                        valueRight: coverageShown && value ? value.getBoundingClientRect().right : null,
+                        valueFits: coverageShown && value ? value.scrollWidth <= value.clientWidth + 1 : null,
+                        docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                    };
+                });
+                expect(edges.countRight).toBeLessThanOrEqual(edges.toolbarRight + 1);
+                expect(edges.docOverflow).toBeLessThanOrEqual(1);
+                if (edges.coverageShown) {
+                    expect(edges.valueText).toBe('10 of 10');
+                    expect(edges.valueRight!).toBeLessThanOrEqual(edges.toolbarRight + 1);
+                    expect(edges.valueFits).toBe(true);
+                }
+            });
+        }
+    }
+}
+
 // jsdom cannot see the media-query CSS that swaps the two spellings, so the
 // name a screen reader gets is read from the browser's accessibility tree.
 for (const [width, name] of [[375, 'Vests < 1 yr'], [1440, 'First vesting < 1 year']] as const) {

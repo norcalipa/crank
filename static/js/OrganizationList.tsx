@@ -1442,7 +1442,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 {this.renderChips()}
                 <div className="rankings-toolbar-count">
                     <div className="rankings-toolbar-count-text" role="status" aria-live="polite">
-                        <div className={`organization-results-count${filteredOrganizations.length >= 100 ? ' organization-results-count--long' : ''}`}>{isEmpty ? 'Showing 0 companies' : `Showing ${firstResult}–${lastResult} of ${filteredOrganizations.length} companies`}{!isEmpty && commonRated && <span className="organization-common-coverage" data-testid="organization-common-coverage"><span aria-hidden="true"> · </span>most rated on {commonRated}</span>}
+                        <div className={`organization-results-count${filteredOrganizations.length >= 100 ? ' organization-results-count--long' : ''}`}>{isEmpty ? 'Showing 0 companies' : `Showing ${firstResult}–${lastResult} of ${filteredOrganizations.length} companies`}{!isEmpty && commonRated && <span className="organization-common-coverage" data-testid="organization-common-coverage"><span aria-hidden="true"> · </span><span className="organization-common-coverage-label">most rated on </span><span className="organization-common-coverage-value">{commonRated}</span></span>}
                             {updatedMark !== 'off' && (
                                 <span className={`badge text-bg-info ms-2${updatedMark === 'seen' ? ' invisible' : ''}`}
                                       data-testid={updatedMark === 'on' ? 'rankings-updated-badge' : 'rankings-updated-badge-seen'}

@@ -6346,24 +6346,46 @@ span.priority-chip-button { cursor: default; }
 }
 
 /* From 360px to the tablet breakpoint the count is one line, always (issue
-   #617 CI repair). The labels' arrival swaps the loading words for "most rated
-   on N of M" on that line; if the pair did not fit, the count would wrap to a
-   second line and push every row down by a line after the reader's row was
-   held. The count never wraps: "most rated on" gives way with an ellipsis, so
-   the line keeps one height before, during and after the labels load. */
+   #617). The labels' arrival swaps the loading words for "most rated on N of M"
+   on that line; if the pair did not fit, the count would wrap to a second line
+   and push every row down after the reader's row was held, so nothing wraps and
+   the line keeps one height before, during and after the labels load. Every
+   flex item above it (`.rankings-toolbar-count-text`, the count) has
+   min-width:0, so the line cannot spill past the toolbar. When it is too
+   narrow, only the words "most rated on" give way, with an ellipsis; "N of M"
+   (`.organization-common-coverage-value`) never shrinks and is never cut. A
+   count of 100 or more drops the coverage altogether (`--long`). */
 @media (min-width: 360px) and (max-width: 575.98px) {
+    .rankings-toolbar-count-text {
+        min-width: 0;
+    }
+
     .organization-results-count {
         display: flex;
         flex-wrap: nowrap;
         align-items: baseline;
+        min-width: 0;
+        /* flex strips the space before the " · " separator; this restores it. */
+        column-gap: .25em;
         white-space: nowrap;
     }
 
     .organization-results-count .organization-common-coverage {
+        display: flex;
+        flex: 0 1 auto;
+        min-width: 0;
+        column-gap: .25em;
+    }
+
+    .organization-results-count .organization-common-coverage-label {
         flex: 0 1 auto;
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+
+    .organization-results-count .organization-common-coverage-value {
+        flex: 0 0 auto;
     }
 
     .organization-results-count .badge {

@@ -30,8 +30,9 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             const list = results(page);
             const beta = list.getByRole('button', {name: 'View company: E2E Beta Labs'}).locator('visible=true').first();
             // The coverage most rows share is said once, on the count line; a row
-            // repeats it only when it differs.
-            const common = (await page.getByTestId('organization-common-coverage').first().innerText()).replace(/^[\s·]*most rated on /, '').trim();
+            // repeats it only when it differs. (Under 576px its words and "N of M" are
+            // flex items, so innerText may break the line between them.)
+            const common = (await page.getByTestId('organization-common-coverage').first().innerText()).replace(/^[\s·]*most rated on\s+/, '').trim();
             const coverage = async (row: typeof beta, own: string) => {
                 if (own === common) await expect(row).not.toContainText('Rated on');
                 else await expect(row).toContainText(`Rated on ${own}`);

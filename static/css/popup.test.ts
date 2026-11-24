@@ -990,7 +990,9 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         }
         // From 360px the count is one line before, during and after the labels load: it never
         // wraps, and "most rated on" is what gives way (CI repair of the held-row race).
-        expect(popupCss).toMatch(/@media \(min-width: 360px\) and \(max-width: 575\.98px\) \{\s*\.organization-results-count \{\s*display: flex;\s*flex-wrap: nowrap;\s*align-items: baseline;\s*white-space: nowrap;\s*\}\s*\.organization-results-count \.organization-common-coverage \{\s*flex: 0 1 auto;\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;/);
+        expect(popupCss).toMatch(/@media \(min-width: 360px\) and \(max-width: 575\.98px\) \{\s*\.rankings-toolbar-count-text \{\s*min-width: 0;\s*\}\s*\.organization-results-count \{\s*display: flex;\s*flex-wrap: nowrap;\s*align-items: baseline;\s*min-width: 0;\s*\/\* [^*]*\*\/\s*column-gap: \.25em;\s*white-space: nowrap;\s*\}/);
+        // Only the words give way; "N of M" never shrinks, so it is never cut (review r3).
+        expect(popupCss).toMatch(/\.organization-results-count \.organization-common-coverage-label \{\s*flex: 0 1 auto;\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;\s*\}\s*\.organization-results-count \.organization-common-coverage-value \{\s*flex: 0 0 auto;\s*\}/);
         // The status takes a full-width line of its own after the count and the pager, so the
         // top pager never moves between states; its words stay at every width.
         expect(popupCss).toMatch(/\.rankings-toolbar-count > \.choices-status-slot \{\s*flex: 1 1 100%;\s*order: 3;/);
