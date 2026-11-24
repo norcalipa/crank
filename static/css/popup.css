@@ -681,23 +681,6 @@ body.app-nav-drawer-open {
    (issue #485c). */
 .organization-results-count .badge { white-space: nowrap; }
 
-/* The narrowest phones (under 360px) cannot fit a long count and the mark on
-   one line, so the mark has a line of its own under the count whose room is
-   always reserved: its arrival moves nothing. */
-@media (max-width: 359.98px) {
-    .organization-results-count {
-        position: relative;
-        padding-bottom: 1.5rem;
-    }
-
-    .organization-results-count .badge {
-        position: absolute;
-        left: 0;
-        bottom: 0;
-        margin-left: 0 !important;
-    }
-}
-
 .filter-chips {
     display: flex;
     flex: 1 1 100%;
@@ -6284,41 +6267,80 @@ span.priority-chip-button { cursor: default; }
         display: inline;
     }
 
-    /* The count and "most rated on N of M" are one line at 375px. While the
-       labels load, their words take the place of "most rated on" on that
-       same line (no wrap), so the cards never move when they go. */
+    /* The count is two reserved lines up to 575px wide (issue #617): the count
+       on the first, and on the second whichever ONE of "most rated on N of M",
+       the loading words or the "Updated" mark is showing. The second line is
+       always there, so the labels' arrival or the mark's moves nothing, and
+       because the lines stack, nothing can overlap, however wide the font or
+       the text spacing. */
     .rankings-toolbar-count-text {
-        flex-wrap: nowrap;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        grid-auto-rows: auto;
+        align-items: start;
         min-height: 0;
-        column-gap: .375rem;
+        row-gap: .125rem;
         font-size: .78rem;
     }
 
+    /* The count's own box steps aside: its text is the first grid row, and the
+       coverage, the mark and the loading words share the second. */
     .organization-results-count {
-        flex: 0 1 auto;
+        display: contents;
     }
 
-    /* While the loading words or the "Updated" mark share the line, they take
-       the place of "most rated on"; a three-digit count has no room for it on a
-       phone at all. The line is never a second row, so nothing moves. */
+    .organization-results-count .organization-common-coverage,
+    .organization-results-count .badge,
+    .rankings-toolbar-count-text .choices-status {
+        grid-column: 1;
+        grid-row: 2;
+        justify-self: start;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .organization-results-count .organization-common-coverage {
+        display: block;
+    }
+
+    .organization-results-count .organization-common-coverage-value {
+        white-space: nowrap;
+    }
+
+    /* On its own line "most rated on" needs no separator. */
+    .organization-results-count .organization-common-coverage > [aria-hidden="true"] {
+        display: none;
+    }
+
+    /* The three share the second line, so only one may be showing: the loading
+       words or the "Updated" mark take the place of "most rated on"; a count of
+       100 or more drops it altogether. (This must stay after the display above.) */
     .rankings-toolbar-count-text:has(.choices-status) .organization-common-coverage,
     .organization-results-count:has(.badge) .organization-common-coverage,
     .organization-results-count--long .organization-common-coverage {
         display: none;
     }
 
-    /* A snug mark, so a long count (three digits) and it share the one line. */
+    /* The second line is one line tall whichever of them is showing, even when
+       none is (a count of 100 or more with no mark). */
+    .rankings-toolbar-count-text::after {
+        content: "";
+        grid-column: 1;
+        grid-row: 2;
+        min-height: 1.5em;
+    }
+
+    /* A snug mark on the second line. */
     .organization-results-count .badge {
-        margin-inline-start: .25rem !important;
+        margin: 0 !important;
         padding: .25em .5em;
         font-size: .6875rem;
     }
 
     .rankings-toolbar-count-text .choices-status {
-        flex: 0 0 auto;
         gap: .25rem;
         font-size: .6875rem;
-        white-space: nowrap;
+        white-space: normal;
     }
 
     .rankings-toolbar-count-text .choices-status .spinner-border {
@@ -6343,62 +6365,6 @@ span.priority-chip-button { cursor: default; }
         align-items: center;
         min-height: 44px;
     }
-}
-
-/* From 360px to the tablet breakpoint the count is one line, always (issue
-   #617). The labels' arrival swaps the loading words for "most rated on N of M"
-   on that line; if the pair did not fit, the count would wrap to a second line
-   and push every row down after the reader's row was held, so nothing wraps and
-   the line keeps one height before, during and after the labels load. Every
-   flex item above it (`.rankings-toolbar-count-text`, the count) has
-   min-width:0, so the line cannot spill past the toolbar. When it is too
-   narrow, only the words "most rated on" give way, with an ellipsis; "N of M"
-   (`.organization-common-coverage-value`) never shrinks and is never cut. A
-   count of 100 or more drops the coverage altogether (`--long`). */
-@media (min-width: 360px) and (max-width: 575.98px) {
-    .rankings-toolbar-count-text {
-        min-width: 0;
-    }
-
-    .organization-results-count {
-        display: flex;
-        flex-wrap: nowrap;
-        align-items: baseline;
-        min-width: 0;
-        /* flex strips the space before the " · " separator; this restores it. */
-        column-gap: .25em;
-        white-space: nowrap;
-    }
-
-    .organization-results-count .organization-common-coverage {
-        display: flex;
-        flex: 0 1 auto;
-        min-width: 0;
-        column-gap: .25em;
-    }
-
-    .organization-results-count .organization-common-coverage-label {
-        flex: 0 1 auto;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    .organization-results-count .organization-common-coverage-value {
-        flex: 0 0 auto;
-    }
-
-    .organization-results-count .badge {
-        flex: 0 0 auto;
-    }
-}
-
-/* The narrowest phones wrap the count onto a second line; that line is
-   reserved (with the one under it for the "Updated" mark), so the loading
-   words, which share the first line, move nothing. */
-@media (max-width: 359.98px) {
-    .rankings-toolbar-count-text { font-size: .75rem; }
-    .organization-results-count { min-height: calc(3em + 1.5rem); }
 }
 
 /* High-contrast (forced colors) mode: the score bar fill and the tinted chips

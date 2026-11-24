@@ -195,6 +195,9 @@ describe('OrganizationList', () => {
             expect(row.querySelector('.organization-meta')?.textContent).toBe('SeedRemote');
         });
         expect(screen.getByTestId('organization-common-coverage')).toHaveTextContent('most rated on 80%');
+        // The only spaces around the aria-hidden "·" are real ones, so a reader never hears "companiesmost rated on".
+        expect(screen.getByTestId('organization-common-coverage').textContent).toMatch(/^ ·\s?most rated on 80%$/);
+        expect(document.querySelector('.organization-results-count')!.textContent).toMatch(/companies · most rated on 80%$/);
         const other = screen.getByRole('button', {name: 'View company: Organization 2'});
         expect(other.querySelector('.organization-meta')).toHaveTextContent('Rated on 70%');
     });
@@ -1181,6 +1184,22 @@ describe('OrganizationList', () => {
                 expect(scrollTo).toHaveBeenCalledTimes(2);
                 act(() => setWorkspaceAccount({status: 'anonymous', key: ''}));
                 expect(scrollTo).toHaveBeenCalledTimes(2);
+            });
+
+            test('unmounting cancels the frames the hydration restore has scheduled', () => {
+                window.history.replaceState(
+                    {crankPosition: {scrollY: 480, anchor: '2', anchorOffset: 5}}, '', '/');
+                // Frames that never run on their own: the list must cancel what it scheduled.
+                const scheduled: Array<(time: number) => void> = [];
+                rafSpy.mockImplementation((cb: FrameRequestCallback) => scheduled.push(cb));
+                const cancelSpy = jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+                const {unmount} = render(<OrganizationList organizations={organizations} />);
+                scrollTo.mockClear();
+                act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+                expect(scheduled).toHaveLength(1);
+                unmount();
+                expect(cancelSpy).toHaveBeenCalledWith(1);
+                cancelSpy.mockRestore();
             });
 
             test('does not yank a user who scrolled before hydration settled', () => {

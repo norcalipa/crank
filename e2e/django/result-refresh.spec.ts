@@ -494,27 +494,51 @@ test.describe('Updated rankings available (company rankings)', () => {
     const notice = (page: Page) => page.getByTestId('rankings-updated-notice');
     const firstThree = async (page: Page) => (await rowNames(page)).slice(0, 3);
 
-    // The count line stays inside its toolbar: the line's right edge is within
-    // .rankings-toolbar-count (+1px), and the coverage is a whole "N of M" or gone.
+    // The count line stays inside its toolbar, by text extents (Range rects; a
+    // box can be narrower than its text): nothing past .rankings-toolbar-count
+    // (+1px), no two of the count, the coverage and the loading words overlap,
+    // and the coverage is a whole "N of M" on one line or gone. (An inline box's
+    // clientWidth is 0, so scrollWidth <= clientWidth says nothing about it.)
     const expectCountContained = async (page: Page) => {
         const edges = await page.evaluate(() => {
-            const count = document.querySelector('.organization-results-count')!.getBoundingClientRect();
+            const boxesOf = (range: Range) => Array.from(range.getClientRects()).filter((r) => r.width > 0);
+            const extent = (boxes: DOMRect[]) => boxes.length ? {
+                left: Math.min(...boxes.map((r) => r.left)), right: Math.max(...boxes.map((r) => r.right)),
+                top: Math.min(...boxes.map((r) => r.top)), bottom: Math.max(...boxes.map((r) => r.bottom)),
+            } : null;
+            const contents = (el: Element | null) => {
+                if (!el || getComputedStyle(el).display === 'none') return null;
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                return extent(boxesOf(range));
+            };
+            const countEl = document.querySelector('.organization-results-count')!;
+            const own = document.createRange();
+            const text = Array.from(countEl.childNodes).find((n) => n.nodeType === 3)!;
+            own.selectNodeContents(text);
             const toolbar = document.querySelector('.rankings-toolbar-count')!.getBoundingClientRect();
-            const coverage = document.querySelector('.organization-common-coverage') as HTMLElement | null;
+            const coverage = document.querySelector('.organization-common-coverage');
             const value = coverage?.querySelector('.organization-common-coverage-value') as HTMLElement | null;
             const shown = !!coverage && getComputedStyle(coverage).display !== 'none';
+            const items = {count: extent(boxesOf(own)), coverage: contents(coverage), loading: contents(document.querySelector('.choices-status-text'))};
+            const present = Object.entries(items).filter(([, r]) => r) as Array<[string, {left: number; right: number; top: number; bottom: number}]>;
+            const overlap = present.flatMap(([n1, a], i) => present.slice(i + 1)
+                .filter(([, b]) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > .5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > .5)
+                .map(([n2]) => `${n1}/${n2}`));
             return {
-                countRight: count.right, toolbarRight: toolbar.right, shown,
-                valueText: shown ? value?.textContent ?? null : null,
-                valueRight: shown && value ? value.getBoundingClientRect().right : null,
-                valueWhole: shown && value ? value.scrollWidth <= value.clientWidth + 1 : null,
+                toolbarLeft: toolbar.left, toolbarRight: toolbar.right, extents: present.map(([name, r]) => ({name, left: r.left, right: r.right})), overlap,
+                shown, valueText: shown ? value?.textContent ?? null : null,
+                valueLines: shown && value ? value.getClientRects().length : null,
             };
         });
-        expect(edges.countRight).toBeLessThanOrEqual(edges.toolbarRight + 1);
+        for (const item of edges.extents) {
+            expect(item.right, `${item.name} right edge`).toBeLessThanOrEqual(edges.toolbarRight + 1);
+            expect(item.left, `${item.name} left edge`).toBeGreaterThanOrEqual(edges.toolbarLeft - 1);
+        }
+        expect(edges.overlap).toEqual([]);
         if (edges.shown) {
             expect(edges.valueText).toMatch(/^\d+ of \d+$/);
-            expect(edges.valueRight!).toBeLessThanOrEqual(edges.toolbarRight + 1);
-            expect(edges.valueWhole).toBe(true);
+            expect(edges.valueLines).toBe(1);
         }
     };
 

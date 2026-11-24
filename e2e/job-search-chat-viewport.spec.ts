@@ -221,8 +221,11 @@ for (const vp of viewports) {
             const list = page.locator('ol.organization-list');
             await expect(list).toBeVisible();
             await expect(page.locator('.organization-table-wrap')).toHaveCount(0);
-            const overflowY = await list.evaluate((el) => getComputedStyle(el).overflowY);
-            expect(overflowY, 'organization list must not introduce an inner vertical scrollbar').toBe('visible');
+            // Read until the stylesheet has applied: WebKit can return "" for a
+            // computed property while the page is still laying out. The value
+            // asserted is still exactly "visible"; only the read is retried.
+            await expect(list).toHaveCSS('display', 'grid'); // the list's own rule has applied
+            await expect(list, 'organization list must not introduce an inner vertical scrollbar').toHaveCSS('overflow-y', 'visible');
             await expectNoHorizontalOverflow(page);
         });
     });

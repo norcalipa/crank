@@ -353,6 +353,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     componentWillUnmount() {
         this.refreshEpoch += 1;
+        this.cancelHydrationFrames();
+        if (this.resultsFrame !== null) window.cancelAnimationFrame(this.resultsFrame);
+        this.resultsFrame = null;
         this.poller?.stop();
         this.poller = null;
         this.stopMarkListeners?.();
@@ -698,12 +701,26 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             return;
         }
         this.restoredAfterHydration = true;
-        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-            if (Math.abs(window.scrollY - this.restoredScrollY) <= 1) {
-                restoreResultPosition(this.findOrganizationAnchor);
-            }
-        }));
+        // Frame ids are kept so unmounting cancels the pending frames: a list
+        // that is gone must not restore a scroll position or take focus.
+        this.cancelHydrationFrames();
+        this.hydrationFrames[0] = window.requestAnimationFrame(() => {
+            this.hydrationFrames[1] = window.requestAnimationFrame(() => {
+                this.hydrationFrames = [null, null];
+                if (Math.abs(window.scrollY - this.restoredScrollY) <= 1) {
+                    restoreResultPosition(this.findOrganizationAnchor);
+                }
+            });
+        });
     };
+    private hydrationFrames: [number | null, number | null] = [null, null];
+    private resultsFrame: number | null = null;
+    private cancelHydrationFrames() {
+        for (const frame of this.hydrationFrames) {
+            if (frame !== null) window.cancelAnimationFrame(frame);
+        }
+        this.hydrationFrames = [null, null];
+    }
     private unsubscribeWorkspace?: () => void;
     // Company id this list last reported to the workspace, so a close only
     // removes context the list itself set (never the Ask CTA's).
@@ -1209,7 +1226,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.setState({view: null}, () => {
             // After the commit that shows the results again (and any list
             // state a popstate restored in the same turn) has painted.
-            window.requestAnimationFrame(() => {
+            if (this.resultsFrame !== null) window.cancelAnimationFrame(this.resultsFrame);
+            this.resultsFrame = window.requestAnimationFrame(() => {
+                this.resultsFrame = null;
                 if (throughHistory) {
                     restoreResultPosition(this.findOrganizationAnchor);
                 }
@@ -1442,7 +1461,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 {this.renderChips()}
                 <div className="rankings-toolbar-count">
                     <div className="rankings-toolbar-count-text" role="status" aria-live="polite">
-                        <div className={`organization-results-count${filteredOrganizations.length >= 100 ? ' organization-results-count--long' : ''}`}>{isEmpty ? 'Showing 0 companies' : `Showing ${firstResult}–${lastResult} of ${filteredOrganizations.length} companies`}{!isEmpty && commonRated && <span className="organization-common-coverage" data-testid="organization-common-coverage"><span aria-hidden="true"> · </span><span className="organization-common-coverage-label">most rated on </span><span className="organization-common-coverage-value">{commonRated}</span></span>}
+                        <div className={`organization-results-count${filteredOrganizations.length >= 100 ? ' organization-results-count--long' : ''}`}>{isEmpty ? 'Showing 0 companies' : `Showing ${firstResult}–${lastResult} of ${filteredOrganizations.length} companies`}{!isEmpty && commonRated && <span className="organization-common-coverage" data-testid="organization-common-coverage">{' '}<span aria-hidden="true">·</span>{' '}<span className="organization-common-coverage-label">most rated on </span><span className="organization-common-coverage-value">{commonRated}</span></span>}
                             {updatedMark !== 'off' && (
                                 <span className={`badge text-bg-info ms-2${updatedMark === 'seen' ? ' invisible' : ''}`}
                                       data-testid={updatedMark === 'on' ? 'rankings-updated-badge' : 'rankings-updated-badge-seen'}

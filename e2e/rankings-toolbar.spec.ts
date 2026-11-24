@@ -53,59 +53,142 @@ test('on a phone a paged list hides the top pager and keeps the bottom one', asy
     await expect(page.locator('.rankings-toolbar-pager')).toBeVisible();
 });
 
-// The count line stays inside the toolbar at phone widths (issue #617): with
-// production-like data (43 companies, every one rated on "10 of 10") "most rated
-// on" gives way, and "N of M" is whole or the coverage is gone. A wider font
-// (letter-spacing stands in) must not push it out either.
-const PRODUCTION_LIKE_FIXTURE = (html: string) => html.replace(/(<script id="organization-data" type="application\/json">)([\s\S]*?)(<\/script>)/, (_m, open, json, close) => {
+// The count line at phone widths (issue #617): two reserved lines. The count is
+// the first; the second holds whichever ONE of "most rated on N of M", the
+// loading words or the "Updated" mark is showing (a count of 100 or more drops
+// the coverage). The second line is always there, so the labels' arrival moves
+// nothing, and because the lines stack nothing can overlap. Measured on text
+// extents (Range rects), not box edges: a box can be narrower than its text.
+const PRODUCTION_LIKE_FIXTURE = (html: string, total: number) => html.replace(/(<script id="organization-data" type="application\/json">)([\s\S]*?)(<\/script>)/, (_m, open, json, close) => {
     const base = JSON.parse(json) as Array<Record<string, unknown>>;
-    const orgs = Array.from({length: 43}, (_v, i) => ({
+    const orgs = Array.from({length: total}, (_v, i) => ({
         ...base[i % base.length], id: i + 1, name: `Fixture Company ${String(i + 1).padStart(2, '0')}`, ranking: i + 1,
         rating_dimensions_total: 10, rating_dimensions_covered: 10,
     }));
     return `${open}${JSON.stringify(orgs)}${close}`;
 });
 
-for (const width of [320, 360, 375, 575]) {
-    for (const letterSpacing of ['normal', '.7px']) {
-        for (const pageNumber of [1, 2]) {
-            test(`the count line stays inside the toolbar with "10 of 10" at ${width}px, page ${pageNumber}, letter-spacing ${letterSpacing}`, async ({page}) => {
-                await page.setViewportSize({width, height: 800});
-                await page.route('**/e2e/fixtures/organization-list-paged.html', async (route) => {
-                    const response = await route.fetch();
-                    await route.fulfill({response, body: PRODUCTION_LIKE_FIXTURE(await response.text())});
+// Text spacing as WCAG 1.4.12 asks a page to tolerate, and a larger root size.
+// Scoped to the count region so the icon font is left alone.
+const TEXT_MODES: Record<string, string> = {
+    default: '',
+    'root text 125%': 'html { font-size: 125%; }',
+    'WCAG 1.4.12 spacing': '.rankings-toolbar-count-text, .rankings-toolbar-count-text * { line-height: 1.5 !important; letter-spacing: .12em !important; word-spacing: .16em !important; }',
+};
+
+const measureCountLine = () => {
+    const rect = (el: Element | null) => {
+        if (!el || getComputedStyle(el).display === 'none') return null;
+        // The text extents: a Range over the contents is the ink's boxes, even
+        // where the element's own box is narrower than its text.
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const boxes = Array.from(range.getClientRects()).filter((r) => r.width > 0);
+        if (!boxes.length) return null;
+        return {
+            left: Math.min(...boxes.map((r) => r.left)), right: Math.max(...boxes.map((r) => r.right)),
+            top: Math.min(...boxes.map((r) => r.top)), bottom: Math.max(...boxes.map((r) => r.bottom)),
+        };
+    };
+    const count = document.querySelector('.organization-results-count') as HTMLElement;
+    // The count's own words only (the coverage and the mark are its children).
+    const own = document.createRange();
+    own.setStartBefore(count.firstChild!);
+    own.setEndAfter(Array.from(count.childNodes).find((n) => n.nodeType === 3)!);
+    const ownBoxes = Array.from(own.getClientRects()).filter((r) => r.width > 0);
+    const countText = {
+        left: Math.min(...ownBoxes.map((r) => r.left)), right: Math.max(...ownBoxes.map((r) => r.right)),
+        top: Math.min(...ownBoxes.map((r) => r.top)), bottom: Math.max(...ownBoxes.map((r) => r.bottom)),
+    };
+    const toolbar = document.querySelector('.rankings-toolbar-count')!.getBoundingClientRect();
+    const line = document.querySelector('.rankings-toolbar-count-text')!.getBoundingClientRect();
+    const coverage = document.querySelector('.organization-common-coverage');
+    const value = coverage?.querySelector('.organization-common-coverage-value') ?? null;
+    const items: Record<string, ReturnType<typeof rect>> = {
+        coverage: rect(coverage), badge: rect(count.querySelector('.badge')), loading: rect(document.querySelector('.choices-status-text')),
+    };
+    const overlaps = (a: NonNullable<ReturnType<typeof rect>>, b: NonNullable<ReturnType<typeof rect>>) =>
+        Math.min(a.right, b.right) - Math.max(a.left, b.left) > .5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > .5;
+    const shown = Object.entries(items).filter(([, r]) => r) as Array<[string, NonNullable<ReturnType<typeof rect>>]>;
+    return {
+        height: line.height, toolbarLeft: toolbar.left, toolbarRight: toolbar.right,
+        countText, shown: shown.map(([name, r]) => ({name, left: r.left, right: r.right})),
+        overlapping: shown.filter(([, r]) => overlaps(countText, r)).map(([name]) => name)
+            .concat(shown.flatMap(([n1, r1], i) => shown.slice(i + 1).filter(([, r2]) => overlaps(r1, r2)).map(([n2]) => `${n1}/${n2}`))),
+        coverageShown: !!coverage && getComputedStyle(coverage).display !== 'none',
+        valueText: coverage && getComputedStyle(coverage).display !== 'none' ? value?.textContent ?? null : null,
+        valueLines: value && getComputedStyle(value).display !== 'none' ? value.getClientRects().length : null,
+        docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+};
+
+for (const width of [320, 360, 375, 390, 414, 575]) {
+    for (const [modeName, modeCss] of Object.entries(TEXT_MODES)) {
+        for (const total of [43, 120]) {
+            for (const pageNumber of total === 43 ? [1, 2] : [1]) {
+                test(`the count line is two reserved lines and never overlaps or leaves the toolbar: ${total} companies, page ${pageNumber}, ${width}px, ${modeName}`, async ({page}) => {
+                    await page.setViewportSize({width, height: 800});
+                    await page.route('**/e2e/fixtures/organization-list-paged.html', async (route) => {
+                        const response = await route.fetch();
+                        await route.fulfill({response, body: PRODUCTION_LIKE_FIXTURE(await response.text(), total)});
+                    });
+                    // Hold the labels, so the loading words are measured and then the loaded line.
+                    let release: () => void = () => {};
+                    const gate = new Promise<void>((resolve) => { release = resolve; });
+                    await page.route('**/api/funding-round-choices/', async (route) => { await gate; await route.fulfill({json: {A: 'Series A', B: 'Series B', C: 'Series C', D: 'Series D'}}); });
+                    await page.goto(PAGED_FIXTURE);
+                    if (modeCss) await page.addStyleTag({content: modeCss});
+                    if (pageNumber === 2) {
+                        await page.locator('.rankings-pager-bottom').getByRole('link', {name: 'Next page'}).click();
+                    }
+                    const range = pageNumber === 1 ? '1–15' : '16–30';
+                    await expect(page.locator('.organization-results-count')).toContainText(`Showing ${range} of ${total} companies`);
+                    await page.locator('.rankings-toolbar-count').scrollIntoViewIfNeeded();
+                    await expect(page.getByTestId('choices-status-loading')).toBeVisible();
+                    const loading = await page.evaluate(measureCountLine);
+                    release();
+                    await expect(page.getByTestId('choices-status-loading')).toHaveCount(0);
+                    const loaded = await page.evaluate(measureCountLine);
+
+                    for (const state of [loading, loaded]) {
+                        expect(state.overlapping).toEqual([]);
+                        expect(state.docOverflow).toBeLessThanOrEqual(1);
+                        expect(state.countText.right).toBeLessThanOrEqual(state.toolbarRight + 1);
+                        expect(state.countText.left).toBeGreaterThanOrEqual(state.toolbarLeft - 1);
+                        for (const item of state.shown) {
+                            expect(item.right, `${item.name} right edge`).toBeLessThanOrEqual(state.toolbarRight + 1);
+                            expect(item.left, `${item.name} left edge`).toBeGreaterThanOrEqual(state.toolbarLeft - 1);
+                        }
+                    }
+                    // Loading words and the coverage never share the line.
+                    expect(loading.coverageShown).toBe(false);
+                    expect(loading.shown.map((i) => i.name)).toContain('loading');
+                    // "N of M" is whole (one line, not clipped) or dropped (a count of 100 or more).
+                    if (total >= 100) {
+                        expect(loaded.coverageShown).toBe(false);
+                    } else {
+                        expect(loaded.coverageShown).toBe(true);
+                        expect(loaded.valueText).toBe('10 of 10');
+                        expect(loaded.valueLines).toBe(1);
+                    }
+                    // The count line is the same height before, during and after the labels load.
+                    expect(Math.abs(loaded.height - loading.height)).toBeLessThanOrEqual(.5);
                 });
-                await page.goto(PAGED_FIXTURE);
-                await page.addStyleTag({content: `.rankings-toolbar-count-text { letter-spacing: ${letterSpacing}; }`});
-                if (pageNumber === 2) {
-                    await page.locator('.rankings-pager-bottom').getByRole('link', {name: 'Next page'}).click();
-                }
-                const range = pageNumber === 1 ? '1–15' : '16–30';
-                await expect(page.locator('.organization-results-count')).toContainText(`Showing ${range} of 43 companies`);
-                const edges = await page.evaluate(() => {
-                    const count = document.querySelector('.organization-results-count')!.getBoundingClientRect();
-                    const toolbar = document.querySelector('.rankings-toolbar-count')!.getBoundingClientRect();
-                    const coverage = document.querySelector('.organization-common-coverage') as HTMLElement | null;
-                    const value = coverage?.querySelector('.organization-common-coverage-value') as HTMLElement | null;
-                    const coverageShown = !!coverage && getComputedStyle(coverage).display !== 'none';
-                    return {
-                        countRight: count.right, toolbarRight: toolbar.right,
-                        coverageShown, valueText: coverageShown ? value?.textContent : null,
-                        valueRight: coverageShown && value ? value.getBoundingClientRect().right : null,
-                        valueFits: coverageShown && value ? value.scrollWidth <= value.clientWidth + 1 : null,
-                        docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-                    };
-                });
-                expect(edges.countRight).toBeLessThanOrEqual(edges.toolbarRight + 1);
-                expect(edges.docOverflow).toBeLessThanOrEqual(1);
-                if (edges.coverageShown) {
-                    expect(edges.valueText).toBe('10 of 10');
-                    expect(edges.valueRight!).toBeLessThanOrEqual(edges.toolbarRight + 1);
-                    expect(edges.valueFits).toBe(true);
-                }
-            });
+            }
         }
     }
+}
+
+// What the reserved second line costs: three whole cards still sit above the fold.
+for (const [width, height] of [[375, 812], [360, 740]] as const) {
+    test(`three cards are fully visible above the fold at ${width}x${height}`, async ({page}) => {
+        await page.setViewportSize({width, height});
+        await page.goto(PAGED_FIXTURE);
+        await expect(page.locator('.organization-results-count')).toContainText('Showing');
+        const whole = await page.evaluate((viewport) => Array.from(document.querySelectorAll('.organization-row'))
+            .filter((row) => row.getBoundingClientRect().bottom <= viewport).length, height);
+        expect(whole).toBeGreaterThanOrEqual(3);
+    });
 }
 
 // jsdom cannot see the media-query CSS that swaps the two spellings, so the

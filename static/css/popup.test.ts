@@ -975,11 +975,16 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         const next = popupCss.indexOf('/* Job-search result cards (issue #396) */');
         const section = popupCss.slice(start, next);
         expect(section).toMatch(/#rankings-heading \{\s*width: fit-content;\s*\}/);
-        // The mark sits after the count on the same line at every width, its room reserved
-        // while invisible, so its arrival moves nothing (issue #617).
+        // The mark sits on the count's second reserved line with the coverage and the loading words,
+        // its room reserved while invisible, so its arrival moves nothing (issue #617).
         expect(popupCss).toMatch(/\.organization-results-count \.badge \{ white-space: nowrap; \}/);
-        // Under 360px the mark keeps a reserved line of its own under the count.
-        expect(popupCss).toMatch(/@media \(max-width: 359\.98px\) \{\s*\.organization-results-count \{\s*position: relative;\s*padding-bottom: 1\.5rem;\s*\}\s*\.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*bottom: 0;\s*margin-left: 0 !important;/);
+        // Up to 575px the count is two reserved lines, never a one-line ellipsis: the count words
+        // are the first grid row, and the second holds whichever ONE of the coverage, the loading
+        // words or the mark shows (so nothing can overlap, whatever the text size or spacing).
+        expect(popupCss).toMatch(/\.rankings-toolbar-count-text \{\s*display: grid;\s*grid-template-columns: minmax\(0, 1fr\);\s*grid-auto-rows: auto;\s*align-items: start;/);
+        expect(popupCss).toMatch(/\.organization-results-count \{\s*display: contents;\s*\}/);
+        expect(popupCss).toMatch(/\.organization-results-count \.organization-common-coverage,\s*\.organization-results-count \.badge,\s*\.rankings-toolbar-count-text \.choices-status \{\s*grid-column: 1;\s*grid-row: 2;/);
+        expect(popupCss).toMatch(/\.rankings-toolbar-count-text::after \{\s*content: "";\s*grid-column: 1;\s*grid-row: 2;\s*min-height: 1\.5em;/);
         // The empty slot is a live region: it is visually hidden, never display:none, so it
         // stays in the accessibility tree and an error that fills it is announced.
         const slotRule = popupCss.match(/\.choices-status-slot:empty\s*\{([^}]*)\}/)![1];
@@ -988,11 +993,13 @@ describe('job-match panel result refresh styles (issue #485)', () => {
             'clip-path: inset(50%)', 'white-space: nowrap']) {
             expect(slotRule).toContain(decl);
         }
-        // From 360px the count is one line before, during and after the labels load: it never
-        // wraps, and "most rated on" is what gives way (CI repair of the held-row race).
-        expect(popupCss).toMatch(/@media \(min-width: 360px\) and \(max-width: 575\.98px\) \{\s*\.rankings-toolbar-count-text \{\s*min-width: 0;\s*\}\s*\.organization-results-count \{\s*display: flex;\s*flex-wrap: nowrap;\s*align-items: baseline;\s*min-width: 0;\s*\/\* [^*]*\*\/\s*column-gap: \.25em;\s*white-space: nowrap;\s*\}/);
-        // Only the words give way; "N of M" never shrinks, so it is never cut (review r3).
-        expect(popupCss).toMatch(/\.organization-results-count \.organization-common-coverage-label \{\s*flex: 0 1 auto;\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;\s*\}\s*\.organization-results-count \.organization-common-coverage-value \{\s*flex: 0 0 auto;\s*\}/);
+        // The display:block of the coverage comes BEFORE the rule that hides it (loading words,
+        // the mark, a count of 100 or more), so the hiding wins at 360-575px.
+        const block = popupCss.indexOf('.organization-results-count .organization-common-coverage {\n        display: block;');
+        const hide = popupCss.indexOf('.organization-results-count--long .organization-common-coverage {\n        display: none;');
+        expect(block).toBeGreaterThan(-1);
+        expect(hide).toBeGreaterThan(block);
+        expect(popupCss).not.toMatch(/text-overflow: ellipsis;\s*\}\s*\.organization-results-count \.organization-common-coverage-value/);
         // The status takes a full-width line of its own after the count and the pager, so the
         // top pager never moves between states; its words stay at every width.
         expect(popupCss).toMatch(/\.rankings-toolbar-count > \.choices-status-slot \{\s*flex: 1 1 100%;\s*order: 3;/);
