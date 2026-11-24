@@ -58,7 +58,7 @@ test.describe.serial('priorities → companies → evidence → jobs journey', (
     test('company view opens with evidence provenance and returns to results cleanly', async ({page}) => {
         await login(page);
         await page.goto('/');
-        const trigger = page.locator('article[aria-label="View details for E2E Alpha Corp"]');
+        const trigger = page.locator('article[aria-label="View company: E2E Alpha Corp"]');
         const historyBefore = await page.evaluate(() => window.history.length);
         await trigger.click();
 

@@ -1430,7 +1430,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         onChange={this.handleFilterChange}
                     />
                     <span className="organization-filter-full">First vesting &lt; 1 year</span>
-                    <span className="organization-filter-short" aria-hidden="true">Vests &lt; 1 yr</span>
+                    <span className="organization-filter-short">Vests &lt; 1 yr</span>
                 </label>
                 {this.props.isAuthenticated && !isEmpty && (
                     <button type="button" className="btn btn-outline-secondary rankings-suggest"
@@ -1453,7 +1453,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span className="choices-status-text">Loading labels…</span></div>}
                     </div>
                     {pageCount > 1 && <div className="rankings-toolbar-pager">{renderPager('top')}</div>}
-                    <div className="choices-status-slot">
+                    <div className="choices-status-slot" role="status">
                         {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-warning py-1 px-2 mb-0" data-testid="choices-status-error">
                             <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
                             <button type="button" className="btn btn-outline-light btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry labels</button>
@@ -1491,7 +1491,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     <span className="organization-list-header-evidence">Evidence</span>
                     <span className="organization-list-header-score">Score</span>
                 </div>
-                <ol className="organization-list" aria-label="Organization rankings">
+                <ol className="organization-list" role="list" aria-label="Organization rankings">
                     {currentOrganizations.map(org => {
                         const score = Number(org.avg_score);
                         return (<li key={org.id} className="organization-item">
@@ -1506,7 +1506,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             }}
                             tabIndex={0}
                             role="button"
-                            aria-label={`View details for ${org.name}`}
+                            aria-label={`View company: ${org.name}`}
                             aria-describedby={`organization-summary-${org.id}`}
                             data-organization-id={org.id}
                         >

@@ -183,7 +183,7 @@ test.describe('assistant actions (issue #484)', () => {
 
     test('applying one action leaves the other action of the same reply usable', async ({page}) => {
         await login(page);
-        await page.getByRole('button', {name: /View details for E2E Beta/}).first().click();
+        await page.getByRole('button', {name: /View company: E2E Beta/}).first().click();
         await page.getByRole('link', {name: /Ask the assistant about E2E Beta/}).click();
         await expect(page.getByTestId('assistant-panel')).toBeVisible();
         await ask(page, 'Show only remote companies and open it');
@@ -204,7 +204,7 @@ test.describe('assistant actions (issue #484)', () => {
 
     test('Open, return to results, then Apply: the sibling stays usable whatever the click order', async ({page}) => {
         await login(page);
-        await page.getByRole('button', {name: /View details for E2E Beta/}).first().click();
+        await page.getByRole('button', {name: /View company: E2E Beta/}).first().click();
         await page.getByRole('link', {name: /Ask the assistant about E2E Beta/}).click();
         await expect(page.getByTestId('assistant-panel')).toBeVisible();
         await ask(page, 'Show only remote companies and open it');
@@ -230,7 +230,7 @@ test.describe('assistant actions (issue #484)', () => {
 
     test('an open_company suggestion reopens the company view from the assistant', async ({page}) => {
         await login(page);
-        await page.getByRole('button', {name: /View details for E2E Alpha/}).first().click();
+        await page.getByRole('button', {name: /View company: E2E Alpha/}).first().click();
         await page.getByRole('link', {name: /Ask the assistant about E2E Alpha/}).click();
         await expect(page.getByTestId('assistant-panel')).toBeVisible();
         // 486b: Ask keeps the view open; leave it so the suggestion has to reopen it.
@@ -247,7 +247,7 @@ test.describe('assistant actions (issue #484)', () => {
     test('an assistant company card has "View company": it opens the view on the rankings and navigates from the chat page', async ({page}) => {
         await login(page);
         await page.goto('/');
-        const alphaId = await page.locator('article[aria-label="View details for E2E Alpha Corp"]')
+        const alphaId = await page.locator('article[aria-label="View company: E2E Alpha Corp"]')
             .locator('visible=true').first().getAttribute('data-organization-id');
         expect(alphaId).not.toBeNull();
         // The reply is the real one; only its results gain a company card. The page's own fetch is

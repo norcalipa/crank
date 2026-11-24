@@ -185,7 +185,7 @@ for (const width of mobileViewports) {
             await expectHitTestable(page, '#organization-search', 'organization search input');
             await expectHitTestable(page, '#acceleratedVesting', 'accelerated vesting checkbox');
             // Mobile shows the same row list as a stacked card; the opener is an article (role=button).
-            await expectHitTestable(page, 'article[aria-label^="View details for"]', 'organization card details opener');
+            await expectHitTestable(page, 'article[aria-label^="View company:"]', 'organization card details opener');
 
             // Long names are cut with an ellipsis (the full name stays in the
             // title) instead of widening the document. Target the deliberately
@@ -252,9 +252,9 @@ test.describe('zoom resilience (mobile 375px)', () => {
         // sits below the fold in normal flow; a user scrolls to it, so
         // assert reachability after scrolling (same pattern as the
         // composer below).
-        const opener = page.locator('article[aria-label^="View details for"]').first();
+        const opener = page.locator('article[aria-label^="View company:"]').first();
         await opener.scrollIntoViewIfNeeded();
-        await expectHitTestable(page, 'article[aria-label^="View details for"]', 'details opener at 200% text zoom');
+        await expectHitTestable(page, 'article[aria-label^="View company:"]', 'details opener at 200% text zoom');
 
         await page.goto(CHAT_FIXTURE);
         await page.addStyleTag({content: 'html { font-size: 200% !important; }'});

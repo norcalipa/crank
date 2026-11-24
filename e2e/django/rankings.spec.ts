@@ -152,7 +152,8 @@ test('on a phone the first card clears y=300 and three cards fit the first scree
     const rows = page.locator('ol.organization-list > li > .organization-row');
     await expect(rows).toHaveCount(4);
     await expect(page.locator('.rankings-toolbar-pager')).toBeHidden();
-    await expect(page.locator('.organization-page-count')).toBeHidden();
+    await expect(page.locator('.rankings-pager-bottom')).toHaveCount(0);
+    await expect(page.locator('.rankings-toolbar-count-text')).toContainText('Showing 1–4 of 4 companies');
     const top = await rows.first().evaluate((el) => el.getBoundingClientRect().top);
     expect(top).toBeLessThanOrEqual(300);
     const fitting = await rows.evaluateAll((els) => els.filter((el) => el.getBoundingClientRect().bottom <= window.innerHeight).length);

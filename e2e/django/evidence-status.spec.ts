@@ -9,7 +9,7 @@ requireDjangoTier();
 
 async function openDialog(page: Page, name: string) {
     await page.goto('/');
-    await page.getByRole('button', {name: `View details for ${name}`}).locator('visible=true').first().click();
+    await page.getByRole('button', {name: `View company: ${name}`}).locator('visible=true').first().click();
     const view = page.getByTestId('company-view');
     await expect(view).toBeVisible();
     return view;
@@ -28,7 +28,7 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
         test('rankings show coverage, evidence chips and pending review without overflow', async ({page}) => {
             await page.goto('/');
             const list = results(page);
-            const beta = list.getByRole('button', {name: 'View details for E2E Beta Labs'}).locator('visible=true').first();
+            const beta = list.getByRole('button', {name: 'View company: E2E Beta Labs'}).locator('visible=true').first();
             // The coverage most rows share is said once, on the count line; a row
             // repeats it only when it differs.
             const common = (await page.getByTestId('organization-common-coverage').first().innerText()).replace(/^[\s·]*most rated on /, '').trim();
@@ -40,7 +40,7 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             await expect(beta).toContainText('2 stale');
             await expect(beta).toContainText('5 unknown');
             await expect(beta).toContainText('Pending review');
-            const gamma = list.getByRole('button', {name: 'View details for E2E Gamma Works'}).locator('visible=true').first();
+            const gamma = list.getByRole('button', {name: 'View company: E2E Gamma Works'}).locator('visible=true').first();
             await coverage(gamma, '1 of 2');
             // Nothing verified: one muted chip, never a row of zero counts.
             await expect(gamma).toContainText(/Not yet verified|Never checked/);

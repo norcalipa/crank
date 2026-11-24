@@ -164,7 +164,7 @@ describe('OrganizationList', () => {
     test('each row shows tile, name, meta line, score with bar and the View company action', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        const row = (await screen.findByRole('button', { name: 'View details for Organization 1' }));
+        const row = (await screen.findByRole('button', { name: 'View company: Organization 1' }));
         expect(within(row).getByText('O')).toBeInTheDocument();
         expect(row.querySelector('.organization-tile')).toHaveTextContent('O');
         expect(row.querySelector('.organization-rank')).toHaveTextContent('1');
@@ -177,7 +177,7 @@ describe('OrganizationList', () => {
             expect(row.querySelector('.organization-meta')?.textContent).toBe('SeedRemote');
         });
         expect(screen.getByTestId('organization-common-coverage')).toHaveTextContent('most rated on 80%');
-        const other = screen.getByRole('button', {name: 'View details for Organization 2'});
+        const other = screen.getByRole('button', {name: 'View company: Organization 2'});
         expect(other.querySelector('.organization-meta')).toHaveTextContent('Rated on 70%');
     });
 
@@ -197,8 +197,8 @@ describe('OrganizationList', () => {
             {...organizations[0], id: 12, name: 'Under', avg_score: -1},
         ]} />);
 
-        const over = await screen.findByRole('button', { name: 'View details for Over' });
-        const under = screen.getByRole('button', { name: 'View details for Under' });
+        const over = await screen.findByRole('button', { name: 'View company: Over' });
+        const under = screen.getByRole('button', { name: 'View company: Under' });
         expect(over.querySelector('.organization-score-bar > span')).toHaveStyle({width: '100%'});
         expect(under.querySelector('.organization-score-bar > span')).toHaveStyle({width: '0%'});
     });
@@ -206,14 +206,14 @@ describe('OrganizationList', () => {
     test('a name without a letter still gets a tile mark', async () => {
         render(<OrganizationList organizations={[{...organizations[0], id: 13, name: '   '}]} />);
 
-        const row = await screen.findByRole('button', { name: /View details for/ });
+        const row = await screen.findByRole('button', { name: /View company:/ });
         expect(row.querySelector('.organization-tile')).toHaveTextContent('?');
     });
 
     test('the rows are announced with rank and score', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        const row = await screen.findByRole('button', { name: 'View details for Organization 2' });
+        const row = await screen.findByRole('button', { name: 'View company: Organization 2' });
         const summary = document.getElementById(row.getAttribute('aria-describedby') as string) as HTMLElement;
         expect(summary).toHaveTextContent('Rank 2. Company score 3.50 of 5.');
         expect(summary).toHaveClass('visually-hidden');
@@ -222,7 +222,7 @@ describe('OrganizationList', () => {
     test('a string score from the server renders as a number', async () => {
         render(<OrganizationList organizations={[{...organizations[0], avg_score: '4.31' as unknown as number}]} />);
 
-        const row = await screen.findByRole('button', { name: 'View details for Organization 1' });
+        const row = await screen.findByRole('button', { name: 'View company: Organization 1' });
         expect(row.querySelector('.organization-score-value')).toHaveTextContent('4.31');
     });
 
@@ -238,7 +238,7 @@ describe('OrganizationList', () => {
     test('opens organization details from the keyboard-accessible row control', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        const rows = await screen.findAllByRole('button', { name: 'View details for Organization 1' });
+        const rows = await screen.findAllByRole('button', { name: 'View company: Organization 1' });
         expect(rows.length).toBe(1);
         expect(rows[0]).toHaveAttribute('tabindex', '0');
 
@@ -264,7 +264,7 @@ describe('OrganizationList', () => {
     test.each([['Enter', 'Enter'], ['Space', ' ']])('row keyboard navigation opens popup on %s', async (_name, key) => {
         render(<OrganizationList organizations={organizations} />);
 
-        const row = await screen.findByRole('button', { name: 'View details for Organization 1' });
+        const row = await screen.findByRole('button', { name: 'View company: Organization 1' });
         fireEvent.keyDown(row, { key });
         expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
     });
@@ -272,7 +272,7 @@ describe('OrganizationList', () => {
     test('other keys on a row do nothing', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        const row = await screen.findByRole('button', { name: 'View details for Organization 1' });
+        const row = await screen.findByRole('button', { name: 'View company: Organization 1' });
         fireEvent.keyDown(row, { key: 'a' });
         expect(global.fetch).not.toHaveBeenCalledWith('/api/organizations/1/');
     });
@@ -280,7 +280,7 @@ describe('OrganizationList', () => {
     test('row has role button, tabindex and aria-label', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        const row = await screen.findByRole('button', { name: 'View details for Organization 1' });
+        const row = await screen.findByRole('button', { name: 'View company: Organization 1' });
         expect(row.tagName).toBe('ARTICLE');
         expect(row.getAttribute('role')).toBe('button');
         expect(row.getAttribute('tabindex')).toBe('0');
@@ -1555,6 +1555,36 @@ describe('OrganizationList', () => {
             height.mockRestore();
         });
 
+        test('with huge slack the doubling stops after 8 passes and nothing is given back', async () => {
+            const region = () => screen.getByTestId('organization-results-region');
+            const height = jest.spyOn(document.documentElement, 'scrollHeight', 'get');
+            // The content ends 100000px above the bottom of the window: 8 passes cannot reach it.
+            height.mockImplementation(() => Math.max(window.innerHeight, window.innerHeight - 100000 + (parseFloat(region().style.paddingBottom) || 0)));
+            mount();
+            await foundNotice();
+            expect(scrollBy).toHaveBeenCalledWith({top: 80, left: 0, behavior: 'instant'});
+            // 80 * (1 + 2 + ... + 128) over 8 passes, and the room is still 0, so no give-back.
+            expect(region().style.paddingBottom).toBe('20400px');
+            height.mockRestore();
+        });
+
+        test.each([
+            // slack 1: the room lands 1px short of delta + 2 (negative spare): nothing is given back.
+            [1, '82px'],
+            // slack 2: the room lands exactly on delta + 2 (spare 0): nothing is given back.
+            [2, '84px'],
+            // slack 3: 1px of spare is given back.
+            [3, '85px'],
+        ])('a page with %ipx of slack lands on %s of padding (the give-back needs spare > 0)', async (slack, expected) => {
+            const region = () => screen.getByTestId('organization-results-region');
+            const height = jest.spyOn(document.documentElement, 'scrollHeight', 'get');
+            height.mockImplementation(() => Math.max(window.innerHeight, window.innerHeight - slack + (parseFloat(region().style.paddingBottom) || 0)));
+            mount();
+            await foundNotice();
+            expect(region().style.paddingBottom).toBe(expected);
+            height.mockRestore();
+        });
+
         test('a page with room to scroll gets no extra room', async () => {
             const height = jest.spyOn(document.documentElement, 'scrollHeight', 'get');
             height.mockReturnValue(window.innerHeight + 500);
@@ -2239,7 +2269,7 @@ describe('OrganizationList', () => {
             expect(screen.getByTestId('page-link-2')).toHaveAttribute('aria-current', 'page');
             expect(window.history.state.crankPosition).toMatchObject({anchor: '2', anchorOffset: 120});
             await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: 380, behavior: 'instant'}));
-            const row = screen.getAllByRole('button', {name: 'View details for Organization 2'})[0];
+            const row = screen.getAllByRole('button', {name: 'View company: Organization 2'})[0];
             await waitFor(() => expect(row).toHaveFocus());
         });
 
@@ -2374,7 +2404,7 @@ describe('OrganizationList', () => {
             act(() => window.history.back());
             await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
 
-            const row = screen.getAllByRole('button', {name: 'View details for Organization 2'})[0];
+            const row = screen.getAllByRole('button', {name: 'View company: Organization 2'})[0];
             await waitFor(() => expect(row).toHaveFocus());
         });
 
@@ -2391,7 +2421,7 @@ describe('OrganizationList', () => {
             expect(backSpy).not.toHaveBeenCalled();
             await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
             expect(window.location.search).toBe('?search=Organization');
-            await waitFor(() => expect(screen.getAllByRole('button', {name: 'View details for Organization 1'})[0]).toHaveFocus());
+            await waitFor(() => expect(screen.getAllByRole('button', {name: 'View company: Organization 1'})[0]).toHaveFocus());
         });
 
         test('with the opened row off the page, focus lands on the results region instead', async () => {
@@ -2426,7 +2456,7 @@ describe('OrganizationList', () => {
         });
 
         describe('where the results land and which row takes focus (issue #486)', () => {
-            const rowOf = (name: string) => screen.getAllByRole('button', {name: `View details for ${name}`})[0];
+            const rowOf = (name: string) => screen.getAllByRole('button', {name: `View company: ${name}`})[0];
             // jsdom ignores `hidden`: a row inside the hidden results region
             // has no box, as in a browser, so only what is shown can be an anchor.
             const layOutLikeABrowser = () => rectSpy.mockImplementation(function (this: HTMLElement) {
@@ -2996,7 +3026,7 @@ describe('OrganizationList', () => {
                 window.sessionStorage.clear();
             });
 
-            const rowOf = (name: string) => screen.getAllByRole('button', {name: `View details for ${name}`})[0];
+            const rowOf = (name: string) => screen.getAllByRole('button', {name: `View company: ${name}`})[0];
             const openFromRow = async (name = 'Organization 1') => {
                 fireEvent.click(screen.getAllByText(name)[0]);
                 await screen.findByTestId('popup-details-grid');
@@ -3381,14 +3411,14 @@ describe('OrganizationList', () => {
     });
 
     describe('RTO filter and assistant filter target (issue #484)', () => {
-        const rowNames = () => screen.getAllByRole('button', {name: /View details for/})
+        const rowNames = () => screen.getAllByRole('button', {name: /View company:/})
             .map((el) => el.getAttribute('aria-label'));
 
         test('rto=R in the URL filters the rows, shows the chip and reports the filter', async () => {
             window.history.replaceState({}, '', '/?rto=R');
             render(<OrganizationList organizations={organizations} currentAlgorithmId={3} />);
             // One row for the single remote organization.
-            expect(rowNames()).toEqual(['View details for Organization 1']);
+            expect(rowNames()).toEqual(['View company: Organization 1']);
             expect(screen.getByText(/Showing 1–1 of 1 companies/)).toBeInTheDocument();
             await waitFor(() => expect(screen.getByTestId('filter-chip-rto')).toHaveTextContent('RTO policy: Remote'));
             expect(screen.getByRole('button', {name: 'Remove filter: RTO policy Remote'})).toBeInTheDocument();
@@ -3427,7 +3457,7 @@ describe('OrganizationList', () => {
             expect(applied).toBe(true);
             expect(pushSpy).toHaveBeenCalledTimes(1);
             expect(pushSpy).toHaveBeenCalledWith({}, '', expect.stringMatching(/[?&]rto=R(&|$)/));
-            expect(rowNames()).toEqual(['View details for Organization 1']);
+            expect(rowNames()).toEqual(['View company: Organization 1']);
             expect(screen.getByRole('button', {name: 'Remove filter: RTO policy Remote'})).toBeInTheDocument();
             await waitFor(() => expect(getWorkspaceSnapshot().context?.filters).toEqual({rtoPolicy: 'R'}));
             // Re-applying the same filter changes nothing and adds no entry.
@@ -3478,7 +3508,7 @@ describe('OrganizationList', () => {
             window.history.replaceState({}, '', '/?rto=H');
             render(<OrganizationList organizations={organizations}
                                      rankingPresets={[{id: 1, name: 'A'}, {id: 2, name: 'B'}]} currentAlgorithmId={1} />);
-            expect(rowNames()).toEqual(['View details for Organization 2']);
+            expect(rowNames()).toEqual(['View company: Organization 2']);
             Object.defineProperty(window, 'location', {
                 value: {...originalLocation, pathname: '/', search: '?rto=H', hash: '', assign},
                 writable: true, configurable: true,
@@ -3820,6 +3850,34 @@ describe('OrganizationList', () => {
             expect(select).toHaveValue('1');
         });
 
+        test('the vesting toggle is named by the words it shows: the long label is hidden, not the short one, on phones', () => {
+            render(<OrganizationList organizations={organizations} />);
+            const full = document.querySelector('.organization-filter-full') as HTMLElement;
+            const short = document.querySelector('.organization-filter-short') as HTMLElement;
+            expect(full).toHaveTextContent('First vesting < 1 year');
+            expect(short).toHaveTextContent('Vests < 1 yr');
+            // Neither is aria-hidden: CSS shows exactly one at each width, and display:none
+            // removes the other from the name, so the name holds the visible text.
+            expect(full).not.toHaveAttribute('aria-hidden');
+            expect(short).not.toHaveAttribute('aria-hidden');
+        });
+
+        test('the ranked list keeps list semantics and each row is named "View company: <name>"', () => {
+            render(<OrganizationList organizations={organizations} />);
+            const list = screen.getByRole('list', {name: 'Organization rankings'});
+            expect(list.tagName).toBe('OL');
+            expect(list).toHaveAttribute('role', 'list');
+            expect(screen.getByRole('button', {name: 'View company: Organization 1'})).toHaveAttribute('aria-label', 'View company: Organization 1');
+        });
+
+        test('the sort select drops a trailing " Algorithm" from a preset name, and keeps a name that is only that word', () => {
+            render(<OrganizationList organizations={organizations}
+                                     rankingPresets={[{id: 1, name: 'Culture-focused Algorithm'}, {id: 2, name: ' Algorithm'}, {id: 3, name: 'Balanced'}]}
+                                     currentAlgorithmId={1} />);
+            const options = Array.from(within(screen.getByTestId('ranking-preset-select')).getAllByRole('option')).map(o => o.textContent);
+            expect(options).toEqual(['Culture-focused', ' Algorithm', 'Balanced']);
+        });
+
         test('chips render with accessible names and removing them updates list and URL', () => {
             window.history.replaceState({}, '', '/?search=Organization&accelerated_vesting=1');
             render(<OrganizationList organizations={organizations} />);
@@ -3873,7 +3931,7 @@ describe('OrganizationList', () => {
 
         test('the score is named after the current preset and the select reads Sort by', () => {
             render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={2} />);
-            const row = screen.getByRole('button', {name: 'View details for Organization 1'});
+            const row = screen.getByRole('button', {name: 'View company: Organization 1'});
             expect(document.getElementById(row.getAttribute('aria-describedby') as string)).toHaveTextContent('Company score (Culture) 4.50 of 5.');
             expect(screen.getByLabelText('Sort by')).toHaveValue('2');
         });
@@ -3972,13 +4030,33 @@ describe('OrganizationList', () => {
             consoleSpy.mockRestore();
         });
 
+        test('a failed label load and a failed retry are announced: the error sits in a polite status region that outlives it', async () => {
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            global.fetch = jest.fn().mockImplementation(() => Promise.resolve({ok: false, status: 500, json: () => Promise.resolve({})}));
+            render(<OrganizationList organizations={organizations} />);
+            const slot = document.querySelector('.choices-status-slot') as HTMLElement;
+            // The region exists before the message does, so adding text is announced.
+            expect(slot).toHaveAttribute('role', 'status');
+            expect(slot).toBeEmptyDOMElement();
+            const error = await screen.findByTestId('choices-status-error');
+            expect(error.closest('[role="status"]')).toBe(slot);
+            fireEvent.click(within(error).getByRole('button', {name: 'Retry labels'}));
+            // A failed retry puts the message back into the same region.
+            const again = await screen.findByTestId('choices-status-error');
+            expect(again.closest('[role="status"]')).toBe(slot);
+            expect(slot).toHaveTextContent("Couldn't load funding round and RTO labels");
+            // The count line's region stays the only explicit aria-live.
+            expect(document.querySelectorAll('[aria-live]').length).toBe(1);
+            consoleSpy.mockRestore();
+        });
+
         test('while labels load, each row keeps its shape with skeleton placeholders in the meta line', async () => {
             let release: (value: unknown) => void = () => {};
             global.fetch = jest.fn().mockImplementation((url: string) => (
                 url === '/api/funding-round-choices/' ? new Promise(resolve => { release = resolve; }) : okChoices(url)
             ));
             render(<OrganizationList organizations={organizations} />);
-            const row = screen.getByRole('button', {name: 'View details for Organization 1'});
+            const row = screen.getByRole('button', {name: 'View company: Organization 1'});
             expect(row.querySelectorAll('.organization-meta [data-testid="choice-skeleton"]').length).toBeGreaterThan(0);
             // The rest of the row is already real: name, score, chips and action.
             expect(row.querySelector('.organization-score-value')).toHaveTextContent('4.50');
@@ -3992,7 +4070,7 @@ describe('OrganizationList', () => {
             global.fetch = jest.fn().mockImplementation(() => Promise.resolve({ok: false, status: 500, json: () => Promise.resolve({})}));
             render(<OrganizationList organizations={organizations} />);
             await screen.findByTestId('choices-status-error');
-            const row = screen.getByRole('button', {name: 'View details for Organization 1'});
+            const row = screen.getByRole('button', {name: 'View company: Organization 1'});
             expect(row.querySelector('.organization-meta')).toHaveTextContent('SR');
             consoleSpy.mockRestore();
         });
@@ -4104,7 +4182,7 @@ describe('OrganizationList', () => {
         test('rows show coverage and evidence chips, never zero counts', async () => {
             render(<OrganizationList organizations={evidenceOrgs}/>);
             const list = await screen.findByRole('list', {name: 'Organization rankings'});
-            const row = (name: string) => within(list).getByRole('button', {name: `View details for ${name}`});
+            const row = (name: string) => within(list).getByRole('button', {name: `View company: ${name}`});
             const chips = (name: string) => Array.from(row(name).querySelectorAll('.crank-chip:not(.crank-chip--more)')).map(chip => chip.textContent);
             const folds = (name: string) => Array.from(row(name).querySelectorAll('.crank-chip--more')).map(chip => chip.textContent);
             // "2 of 2" is the first of four different values, so it is the one said on the count line.
@@ -4130,7 +4208,7 @@ describe('OrganizationList', () => {
                 {...organizations[0], id: 22, name: 'Undated Co', evidence: null},
             ];
             render(<OrganizationList organizations={withDates} rankingPresets={[{id: 3, name: 'Balanced'}]} currentAlgorithmId={3}/>);
-            const row = (name: string) => screen.getByRole('button', {name: `View details for ${name}`});
+            const row = (name: string) => screen.getByRole('button', {name: `View company: ${name}`});
             expect(row('Dated Co').querySelector('.organization-checked')).toHaveTextContent('Checked Nov 20, 2026');
             // Never checked is said once, by the chip: no caption repeats it.
             expect(row('Undated Co').querySelector('.organization-checked')).toBeNull();
@@ -4151,7 +4229,7 @@ describe('OrganizationList', () => {
             try {
                 const late = {...evidenceOrgs[0], evidence: summary({verified: 3, unknown: 4, last_verified_at: '2025-01-05T03:00:00Z'})};
                 render(<OrganizationList organizations={[late]}/>);
-                const row = await screen.findByRole('button', {name: 'View details for Verified Co'});
+                const row = await screen.findByRole('button', {name: 'View company: Verified Co'});
                 expect(document.getElementById(row.getAttribute('aria-describedby') as string)).toHaveTextContent('Last verified Jan 5, 2025.');
             } finally {
                 spy.mockRestore();
@@ -4166,7 +4244,7 @@ describe('OrganizationList', () => {
                 expect(ids.length).toBeGreaterThan(0);
                 return ids.map(id => document.getElementById(id)?.textContent).join(' ');
             };
-            const row = (name: string) => within(table).getByRole('button', {name: `View details for ${name}`});
+            const row = (name: string) => within(table).getByRole('button', {name: `View company: ${name}`});
             expect(describe(row('Verified Co'))).toBe(
                 'Rank 1. Company score 4.50 of 5. Rating coverage 2 of 2. Facts: 3 verified, 0 stale, 4 unknown. Last verified Jan 5, 2025.');
             expect(describe(row('Stale Co'))).toBe(

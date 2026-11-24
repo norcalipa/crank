@@ -36,7 +36,7 @@ test.describe.serial('sanitized captures', () => {
                 fullPage: false,
             });
             if (bp.width >= 768) {
-                await page.getByRole('button', {name: 'View details for E2E Alpha Corp'}).first().click();
+                await page.getByRole('button', {name: 'View company: E2E Alpha Corp'}).first().click();
                 await expect(page.getByTestId('company-view')).toBeVisible();
                 await page.screenshot({
                     path: `${captureDir}/dialog-evidence-${bp.name}.png`,

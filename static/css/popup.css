@@ -6032,6 +6032,12 @@ span.priority-chip-button { cursor: default; }
     --bs-btn-focus-shadow-rgb: 96, 165, 250;
 }
 
+/* The overridden --bs-primary-rgb (#60a5fa) is a light blue: Bootstrap's white
+   .text-bg-primary ink falls to 2.54:1 (Job Search "N new" badge). Dark ink is 7.36:1. */
+[data-bs-theme="dark"] .text-bg-primary {
+    color: #0b1220 !important;
+}
+
 [data-bs-theme="dark"] .btn-outline-primary {
     --bs-btn-color: #93c5fd;
     --bs-btn-border-color: #60a5fa;
@@ -6097,8 +6103,9 @@ span.priority-chip-button { cursor: default; }
     border-color: #64748b;
 }
 
-/* The long words on a wide screen; "Vests < 1 yr" on a phone (the long words
-   stay as the control's accessible name). */
+/* The long words on a wide screen; "Vests < 1 yr" on a phone. Only one is
+   rendered at a time (display:none removes the other from the accessible name),
+   so the name always contains the visible text (WCAG 2.5.3). */
 .organization-filter-short {
     display: none;
 }
@@ -6261,13 +6268,7 @@ span.priority-chip-button { cursor: default; }
     }
 
     .organization-filter-full {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0, 0, 0, 0);
-        white-space: nowrap;
+        display: none;
     }
 
     .organization-filter-short {
@@ -6341,4 +6342,17 @@ span.priority-chip-button { cursor: default; }
 @media (max-width: 359.98px) {
     .rankings-toolbar-count-text { font-size: .75rem; }
     .organization-results-count { min-height: calc(3em + 1.5rem); }
+}
+
+/* High-contrast (forced colors) mode: the score bar fill and the tinted chips
+   would flatten into the background, so give them system colors and a border. */
+@media (forced-colors: active) {
+    .organization-score-bar > span {
+        background: CanvasText;
+        forced-color-adjust: none;
+    }
+
+    .crank-chip {
+        border: 1px solid CanvasText;
+    }
 }

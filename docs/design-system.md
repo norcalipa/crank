@@ -51,7 +51,7 @@ correctly.
 
 | Piece | Class | Notes |
 | --- | --- | --- |
-| Row | `.organization-row` | `role="button"`, `tabindex="0"`, `aria-label="View details for <name>"`, `aria-describedby` points at a visually hidden summary that begins "Rank N." |
+| Row | `.organization-row` | `role="button"`, `tabindex="0"`, `aria-label="View company: <name>"`, `aria-describedby` points at a visually hidden summary that begins "Rank N." |
 | Rank | `.organization-rank` | Decorative; the rank is spoken through the summary and the ordered list |
 | Logo tile | `.organization-tile` | The company's first letter (no logo is stored) |
 | Name | `.organization-name` | One line on wide rows (a fixed row height), clamped to 2 lines on a phone card; full name in `title` |
@@ -94,7 +94,7 @@ Toolbar: one control row (search, "Sort by" preset select, the vesting filter as
 a toggle chip), then one line holding the result count and the compact pager
 (both pagers right-aligned); a label-loading or error message takes its own full-width line after
 them, so the pager never moves. "Page N of M" is not shown whenever a pager is visible (the pager names the page). Below 576px the top pager is
-hidden, the subtitle is hidden, the count line is one line: "most rated on N of M" gives way to the loading words or the "Updated" mark and is dropped for a count of 100 or more (`.organization-results-count--long`), which has no room for it; the vesting toggle reads "Vests < 1 yr" (the full words stay its accessible name), the preset select shows a short label ("Culture-focused", not "... Algorithm"), "Sort by" is visually hidden (still the select's name) and shares a line
+hidden, the subtitle is hidden, the count line is one line: "most rated on N of M" gives way to the loading words or the "Updated" mark and is dropped for a count of 100 or more (`.organization-results-count--long`), which has no room for it; the vesting toggle reads "Vests < 1 yr" (the full words are hidden below 576px, so the accessible name is always the visible text), the preset select shows a short label ("Culture-focused", not "... Algorithm"), "Sort by" is visually hidden (still the select's name) and shares a line
 with the vesting toggle, and "Suggest a company" moves under the list. "How ranking works" is a small inline
 disclosure link beside the subtitle (`.how-ranking-works--inline`), never a
 full-width bar.

@@ -210,7 +210,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await login(page);
         await page.goto('/');
         await page.evaluate(() => {
-            document.querySelector<HTMLElement>('article[aria-label="View details for E2E Alpha Corp"]')?.click();
+            document.querySelector<HTMLElement>('article[aria-label="View company: E2E Alpha Corp"]')?.click();
         });
         await expect(page.getByTestId('company-view')).toBeVisible();
         const before = await page.evaluate(() => Math.round(window.scrollY));

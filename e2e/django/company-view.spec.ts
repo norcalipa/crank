@@ -9,7 +9,7 @@ import {expect, test, Page} from '@playwright/test';
 import {expectNoHorizontalOverflow, login, requireDjangoTier} from './support';
 
 const COMPANY = 'E2E Alpha Corp';
-const ROW = `article[aria-label="View details for ${COMPANY}"]`;
+const ROW = `article[aria-label="View company: ${COMPANY}"]`;
 
 const view = (page: Page) => page.getByTestId('company-view');
 const companyParam = (page: Page) => page.evaluate(() => new URLSearchParams(window.location.search).get('company'));
@@ -368,7 +368,7 @@ test.describe('company view (issue #486b)', () => {
         before.chip = await page.getByTestId('filter-chip-rto').count();
         expect(before).toMatchObject({search: 'E2E', rto: 'R', company: null, box: 'E2E', chip: 1});
         // Whichever row the filter leaves first: the assertions are about that row.
-        const row = page.locator('article[aria-label^="View details for"]').locator('visible=true').first();
+        const row = page.locator('article[aria-label^="View company:"]').locator('visible=true').first();
         await row.scrollIntoViewIfNeeded();
         const top = (await row.boundingBox())!.y;
 
@@ -487,7 +487,7 @@ test.describe('company view (issue #486b)', () => {
         });
     }
 
-    const listRow = (page: Page) => page.locator('article[aria-label^="View details for"]').locator('visible=true').last();
+    const listRow = (page: Page) => page.locator('article[aria-label^="View company:"]').locator('visible=true').last();
     const detailUrl = /\/api\/organizations\/\d+\/$/;
     // The seeded rating source is active but not a ranked row, so only its
     // detail request can say what it is: the one company a failing request can break.
@@ -501,10 +501,8 @@ test.describe('company view (issue #486b)', () => {
 
     for (const path of ['/', '/algo/2/']) {
         for (const size of [
-            // Wide: the title row stays above the view, carrying the Assistant
-            // entry (a 44px control), so the view starts below that band.
-            {width: 1280, height: 900, top: 104},
-            {width: 1024, height: 800, top: 104},
+            {width: 1280, height: 900, top: 56},
+            {width: 1024, height: 800, top: 56},
             {width: 375, height: 667, top: 80},
             {width: 320, height: 640, top: 80},
         ]) {
@@ -582,7 +580,7 @@ test.describe('company view (issue #486b)', () => {
             for (const assistant of width >= 768 ? ['closed', 'open'] : ['closed']) {
                 await page.goto('/');
                 if (assistant === 'open') await page.locator('[data-testid="assistant-launcher"]').click();
-                await page.locator('article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
+                await page.locator('article[aria-label="View company: E2E Beta Labs"]').locator('visible=true').first().click();
                 await expect(view(page).getByTestId('provenance-section')).toBeVisible();
                 await view(page).locator('details').evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLDetailsElement).open = true; }));
                 const result = await measureRows(page);
@@ -888,7 +886,7 @@ test.describe('company view (issue #486b)', () => {
         await page.goto('/');
         // The first row, scrolled to the top of the screen: a position to lose, and far from the end of
         // the page, where the sheet's own change of the page's height (the bar under it) would clamp it.
-        const row = page.locator('article[aria-label^="View details for"]').locator('visible=true').first();
+        const row = page.locator('article[aria-label^="View company:"]').locator('visible=true').first();
         await row.evaluate((node) => node.scrollIntoView({block: 'start', behavior: 'instant'}));
         await page.evaluate(() => window.scrollBy(0, -60));
         const before = await row.evaluate((node) => node.getBoundingClientRect().top);
@@ -1023,7 +1021,7 @@ test.describe('company view (issue #486b)', () => {
                 await page.goto('/');
                 if (wide) await page.addStyleTag({content: WIDE_FONT_CSS});
                 if (assistant === 'open') await page.locator('[data-testid="assistant-launcher"]').click();
-                await page.locator('article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
+                await page.locator('article[aria-label="View company: E2E Beta Labs"]').locator('visible=true').first().click();
                 await expect(view(page).getByTestId('provenance-section')).toBeVisible();
                 const m = await measureText(page);
                 expect(m.evidenceRows, `evidence rows (${assistant})`).toBeGreaterThan(0);
@@ -1053,7 +1051,7 @@ test.describe('company view (issue #486b)', () => {
                 await page.goto('/');
                 if (wide) await page.addStyleTag({content: WIDE_FONT_CSS});
                 if (size.assistant) await page.locator('[data-testid="assistant-launcher"]').click();
-                await page.locator('article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
+                await page.locator('article[aria-label="View company: E2E Beta Labs"]').locator('visible=true').first().click();
                 await expect(view(page).getByTestId('provenance-section')).toBeVisible();
 
                 const m = await page.evaluate(() => {
@@ -1116,7 +1114,7 @@ test.describe('company view (issue #486b)', () => {
                 status: 'pending', status_label: 'Pending review'}]);
             await page.goto('/');
             if (size.assistant) await page.locator('[data-testid="assistant-launcher"]').click();
-            await page.locator('article[aria-label="View details for E2E Beta Labs"]').locator('visible=true').first().click();
+            await page.locator('article[aria-label="View company: E2E Beta Labs"]').locator('visible=true').first().click();
             const pending = view(page).getByTestId('your-pending-corrections');
             await expect(pending).toContainText('Remote first');
             const rows = await pending.evaluate((section) => {
@@ -1169,7 +1167,7 @@ test.describe('company view fit, jobs and scope (issue #486c)', () => {
 
     const BETA = 'E2E Beta Labs';
     const openCompanyNamed = async (page: Page, name: string) => {
-        await page.locator(`article[aria-label="View details for ${name}"]`)
+        await page.locator(`article[aria-label="View company: ${name}"]`)
             .locator('visible=true').first().click();
         await expect(view(page)).toBeVisible();
     };
@@ -1531,7 +1529,7 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
 
             // Another company, a different path of the same requirements: a funding letter becomes a stage.
             await page.getByRole('button', {name: 'Back to results'}).click();
-            await page.locator(`article[aria-label="View details for E2E Beta Labs"]`)
+            await page.locator(`article[aria-label="View company: E2E Beta Labs"]`)
                 .locator('visible=true').first().click();
             await expect(page.getByTestId('fit-ready')).toBeVisible();
             await expect(value('funding_stage')).toHaveText('Series B');
@@ -1698,7 +1696,7 @@ test.describe('company view on a real server, round 2 (issue #486c)', () => {
         for (const size of [{width: 375, height: 667}, {width: 320, height: 640}, {width: 1280, height: 900}]) {
             await page.setViewportSize(size);
             await page.goto('/');
-            await page.locator('article[aria-label="View details for E2E Beta Labs"]')
+            await page.locator('article[aria-label="View company: E2E Beta Labs"]')
                 .locator('visible=true').first().click();
             await expect(page.getByTestId('jobs-empty')).toBeVisible();
             await expect(page.getByTestId('fit-ready')).toBeVisible();

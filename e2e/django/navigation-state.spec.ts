@@ -12,7 +12,7 @@ const STRIP = '[data-testid="assistant-context-strip"]';
 
 async function askAboutCompany(page: Page): Promise<void> {
     await page.goto('/');
-    await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+    await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
     await expect(page.getByTestId('company-view')).toBeVisible();
     await page.getByTestId('company-chat-cta').click();
     // 486b: Ask no longer closes the company view; it stays rendered.
@@ -33,7 +33,7 @@ function storeAccount(page: Page): Promise<{status: string; key: string} | null>
 
 async function companyIdFor(page: Page, name: string): Promise<string> {
     await page.goto('/');
-    await page.locator(`[aria-label="View details for ${name}"]:visible`).first().click();
+    await page.locator(`[aria-label="View company: ${name}"]:visible`).first().click();
     const href = await page.getByTestId('company-chat-cta').getAttribute('href');
     const match = /^\/chat\/\?company=(\d+)$/.exec(href ?? '');
     expect(match).not.toBeNull();
@@ -118,7 +118,7 @@ test.describe('navigation state (issue #479)', () => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page);
         await page.goto('/');
-        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
         const href = await page.getByTestId('company-chat-cta').getAttribute('href');
         expect(href).toMatch(/^\/chat\/\?company=\d+$/);
         await page.goto(href as string);
@@ -157,7 +157,7 @@ test.describe('navigation state (issue #479)', () => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page);
         await page.goto('/');
-        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
         await expect(page.getByTestId('company-view')).toBeVisible();
         await expect.poll(() => new URL(page.url()).searchParams.has('company')).toBe(true);
         const rankingsUrl = page.url();
@@ -393,7 +393,7 @@ test.describe('navigation state (issue #479)', () => {
             }).__crankWorkspace__?.snapshot?.context?.organizationId ?? null));
             await route.continue();
         });
-        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
         await page.getByTestId('company-chat-cta').click();
         await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
         await expect.poll(() => seenAtFirstFetch.length).toBeGreaterThan(0);
@@ -439,7 +439,7 @@ test.describe('navigation state (issue #479)', () => {
                 }
                 await route.continue();
             });
-            await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+            await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
             await page.getByTestId('company-chat-cta').click();
             const action = page.getByRole('button', {name: 'Start a conversation'});
             await expect(action).toBeVisible();
