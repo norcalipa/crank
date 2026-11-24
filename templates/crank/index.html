@@ -7,9 +7,13 @@
 {% block content %}
     {% if algorithm %}
         <div class="container homepage-container">
-            <h1 class="h4 mb-1" id="rankings-heading" tabindex="-1">Company rankings</h1>
-            <p class="text-muted mb-3">Compare companies by what matters to you, then open one to see the evidence.</p>
-            <details class="how-ranking-works mb-3" data-testid="how-ranking-works">
+            <div class="rankings-title-row">
+                <h1 class="rankings-title" id="rankings-heading" tabindex="-1">Company rankings</h1>
+                <span class="assistant-slot" data-assistant-slot="title"></span>
+            </div>
+            <div class="rankings-intro">
+            <p class="rankings-subtitle text-muted mb-0">Compare companies by what matters to you, then open one to see the evidence.</p>
+            <details class="how-ranking-works how-ranking-works--inline" data-testid="how-ranking-works">
                 <summary class="how-ranking-works-summary">How ranking works</summary>
                 <div class="how-ranking-works-content">
                     <h2 class="h6">{{ algorithm.name }}</h2>
@@ -62,6 +66,7 @@
                     </dl>
                 </div>
             </details>
+            </div>
             {{ ranking_presets|json_script:"ranking-presets" }}
             {% comment %}
             The full-page-cached shell renders auth-neutral for

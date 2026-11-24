@@ -17,7 +17,7 @@ async function openCompanyView(page: Page): Promise<void> {
     // cards instead. Pick whichever opener the current viewport renders.
     // Whichever is visible is resolved at each step rather than decided from
     // one read during page load, when neither layout has settled yet.
-    const opener = page.locator('tr.organization-row:visible, .organization-card:visible').first();
+    const opener = page.locator('.organization-row:visible').first();
     await expect(opener).toBeVisible();
     // Enter/Space on a company row opens the view (issue #464 validation).
     await opener.focus();
@@ -224,8 +224,8 @@ test.describe('company view in the main workspace (issues #464, #486) — deskto
         // that button, the four companies matching "a" (company 3 among them)
         // and no label placeholders left.
         await expect(page.getByTestId('suggest-company-btn')).toBeVisible();
-        await expect(page.locator('tr.organization-row:visible')).toHaveCount(4);
-        await expect(page.locator('tr.organization-row[data-organization-id="3"]')).toBeVisible();
+        await expect(page.locator('article.organization-row:visible')).toHaveCount(4);
+        await expect(page.locator('article.organization-row[data-organization-id="3"]')).toBeVisible();
         await expect(page.getByTestId('choice-skeleton')).toHaveCount(0);
         await page.evaluate(() => {
             document.documentElement.style.scrollBehavior = 'auto';
@@ -234,7 +234,7 @@ test.describe('company view in the main workspace (issues #464, #486) — deskto
             filler.style.cssText = 'height: 2400px;';
             document.querySelector('main.app-content')!.appendChild(filler);
         });
-        const row = page.locator('tr.organization-row:visible').nth(2);
+        const row = page.locator('article.organization-row:visible').nth(2);
         await row.scrollIntoViewIfNeeded();
         await page.evaluate(() => window.scrollBy(0, 40));
         const before = await anchorSnapshot(page, '3');
@@ -270,7 +270,7 @@ test.describe('company view in the main workspace (issues #464, #486) — deskto
 
         await expect(view(page)).toHaveCount(0);
         await expect.poll(() => companyParam(page)).toBeNull();
-        await expect(page.locator('tr.organization-row').first()).toBeFocused();
+        await expect(page.locator('article.organization-row').first()).toBeFocused();
         // Back moved within the entries the open added: forward is still possible.
         await page.goForward();
         await expect(view(page)).toBeVisible();
@@ -337,7 +337,7 @@ test.describe('company view in the main workspace (issues #464, #486) — deskto
         await view(page).getByRole('button', {name: 'Back to results'}).click();
         await expect(view(page)).toHaveCount(0);
         await expect.poll(() => companyParam(page)).toBeNull();
-        await expect(page.locator('tr.organization-row').first()).toBeVisible();
+        await expect(page.locator('article.organization-row').first()).toBeVisible();
     });
 });
 
@@ -365,8 +365,8 @@ test.describe('company view in the main workspace (issues #464, #486) — mobile
     test('the view opens via keyboard and Back to results returns focus to the opener card', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
 
-        // Mobile view renders cards instead of the table.
-        const card = page.locator('.organization-card').first();
+        // The same row, stacked as a card at phone width.
+        const card = page.locator('.organization-row').first();
         await expect(card).toBeVisible();
         await card.focus();
         await card.press('Enter');
@@ -374,7 +374,7 @@ test.describe('company view in the main workspace (issues #464, #486) — mobile
 
         await view(page).getByRole('button', {name: 'Back to results'}).click();
         await expect(view(page)).toHaveCount(0);
-        await expect(page.locator('.organization-card').first()).toBeFocused();
+        await expect(page.locator('.organization-row').first()).toBeFocused();
     });
 
     test('nothing is inert or scroll-locked and the document scrolls at mobile width', async ({page}) => {
@@ -445,25 +445,23 @@ test.describe('evidence states in the company view (#473a, #486, fixture tier)',
             .filter((n: any) => /Rating coverage \d+ of \d+/.test(n.description?.value ?? ''));
     };
 
-    test('table rows expose their evidence summary as the accessible description', async ({page, browserName}) => {
+    test('rows expose their evidence summary as the accessible description', async ({page, browserName}) => {
         test.skip(browserName !== 'chromium', 'CDP accessibility tree is Chromium-only');
         await page.goto(POPUP_FIXTURE);
-        await expect(page.locator('tr.organization-row').first()).toHaveAttribute('aria-describedby', /organization-summary-\d+/);
-        await expect(page.locator('.organization-cards')).toBeHidden();
+        await expect(page.locator('article.organization-row').first()).toHaveAttribute('aria-describedby', /organization-summary-\d+/);
         expect((await describedNodes(page, ['row', 'button'])).length).toBeGreaterThan(0);
     });
 
-    test('cards expose their evidence summary as the accessible description', async ({page, browserName}) => {
+    test('stacked rows at phone width expose their evidence summary as the accessible description', async ({page, browserName}) => {
         test.skip(browserName !== 'chromium', 'CDP accessibility tree is Chromium-only');
         await page.setViewportSize({width: 375, height: 800});
         await page.goto(POPUP_FIXTURE);
-        const card = page.locator('.organization-card').first();
+        const card = page.locator('.organization-row').first();
         await expect(card).toBeVisible();
-        await expect(card).toHaveAttribute('aria-describedby', /organization-card-summary-\d+/);
-        await expect(page.locator('tr.organization-row').first()).toBeHidden();
-        // Only cards are rendered at this width, so every described node is a card.
+        await expect(card).toHaveAttribute('aria-describedby', /organization-summary-\d+/);
+        // Every row is described, and each is the only layout (no hidden twin).
         const described = await describedNodes(page, ['button']);
-        const cards = await page.locator('.organization-card').count();
+        const cards = await page.locator('.organization-row').count();
         expect(cards).toBeGreaterThan(0);
         expect(described.length).toBe(cards);
     });

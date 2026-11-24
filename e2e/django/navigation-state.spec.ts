@@ -12,7 +12,7 @@ const STRIP = '[data-testid="assistant-context-strip"]';
 
 async function askAboutCompany(page: Page): Promise<void> {
     await page.goto('/');
-    await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+    await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
     await expect(page.getByTestId('company-view')).toBeVisible();
     await page.getByTestId('company-chat-cta').click();
     // 486b: Ask no longer closes the company view; it stays rendered.
@@ -33,7 +33,7 @@ function storeAccount(page: Page): Promise<{status: string; key: string} | null>
 
 async function companyIdFor(page: Page, name: string): Promise<string> {
     await page.goto('/');
-    await page.locator(`[aria-label="View details for ${name}"]:visible`).first().click();
+    await page.locator(`[aria-label="View company: ${name}"]:visible`).first().click();
     const href = await page.getByTestId('company-chat-cta').getAttribute('href');
     const match = /^\/chat\/\?company=(\d+)$/.exec(href ?? '');
     expect(match).not.toBeNull();
@@ -118,7 +118,7 @@ test.describe('navigation state (issue #479)', () => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page);
         await page.goto('/');
-        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
         const href = await page.getByTestId('company-chat-cta').getAttribute('href');
         expect(href).toMatch(/^\/chat\/\?company=\d+$/);
         await page.goto(href as string);
@@ -157,7 +157,7 @@ test.describe('navigation state (issue #479)', () => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page);
         await page.goto('/');
-        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
         await expect(page.getByTestId('company-view')).toBeVisible();
         await expect.poll(() => new URL(page.url()).searchParams.has('company')).toBe(true);
         const rankingsUrl = page.url();
@@ -363,18 +363,22 @@ test.describe('navigation state (issue #479)', () => {
         await page.evaluate(() => {
             document.body.style.minHeight = '3000px';
         });
-        // Scroll a result far down into view and remember which one it is.
-        const rows = page.locator('tr.organization-row');
-        const total = await rows.count();
-        const target = rows.nth(Math.max(0, total - 1));
-        await target.scrollIntoViewIfNeeded();
+        // Compact rows (issue #617) all fit a short window, so scroll the page
+        // itself until the first rows have left the top of the screen, then
+        // remember which result is being read.
+        const rows = page.locator('article.organization-row');
+        await expect(rows.first()).toBeVisible();
+        await page.evaluate(() => {
+            const row = document.querySelector('article.organization-row') as HTMLElement;
+            window.scrollTo(0, window.scrollY + row.getBoundingClientRect().bottom + 40);
+        });
         await expect.poll(() => page.evaluate(() => window.history.state?.crankPosition?.anchor ?? null)).not.toBeNull();
         const targetId = await page.evaluate(() => window.history.state.crankPosition.anchor as string);
         await page.goto('/help/');
         await page.goBack();
         await expect(page.locator('#organization-list')).toBeVisible();
         // The same organization — not merely some scroll offset — is on screen.
-        await expect(page.locator(`tr.organization-row[data-organization-id="${targetId}"]`)).toBeInViewport();
+        await expect(page.locator(`article.organization-row[data-organization-id="${targetId}"]`)).toBeInViewport();
     });
 
     test('the company is in the store before the first /api/agent/ request (AC-2, #484 ordering)', async ({page}) => {
@@ -389,7 +393,7 @@ test.describe('navigation state (issue #479)', () => {
             }).__crankWorkspace__?.snapshot?.context?.organizationId ?? null));
             await route.continue();
         });
-        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
         await page.getByTestId('company-chat-cta').click();
         await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
         await expect.poll(() => seenAtFirstFetch.length).toBeGreaterThan(0);
@@ -435,7 +439,7 @@ test.describe('navigation state (issue #479)', () => {
                 }
                 await route.continue();
             });
-            await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+            await page.locator(`[aria-label="View company: ${COMPANY}"]:visible`).first().click();
             await page.getByTestId('company-chat-cta').click();
             const action = page.getByRole('button', {name: 'Start a conversation'});
             await expect(action).toBeVisible();

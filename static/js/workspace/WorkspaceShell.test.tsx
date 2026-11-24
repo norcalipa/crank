@@ -419,7 +419,7 @@ describe('WorkspaceShell', () => {
         // (visual review #472 round 1, item 7: icon-only was ambiguous).
         await waitFor(() => expect(screen.queryByTestId('assistant-panel')).not.toBeInTheDocument());
         const restore = screen.getByTestId('assistant-restore');
-        expect(restore).toHaveTextContent('Reopen assistant');
+        expect(restore).toHaveTextContent('Assistant');
         expect(document.body.classList.contains('assistant-sheet')).toBe(false);
         fireEvent.click(restore);
         await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
@@ -452,5 +452,84 @@ describe('WorkspaceShell', () => {
         await waitFor(() => expect(screen.getByTestId('assistant-restore')).toBeInTheDocument());
         expect(screen.getByTestId('assistant-dock')).toContainElement(screen.getByTestId('assistant-restore'));
         expect(screen.queryByTestId('assistant-launcher')).not.toBeInTheDocument();
+    });
+});
+
+describe('WorkspaceShell entry placement (issue #617)', () => {
+    const withSlots = () => {
+        document.body.innerHTML = '<div class="app-shell"><header><span data-assistant-slot="topbar"></span></header></div>'
+            + '<main class="app-content"><span data-assistant-slot="title"></span></main>';
+    };
+
+    test('phones carry the launcher in the top bar slot', () => {
+        withSlots();
+        mockMode = 'sheet';
+        renderShell();
+        const launcher = screen.getByTestId('assistant-launcher');
+        expect(launcher.closest('[data-assistant-slot="topbar"]')).not.toBeNull();
+        expect(launcher).not.toHaveClass('assistant-launcher--floating');
+        expect(launcher).toHaveAccessibleName('Assistant');
+    });
+
+    test('wider pages carry the launcher and the minimized chip in the title slot', async () => {
+        withSlots();
+        mockMode = 'drawer';
+        renderShell();
+        expect(screen.getByTestId('assistant-launcher').closest('[data-assistant-slot="title"]')).not.toBeNull();
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        fireEvent.click(screen.getByTestId('assistant-minimize'));
+        await waitFor(() => expect(screen.getByTestId('assistant-restore')).toBeInTheDocument());
+        expect(screen.getByTestId('assistant-restore').closest('[data-assistant-slot="title"]')).not.toBeNull();
+        expect(screen.getByTestId('assistant-restore')).toHaveAccessibleName('Assistant');
+    });
+
+    test('uses the last visible title slot, never one in a hidden row', () => {
+        document.body.innerHTML = '<main class="app-content">'
+            + '<span id="first" data-assistant-slot="title"></span>'
+            + '<div hidden><span id="hidden" data-assistant-slot="title"></span></div>'
+            + '<span id="last" data-assistant-slot="title"></span></main>';
+        mockMode = 'drawer';
+        renderShell();
+        expect(screen.getByTestId('assistant-launcher').closest('[data-assistant-slot="title"]')?.id).toBe('last');
+    });
+
+    test('looks the slot up again when the page changes its views, and falls back when it goes', async () => {
+        document.body.innerHTML = '<main><div id="organization-list"><span id="title-row" data-assistant-slot="title"></span></div></main>';
+        mockMode = 'drawer';
+        renderShell();
+        const slotOf = () => screen.getByTestId('assistant-launcher').closest('[data-assistant-slot="title"]')?.id;
+        expect(slotOf()).toBe('title-row');
+        // A company view opens in the list with its own header slot, later in the document.
+        const view = document.createElement('section');
+        view.innerHTML = '<span id="view-header" data-assistant-slot="title"></span>';
+        await act(async () => { document.getElementById('organization-list')!.appendChild(view); });
+        await waitFor(() => expect(slotOf()).toBe('view-header'));
+        // Back to the results: the title row's slot again.
+        await act(async () => { view.remove(); });
+        await waitFor(() => expect(slotOf()).toBe('title-row'));
+        // The results row is hidden while the view shows: the entry is never put in it.
+        await act(async () => { document.getElementById('title-row')!.setAttribute('hidden', ''); });
+        await waitFor(() => expect(screen.getByTestId('assistant-launcher')).toHaveClass('assistant-launcher--floating'));
+    });
+
+    test('watches the whole document when the page has no result list', async () => {
+        document.body.innerHTML = '<main id="page"></main>';
+        mockMode = 'drawer';
+        renderShell();
+        expect(screen.getByTestId('assistant-launcher')).toHaveClass('assistant-launcher--floating');
+        await act(async () => {
+            document.getElementById('page')!.innerHTML = '<span id="late" data-assistant-slot="title"></span>';
+        });
+        await waitFor(() => expect(screen.getByTestId('assistant-launcher').closest('[data-assistant-slot="title"]')?.id).toBe('late'));
+    });
+
+    test('a page with no slot gets the floating icon-only circle, still named Assistant', () => {
+        mockMode = 'docked';
+        renderShell();
+        const launcher = screen.getByTestId('assistant-launcher');
+        expect(launcher).toHaveClass('assistant-launcher--floating');
+        expect(launcher).toHaveAccessibleName('Assistant');
+        expect(launcher.closest('.assistant-dock--floating')).not.toBeNull();
     });
 });

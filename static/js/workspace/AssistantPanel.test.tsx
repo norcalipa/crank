@@ -40,9 +40,16 @@ describe('AssistantPanel', () => {
         async (mode) => {
             render(<AssistantPanel mode={mode} context={null}/>);
             const assertHeader = () => {
-                expect(screen.getByRole('heading', {name: /Job Search Assistant/})).toBeInTheDocument();
+                // Named like the button that opens it.
+                expect(screen.getByRole('heading', {name: 'Assistant'})).toBeInTheDocument();
                 expect(screen.getByRole('button', {name: 'Minimize assistant'})).toBeInTheDocument();
-                expect(screen.getByRole('button', {name: 'Close assistant'})).toBeInTheDocument();
+                // The sheet's "Back to results" is its one exit, so no × there.
+                if (mode === 'sheet') {
+                    expect(screen.queryByRole('button', {name: 'Close assistant'})).not.toBeInTheDocument();
+                    expect(screen.getByTestId('assistant-back-to-results')).toBeInTheDocument();
+                } else {
+                    expect(screen.getByRole('button', {name: 'Close assistant'})).toBeInTheDocument();
+                }
             };
             assertHeader();
             await waitFor(() => expect(screen.getByTestId('job-search-chat')).toBeInTheDocument());
@@ -56,7 +63,7 @@ describe('AssistantPanel', () => {
             render(<AssistantPanel mode={mode} context={null}/>);
             for (const [testId, name, label] of [
                 ['assistant-minimize', 'Minimize assistant', 'Minimize'],
-                ['assistant-close', 'Close assistant', 'Close'],
+                ...(mode === 'sheet' ? [] : [['assistant-close', 'Close assistant', 'Close']]),
             ]) {
                 const button = screen.getByTestId(testId);
                 expect(button).toHaveAttribute('aria-label', name);

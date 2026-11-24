@@ -44,7 +44,6 @@ class IndexViewTests(TestCase):
             secret='test',
         )
         social_app.sites.add(Site.objects.get_current())
-        cache.set('social_app_google', social_app)  # Set the cache
 
     def setup_scores(self):
         # Create some test data
@@ -415,6 +414,14 @@ class IndexViewTests(TestCase):
         self.assertContains(response,
                             "No organizations are available or the Score Algorithm you specified doesn't exist.")
         self.assertNotContains(response, 'organization-list-config')
+
+    def test_rankings_title_row_carries_the_assistant_slot(self):
+        self.setup_scores()
+        html = self.client.get(self.index_url).content.decode()
+        start = html.index('<div class="rankings-title-row">')
+        row = html[start:html.index('</div>', start)]
+        self.assertIn('<h1 class="rankings-title" id="rankings-heading"', row)
+        self.assertEqual(row.count('data-assistant-slot="title"'), 1)
 
     def test_rankings_shell_has_collapsed_explanation_and_no_inline_preset_form(self):
         self.setup_scores()

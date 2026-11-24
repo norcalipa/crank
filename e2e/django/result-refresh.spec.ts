@@ -494,13 +494,138 @@ test.describe('Updated rankings available (company rankings)', () => {
     const notice = (page: Page) => page.getByTestId('rankings-updated-notice');
     const firstThree = async (page: Page) => (await rowNames(page)).slice(0, 3);
 
+    // The count line stays inside its toolbar, by text extents (Range rects; a
+    // box can be narrower than its text): nothing past .rankings-toolbar-count
+    // (+1px), no two of the count, the coverage and the loading words overlap,
+    // and the coverage is a whole "N of M" on one line or gone. (An inline box's
+    // clientWidth is 0, so scrollWidth <= clientWidth says nothing about it.)
+    const expectCountContained = async (page: Page) => {
+        const edges = await page.evaluate(() => {
+            const boxesOf = (range: Range) => Array.from(range.getClientRects()).filter((r) => r.width > 0);
+            const extent = (boxes: DOMRect[]) => boxes.length ? {
+                left: Math.min(...boxes.map((r) => r.left)), right: Math.max(...boxes.map((r) => r.right)),
+                top: Math.min(...boxes.map((r) => r.top)), bottom: Math.max(...boxes.map((r) => r.bottom)),
+            } : null;
+            const contents = (el: Element | null) => {
+                if (!el || getComputedStyle(el).display === 'none') return null;
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                return extent(boxesOf(range));
+            };
+            const countEl = document.querySelector('.organization-results-count')!;
+            const own = document.createRange();
+            const text = Array.from(countEl.childNodes).find((n) => n.nodeType === 3)!;
+            own.selectNodeContents(text);
+            const toolbar = document.querySelector('.rankings-toolbar-count')!.getBoundingClientRect();
+            const coverage = document.querySelector('.organization-common-coverage');
+            const value = coverage?.querySelector('.organization-common-coverage-value') as HTMLElement | null;
+            const shown = !!coverage && getComputedStyle(coverage).display !== 'none';
+            const items = {count: extent(boxesOf(own)), coverage: contents(coverage), loading: contents(document.querySelector('.choices-status-text'))};
+            const present = Object.entries(items).filter(([, r]) => r) as Array<[string, {left: number; right: number; top: number; bottom: number}]>;
+            const overlap = present.flatMap(([n1, a], i) => present.slice(i + 1)
+                .filter(([, b]) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > .5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > .5)
+                .map(([n2]) => `${n1}/${n2}`));
+            return {
+                toolbarLeft: toolbar.left, toolbarRight: toolbar.right, extents: present.map(([name, r]) => ({name, left: r.left, right: r.right})), overlap,
+                shown, valueText: shown ? value?.textContent ?? null : null,
+                valueLines: shown && value ? value.getClientRects().length : null,
+            };
+        });
+        for (const item of edges.extents) {
+            expect(item.right, `${item.name} right edge`).toBeLessThanOrEqual(edges.toolbarRight + 1);
+            expect(item.left, `${item.name} left edge`).toBeGreaterThanOrEqual(edges.toolbarLeft - 1);
+        }
+        expect(edges.overlap).toEqual([]);
+        if (edges.shown) {
+            expect(edges.valueText).toMatch(/^\d+ of \d+$/);
+            expect(edges.valueLines).toBe(1);
+        }
+    };
+
+    // The count line keeps one height while the labels load: a font wider than
+    // the runner's (letter-spacing stands in) must not wrap "most rated on" onto
+    // a second line when the labels land after the reader's row was held.
+    for (const position of ['top', 'mid-list'] as ReaderPosition[]) {
+        test(`the row being read does not move when the labels land after the notice, wide text: ${position}, 375px`, async ({page}) => {
+            await page.setViewportSize({width: 375, height: 667});
+            rankingsFixture('pad');
+            let release: () => void = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            await page.route(/\/api\/(funding-round|rto-policy)-choices\//, async (route) => {
+                await gate;
+                await route.continue();
+            });
+            await openRankings(page);
+            await page.addStyleTag({content: '.rankings-toolbar-count-text { letter-spacing: .7px; }'});
+            await placeRankingsReader(page, position);
+            const reading = (await readingOrg(page))!;
+            const count = page.locator('.rankings-toolbar-count-text');
+            const lineHeight = (await count.boundingBox())!.height;
+            await expectCountContained(page);
+            raiseGamma();
+            await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+            await expect(notice(page)).toBeVisible();
+            await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            release();
+            await expect(page.getByTestId('choices-status-loading')).toHaveCount(0);
+            expect(Math.abs((await count.boundingBox())!.height - lineHeight)).toBeLessThanOrEqual(1);
+            await expectCountContained(page);
+            await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+        });
+    }
+
+    // Production-like count line: 43 companies, every one rated on "10 of 10"
+    // (the page's embedded data is rewritten; the seeded rows carry fewer
+    // dimensions), at the widths where the line shares the toolbar with nothing
+    // else, in a wide-text font, on both pages, with the labels loading and loaded.
+    for (const width of [360, 375, 575]) {
+        for (const pageNumber of [1, 2]) {
+            test(`the count line stays inside the toolbar with "10 of 10", 43 companies, page ${pageNumber}, wide text, ${width}px`, async ({page}) => {
+                await page.setViewportSize({width, height: 800});
+                rankingsFixture('pad', {COUNT: '39'});
+                // The page parses its embedded company data with JSON.parse; the rows
+                // are rewritten there (route.fetch cannot reach local.crank.fyi, which
+                // only the browser's host-resolver rule maps).
+                await page.addInitScript(() => {
+                    const parse = JSON.parse;
+                    JSON.parse = function (text: string, reviver?: (key: string, value: any) => any) {
+                        const value = parse(text, reviver);
+                        if (Array.isArray(value) && value.length > 0 && value[0] && 'rating_dimensions_total' in value[0]) {
+                            for (const org of value) { org.rating_dimensions_total = 10; org.rating_dimensions_covered = 10; }
+                        }
+                        return value;
+                    };
+                });
+                let release: () => void = () => {};
+                const gate = new Promise<void>((resolve) => { release = resolve; });
+                await page.route(/\/api\/(funding-round|rto-policy)-choices\//, async (route) => {
+                    await gate;
+                    await route.continue();
+                });
+                await openRankings(page);
+                await page.addStyleTag({content: '.rankings-toolbar-count-text { letter-spacing: .7px; }'});
+                if (pageNumber === 2) {
+                    await page.locator('.rankings-pager-bottom').getByRole('link', {name: 'Next page'}).click();
+                }
+                await expect(page.locator('.organization-results-count')).toContainText(pageNumber === 1 ? 'Showing 1–15 of 43 companies' : 'Showing 16–30 of 43 companies');
+                const loadingHeight = (await page.locator('.rankings-toolbar-count-text').boundingBox())!.height;
+                await expectCountContained(page);
+                release();
+                await expect(page.getByTestId('choices-status-loading')).toHaveCount(0);
+                await expect(page.getByTestId('organization-common-coverage')).toBeAttached();
+                expect(Math.abs((await page.locator('.rankings-toolbar-count-text').boundingBox())!.height - loadingHeight)).toBeLessThanOrEqual(1);
+                await expectCountContained(page);
+            });
+        }
+    }
+
     for (const [width, height] of [[1280, 800], [375, 800]] as const) {
         test(`a score raised behind the page shows a notice, changes nothing, and Refresh results applies it at ${width}px`, async ({page}) => {
             await page.setViewportSize({width, height});
             const seen = countRankingsRequests(page);
             await openRankings(page);
             expect(await firstThree(page)).toEqual(SEEDED_ORDER);
-            await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+            await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
 
             raiseGamma();
             await page.clock.runFor(POLL_INTERVAL_MS + 1000);
@@ -510,7 +635,7 @@ test.describe('Updated rankings available (company rankings)', () => {
             expect(seen.list).toBe(0);
             // Nothing else changed: same order, same count, one polite region.
             expect(await firstThree(page)).toEqual(SEEDED_ORDER);
-            await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+            await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
             await expect(page.getByTestId('rankings-announcement')).toHaveText('Updated results available.');
             expect(await page.locator('[aria-live="polite"]:has([data-testid="rankings-announcement"])').count()).toBe(1);
             const button = notice(page).getByRole('button', {name: 'Refresh results'});
@@ -623,6 +748,13 @@ test.describe('Updated rankings available (company rankings)', () => {
             await openRankings(page);
             const alphaId = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('[data-organization-id]'))
                 .find((row) => row.getBoundingClientRect().height > 0 && /E2E Alpha Corp/.test(row.textContent ?? ''))!.dataset.organizationId!);
+            // Read the list as a reader does: with the first rows filling the screen, not
+            // with one card peeking above the phone's Assistant button (the compact rows
+            // of issue #617 leave the first screen to the header on a phone).
+            await page.evaluate(() => {
+                const first = document.querySelector<HTMLElement>('article.organization-row')!;
+                window.scrollTo({top: window.scrollY + first.getBoundingClientRect().top - 100, behavior: 'instant' as ScrollBehavior});
+            });
             // Alpha, rank 1, falls below the other seeded companies (the padding rows score lower
             // but the fall must stay on page 1).
             rankingsFixture('set', {ORG: 'E2E Alpha Corp', VALUE: '2.0'});
@@ -649,6 +781,8 @@ test.describe('Updated rankings available (company rankings)', () => {
 
     test('a hidden tab sends nothing, and a return finds the change', async ({page}) => {
         const seen = countRankingsRequests(page);
+        // Sixteen compact rows: the page is long enough to scroll away from the top.
+        rankingsFixture('pad');
         await openRankings(page);
         await setTabVisibility(page, 'hidden');
         await page.clock.runFor(10 * 60_000);
@@ -743,8 +877,8 @@ test.describe('Updated rankings available (company rankings)', () => {
     // count long enough to meet the mark; the short 16-row list fits on the old CSS as well.
     for (const [width, height] of [[320, 640], [375, 667], [412, 915]] as const) {
         for (const [path, count] of [
-            ['/', 'Showing 1-15 of 126 organizations'],
-            ['/?page=8', 'Showing 106-120 of 126 organizations'],
+            ['/', 'Showing 1–15 of 126 companies'],
+            ['/?page=8', 'Showing 106–120 of 126 companies'],
         ] as const) {
             test(`the "Updated" mark sits under a long count on a phone without moving the toolbar at ${width}px, ${count}`, async ({page}) => {
                 await page.setViewportSize({width, height});
@@ -857,12 +991,12 @@ test.describe('Updated rankings available (company rankings)', () => {
     test('a list on page 2 that shrinks to one page lands on page 1 and the URL says so', async ({page}) => {
         rankingsFixture('pad');
         await openRankings(page, '/?page=2');
-        await expect(page.getByText('Showing 16-16 of 16 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 16–16 of 16 companies')).toBeVisible();
         rankingsFixture('unpad');
         await page.clock.runFor(POLL_INTERVAL_MS + 1000);
         await expect(notice(page)).toBeVisible();
         await notice(page).getByRole('button', {name: 'Refresh results'}).click();
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         expect(new URL(page.url()).searchParams.get('page')).toBe('1');
         // A stale ?page=2 would be a 404 on reload.
         const reloaded = await page.reload();
@@ -871,7 +1005,7 @@ test.describe('Updated rankings available (company rankings)', () => {
 
     test('with a company open nothing is applied; the notice is waiting after Back to results', async ({page}) => {
         await openRankings(page);
-        await page.locator('.organization-row, .organization-card').filter({visible: true}).first().click();
+        await page.locator('.organization-row').filter({visible: true}).first().click();
         await expect(page.getByTestId('company-view')).toBeVisible();
         raiseGamma();
         await page.clock.runFor(POLL_INTERVAL_MS + 1000);

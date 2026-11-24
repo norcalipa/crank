@@ -49,16 +49,16 @@ test.describe.serial('priorities → companies → evidence → jobs journey', (
         await page.goto('/');
         await expect(page.locator('#organization-list')).toBeVisible();
         const count = page.locator('.organization-results-count');
-        await expect(count).toContainText('of 4 organizations');
+        await expect(count).toContainText('of 4 companies');
         // Strict score order: Alpha (4.8) ranks first.
-        await expect(page.locator('.organization-table, .organization-cards').first())
+        await expect(page.locator('ol.organization-list'))
             .toContainText('E2E Alpha Corp');
     });
 
     test('company view opens with evidence provenance and returns to results cleanly', async ({page}) => {
         await login(page);
         await page.goto('/');
-        const trigger = page.locator('tr[aria-label="View details for E2E Alpha Corp"]');
+        const trigger = page.locator('article[aria-label="View company: E2E Alpha Corp"]');
         const historyBefore = await page.evaluate(() => window.history.length);
         await trigger.click();
 

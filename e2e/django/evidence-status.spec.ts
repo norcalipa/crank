@@ -9,7 +9,7 @@ requireDjangoTier();
 
 async function openDialog(page: Page, name: string) {
     await page.goto('/');
-    await page.getByRole('button', {name: `View details for ${name}`}).locator('visible=true').first().click();
+    await page.getByRole('button', {name: `View company: ${name}`}).locator('visible=true').first().click();
     const view = page.getByTestId('company-view');
     await expect(view).toBeVisible();
     return view;
@@ -25,19 +25,31 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             await page.setViewportSize({width, height});
         });
 
-        test('rankings show coverage, facts, last verified and pending review without overflow', async ({page}) => {
+        test('rankings show coverage, evidence chips and pending review without overflow', async ({page}) => {
             await page.goto('/');
             const list = results(page);
-            const beta = list.getByRole('button', {name: 'View details for E2E Beta Labs'}).locator('visible=true').first();
-            await expect(beta).toContainText('2 of 2');
-            await expect(beta).toContainText('Stale');
-            await expect(beta).toContainText('0 verified · 2 stale · 5 unknown');
+            const beta = list.getByRole('button', {name: 'View company: E2E Beta Labs'}).locator('visible=true').first();
+            // The coverage most rows share is said once, on the count line; a row
+            // repeats it only when it differs. (Under 576px its words and "N of M" are
+            // flex items, so innerText may break the line between them.)
+            const common = (await page.getByTestId('organization-common-coverage').first().innerText()).replace(/^[\s·]*most rated on\s+/, '').trim();
+            const coverage = async (row: typeof beta, own: string) => {
+                if (own === common) await expect(row).not.toContainText('Rated on');
+                else await expect(row).toContainText(`Rated on ${own}`);
+            };
+            await coverage(beta, '2 of 2');
+            await expect(beta).toContainText('2 stale');
+            await expect(beta).toContainText('5 unknown');
             await expect(beta).toContainText('Pending review');
-            const gamma = list.getByRole('button', {name: 'View details for E2E Gamma Works'}).locator('visible=true').first();
-            await expect(gamma).toContainText('1 of 2');
-            await expect(gamma).toContainText('Never verified');
-            await expect(gamma).toContainText('Unknown');
+            const gamma = list.getByRole('button', {name: 'View company: E2E Gamma Works'}).locator('visible=true').first();
+            await coverage(gamma, '1 of 2');
+            // Nothing verified: one muted chip, never a row of zero counts.
+            await expect(gamma).toContainText(/Not yet verified|Never checked/);
+            await expect(gamma.locator('.organization-evidence')).not.toContainText('0 verified');
             await expect(gamma).not.toContainText('Pending review');
+            // The spoken description still carries the counts and freshness.
+            const described = await gamma.getAttribute('aria-describedby');
+            await expect(page.locator(`#${described}`)).toContainText('Never verified');
             await expectNoHorizontalOverflow(page);
         });
 

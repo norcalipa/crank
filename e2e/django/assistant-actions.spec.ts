@@ -88,19 +88,19 @@ test.describe('assistant actions (issue #484)', () => {
 
     test('a filter suggestion is a button; applying it filters, survives reload and Back restores', async ({page}) => {
         await login(page);
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         await openAssistant(page);
         await ask(page, 'Show only remote companies');
 
         const button = applyRemote(page);
         await expect(button).toBeVisible();
         // Nothing changes until the button is pressed.
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
 
         await button.focus();
         await button.press('Enter');
-        await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
+        await expect(page.getByText(/Showing 1–1 of 1 companies/)).toBeVisible();
         await expect(page.getByTestId('filter-chip-rto')).toContainText('RTO policy: Remote');
         expect(new URL(page.url()).searchParams.get('rto')).toBe('R');
         // Keyboard focus stays on the button, which reports the outcome.
@@ -109,27 +109,27 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(applied).toBeDisabled();
 
         await page.reload();
-        await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
+        await expect(page.getByText(/Showing 1–1 of 1 companies/)).toBeVisible();
         await expect(page.getByTestId('filter-chip-rto')).toBeVisible();
 
         await page.goBack();
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         await expect(page.getByTestId('filter-chip-rto')).toHaveCount(0);
     });
 
     test('removing the RTO chip clears the filter and the URL', async ({page}) => {
         await login(page);
         await page.goto('/?rto=R');
-        await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
+        await expect(page.getByText(/Showing 1–1 of 1 companies/)).toBeVisible();
         await page.getByRole('button', {name: 'Remove filter: RTO policy Remote'}).click();
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
     });
 
     test('an unknown rto value in the URL is ignored', async ({page}) => {
         await login(page);
         await page.goto('/?rto=ZZZ');
-        await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
+        await expect(page.getByText('Showing 1–4 of 4 companies')).toBeVisible();
         await expect(page.getByTestId('filter-chip-rto')).toHaveCount(0);
     });
 
@@ -183,7 +183,7 @@ test.describe('assistant actions (issue #484)', () => {
 
     test('applying one action leaves the other action of the same reply usable', async ({page}) => {
         await login(page);
-        await page.getByRole('button', {name: /View details for E2E Beta/}).first().click();
+        await page.getByRole('button', {name: /View company: E2E Beta/}).first().click();
         await page.getByRole('link', {name: /Ask the assistant about E2E Beta/}).click();
         await expect(page.getByTestId('assistant-panel')).toBeVisible();
         await ask(page, 'Show only remote companies and open it');
@@ -204,7 +204,7 @@ test.describe('assistant actions (issue #484)', () => {
 
     test('Open, return to results, then Apply: the sibling stays usable whatever the click order', async ({page}) => {
         await login(page);
-        await page.getByRole('button', {name: /View details for E2E Beta/}).first().click();
+        await page.getByRole('button', {name: /View company: E2E Beta/}).first().click();
         await page.getByRole('link', {name: /Ask the assistant about E2E Beta/}).click();
         await expect(page.getByTestId('assistant-panel')).toBeVisible();
         await ask(page, 'Show only remote companies and open it');
@@ -230,7 +230,7 @@ test.describe('assistant actions (issue #484)', () => {
 
     test('an open_company suggestion reopens the company view from the assistant', async ({page}) => {
         await login(page);
-        await page.getByRole('button', {name: /View details for E2E Alpha/}).first().click();
+        await page.getByRole('button', {name: /View company: E2E Alpha/}).first().click();
         await page.getByRole('link', {name: /Ask the assistant about E2E Alpha/}).click();
         await expect(page.getByTestId('assistant-panel')).toBeVisible();
         // 486b: Ask keeps the view open; leave it so the suggestion has to reopen it.
@@ -247,7 +247,7 @@ test.describe('assistant actions (issue #484)', () => {
     test('an assistant company card has "View company": it opens the view on the rankings and navigates from the chat page', async ({page}) => {
         await login(page);
         await page.goto('/');
-        const alphaId = await page.locator('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')
+        const alphaId = await page.locator('article[aria-label="View company: E2E Alpha Corp"]')
             .locator('visible=true').first().getAttribute('data-organization-id');
         expect(alphaId).not.toBeNull();
         // The reply is the real one; only its results gain a company card. The page's own fetch is

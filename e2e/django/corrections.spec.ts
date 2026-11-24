@@ -10,7 +10,7 @@ const COMPANY = 'E2E Alpha Corp';
 
 async function openDetails(page: import('@playwright/test').Page) {
     await page.goto('/');
-    await page.locator(`[aria-label="View details for ${COMPANY}"] >> visible=true`).first().click();
+    await page.locator(`[aria-label="View company: ${COMPANY}"] >> visible=true`).first().click();
     const details = page.getByTestId('company-view');
     await expect(details).toBeVisible();
     return details;
@@ -138,9 +138,9 @@ test.describe('with the assistant drawer open at 1024px', () => {
         await login(page);
         await page.goto('/');
         await page.getByRole('button', {name: 'Assistant'}).first().click();
-        const drawer = page.getByRole('heading', {name: 'Job Search Assistant'});
+        const drawer = page.getByRole('heading', {name: 'Assistant', exact: true});
         await expect(drawer).toBeVisible();
-        await page.locator(`[aria-label="View details for ${COMPANY}"] >> visible=true`).first().click();
+        await page.locator(`[aria-label="View company: ${COMPANY}"] >> visible=true`).first().click();
         await page.getByTestId('suggest-correction-link').click();
         const form = page.getByRole('dialog', {name: /Suggest a correction/});
         await expect(form).toBeVisible();

@@ -40,7 +40,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
                 }
                 await expect(panel).toBeVisible();
                 await expectNoHorizontalOverflow(page);
-                await page.locator('[data-testid="assistant-close"]').click();
+                await page.locator('[data-testid="assistant-close"], [data-testid="assistant-back-to-results"]').first().click(); // the phone sheet's one exit is Back to results
                 await expect(page.locator('[data-testid="assistant-panel"]')).toHaveCount(0);
                 // Closed again: the launcher returns as the single entry
                 // point and the closed state stays overflow-free.
@@ -86,7 +86,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         // The rankings switch table→cards on the results container width
         // (#478) once the drawer narrows it (#479 host reflow), so target
         // whichever layout is visible.
-        const firstRow = page.locator('.organization-row:visible, .organization-card:visible').first();
+        const firstRow = page.locator('.organization-row:visible').first();
         await firstRow.focus();
         await expect(firstRow).toBeFocused();
         await page.keyboard.press('Escape');
@@ -97,7 +97,17 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await page.setViewportSize({width: 375, height: 700});
         await login(page);
         await page.goto('/');
-        await page.evaluate(() => window.scrollTo(0, 300));
+        // Compact rows leave the seeded list short: scroll to the middle of what can scroll.
+        const target = await page.evaluate(() => {
+            const to = Math.floor((document.documentElement.scrollHeight - window.innerHeight) / 2);
+            // Bootstrap sets scroll-behavior:smooth, so a plain scrollTo animates
+            // and the sheet (clickable at once, in the sticky top bar) would save
+            // an intermediate position. Jump instantly, then wait for it to land.
+            window.scrollTo({top: to, behavior: 'instant'});
+            return to;
+        });
+        expect(target).toBeGreaterThan(0);
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(target);
         await page.locator('[data-testid="assistant-launcher"]').click();
         const panel = page.locator('[data-testid="assistant-panel"]');
         await expect(panel).toBeVisible();
@@ -109,7 +119,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await page.locator('[data-testid="assistant-back-to-results"]').click();
         await expect(panel).toHaveCount(0);
         const scrollY = await page.evaluate(() => window.scrollY);
-        expect(scrollY).toBe(300);
+        expect(scrollY).toBe(target);
     });
 
     test('lazy load: no assistant chunk before first open, exactly one after, none on reopen', async ({page}) => {
@@ -127,7 +137,7 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await page.locator('[data-testid="assistant-launcher"]').click();
         await expect(page.locator('[data-testid="job-search-chat"]')).toBeVisible();
         expect(chunks).toHaveLength(1);
-        await page.locator('[data-testid="assistant-close"]').click();
+        await page.locator('[data-testid="assistant-close"], [data-testid="assistant-back-to-results"]').first().click(); // the phone sheet's one exit is Back to results
         await page.locator('[data-testid="assistant-launcher"]').click();
         await expect(page.locator('[data-testid="job-search-chat"]')).toBeVisible();
         expect(chunks).toHaveLength(1);
@@ -204,14 +214,14 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await login(page);
         await page.goto('/');
         await page.evaluate(() => {
-            document.querySelector<HTMLElement>('tr[aria-label="View details for E2E Alpha Corp"], article[aria-label="View details for E2E Alpha Corp"]')?.click();
+            document.querySelector<HTMLElement>('article[aria-label="View company: E2E Alpha Corp"]')?.click();
         });
         await expect(page.getByTestId('company-view')).toBeVisible();
         const before = await page.evaluate(() => Math.round(window.scrollY));
         await page.locator('[data-testid="assistant-launcher"]').click();
         await expect(page.locator('[data-testid="assistant-panel"]')).toBeVisible();
         await expect(page.getByTestId('company-view')).toHaveCount(1);
-        await page.locator('[data-testid="assistant-close"]').click();
+        await page.locator('[data-testid="assistant-close"], [data-testid="assistant-back-to-results"]').first().click(); // the phone sheet's one exit is Back to results
         await expect(page.locator('[data-testid="assistant-panel"]')).toHaveCount(0);
         await expect(page.getByTestId('company-view')).toBeVisible();
         await expect.poll(() => page.evaluate((y) => Math.abs(Math.round(window.scrollY) - y), before)).toBeLessThanOrEqual(1);

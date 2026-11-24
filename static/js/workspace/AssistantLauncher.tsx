@@ -12,14 +12,17 @@ import {AssistantVisibility} from './types';
 
 interface AssistantLauncherProps {
     visibility: AssistantVisibility;
+    // A page with no title or top-bar slot gets a 44px icon-only circle.
+    floating?: boolean;
 }
 
 const AssistantLauncher = React.forwardRef<HTMLButtonElement, AssistantLauncherProps>(
-    ({visibility}, ref) => (
+    ({visibility, floating}, ref) => (
         <button
             ref={ref}
             type="button"
-            className="assistant-launcher"
+            className={`assistant-launcher${floating ? ' assistant-launcher--floating' : ''}`}
+            aria-label="Assistant"
             data-testid="assistant-launcher"
             aria-expanded={visibility === 'open'}
             aria-controls="assistant-panel"

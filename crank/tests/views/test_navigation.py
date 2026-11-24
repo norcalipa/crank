@@ -69,9 +69,27 @@ class NavigationShellTests(TestCase):
         self.assertContains(response, "Company Rankings")
         self.assertContains(response, "Job Search")
         self.assertContains(response, "Help")
-        self.assertContains(response, "Login")
+        self.assertContains(response, "Sign in")
         self.assertNotContains(response, "Logout")
         self.assertNotContains(response, "Admin")
+
+    def test_anonymous_rail_has_one_sign_in_entry_and_no_google_link(self):
+        """Issue #617: signed out, the rail and the mobile menu each offer
+        exactly one auth entry, Sign in, even when a Google app is
+        configured; Google is offered on the login page itself."""
+        response = self.client.get(reverse("index"))
+        html = response.content.decode()
+        login_url = reverse("account_login")
+        self.assertEqual(html.count(f'href="{login_url}"'), 2)  # rail + mobile drawer
+        self.assertEqual(html.count('<span class="app-nav-label">Sign in</span>'), 2)
+        self.assertNotIn("Login</span>", html)
+        self.assertNotIn("app-nav-link--google", html)
+        self.assertNotIn("/accounts/google/login/", html)
+        self.assertNotIn("fa-google", html)
+
+    def test_login_page_still_offers_google(self):
+        response = self.client.get(reverse("account_login"))
+        self.assertContains(response, "Continue with Google")
 
     def test_anonymous_does_not_see_admin_link(self):
         response = self.client.get(reverse("index"))
@@ -330,6 +348,33 @@ class NavigationShellTests(TestCase):
         self.assertIn("data-nav-toggle", topbar)
         self.assertIn('class="app-nav-toggle"', topbar)
         self.assertIn('aria-controls="mobile-nav"', topbar)
+
+    def test_mobile_topbar_carries_wordmark_menu_and_the_assistant_slot(self):
+        html = self._rendered_index_html()
+        start = html.index('<header class="app-mobile-topbar">')
+        topbar = html[start:html.index("</header>", start)]
+        self.assertIn('class="app-mobile-brand"', topbar)
+        self.assertIn('<span class="app-nav-toggle-label" aria-hidden="true">Menu</span>', topbar)
+        self.assertEqual(topbar.count('data-assistant-slot="topbar"'), 1)
+
+    def test_assistant_title_slot_on_help(self):
+        # Wide screens carry the Assistant entry in the page's title row, so
+        # it never floats over a row action (issue #617); the rankings page's
+        # slot is covered in test_index.py.
+        help_html = self.client.get(reverse("help")).content.decode()
+        self.assertIn('<div class="page-title-row">', help_html)
+        self.assertEqual(help_html.count('data-assistant-slot="title"'), 1)
+
+    def test_drawer_brand_has_no_second_rule_and_logout_is_not_red(self):
+        import os
+        css_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            "static", "css", "popup.css",
+        )
+        with open(css_path) as f:
+            css = f.read()
+        self.assertRegex(css, r"\[data-nav-drawer\] \.app-nav-brand \{\s*border-bottom: 0;")
+        self.assertNotIn("danger-text-emphasis, #f0958c", css)
 
     def test_hamburger_rendered_once_and_precedes_main_content(self):
         html = self._rendered_index_html()

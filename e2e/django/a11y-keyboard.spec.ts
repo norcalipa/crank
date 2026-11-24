@@ -34,7 +34,7 @@ test.describe('company view and blocking dialog keyboard semantics', () => {
     test('company view: heading takes focus, Tab reaches Back to results, Escape does nothing, Back returns focus to the row', async ({page}) => {
         await login(page);
         await page.goto('/');
-        const trigger = page.locator('tr[aria-label="View details for E2E Alpha Corp"]');
+        const trigger = page.locator('article[aria-label="View company: E2E Alpha Corp"]');
         await trigger.click();
         const view = page.getByTestId('company-view');
         await expect(view).toBeVisible();

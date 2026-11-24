@@ -18,9 +18,12 @@
     <div class="container py-4 page-container">
         <div class="row">
             <div class="col-12">
-                <h1 class="h2 mb-1">
-                    <i class="fa-solid fa-comments"></i> CRank Job Search Assistant
-                </h1>
+                <div class="page-title-row">
+                    <h1>
+                        <i class="fa-solid fa-comments"></i> CRank Job Search Assistant
+                    </h1>
+                    <span class="assistant-slot" data-assistant-slot="title"></span>
+                </div>
                 {% if visitor_state == 'authenticated' %}
                     <p class="text-muted">
                         Talk to the assistant about your job preferences. Messages are

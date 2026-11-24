@@ -71,6 +71,7 @@ const CompanyView: React.FC<CompanyViewProps> = ({
                     <i className="fa-solid fa-arrow-left" aria-hidden="true"></i>
                     {' '}Back to results
                 </button>
+                <span className="assistant-slot" data-assistant-slot="title"></span>
             </div>
             {status === 'not-found' ? (
                 <div className="card-body company-view-not-found" data-testid="company-not-found" role="status">

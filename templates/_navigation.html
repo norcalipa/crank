@@ -1,8 +1,6 @@
 <!-- Copyright (c) 2024 Isaac Adams -->
 <!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 {% load static %}
-{% load socialaccount %}
-{% load socialapp_cache %}
 <!-- Skip-to-content link: first focusable element on the page -->
 <a href="#main-content" class="skip-to-content" data-skip-to-content>Skip to content</a>
 
@@ -76,16 +74,8 @@
                            class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
                            {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
                             <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
-                            <span class="app-nav-label">Login</span>
+                            <span class="app-nav-label">Sign in</span>
                         </a>
-                        {% get_cached_social_app 'google' as social_app %}
-                        {% if social_app %}
-                            <a href="{% provider_login_url 'google' %}"
-                               class="app-nav-link app-nav-link--google">
-                                <i class="fab fa-google" aria-hidden="true"></i>
-                                <span class="app-nav-label">Google</span>
-                            </a>
-                        {% endif %}
                     </div>
                 {% endif %}
             </div>
@@ -96,14 +86,19 @@
          page content (headings, alerts) at phone widths. Mirrors the e2e
          fixture contract (e2e/fixtures/{navigation,organization-list,job-search-chat}.html). -->
     <header class="app-mobile-topbar">
-        <button class="app-nav-toggle"
-                type="button"
-                aria-expanded="false"
-                aria-controls="mobile-nav"
-                aria-label="Open navigation menu"
-                data-nav-toggle>
-            <i class="fa-solid fa-bars" aria-hidden="true"></i>
-        </button>
+        <a href="/" class="app-mobile-brand" aria-label="CRank home">CRank</a>
+        <div class="app-mobile-actions">
+            <button class="app-nav-toggle"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="mobile-nav"
+                    aria-label="Open navigation menu"
+                    data-nav-toggle>
+                <i class="fa-solid fa-bars" aria-hidden="true"></i>
+                <span class="app-nav-toggle-label" aria-hidden="true">Menu</span>
+            </button>
+            <span class="assistant-slot" data-assistant-slot="topbar"></span>
+        </div>
     </header>
 
     <div class="app-nav-drawer"
@@ -169,16 +164,8 @@
                            class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
                            {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
                             <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
-                            <span class="app-nav-label">Login</span>
+                            <span class="app-nav-label">Sign in</span>
                         </a>
-                        {% get_cached_social_app 'google' as social_app %}
-                        {% if social_app %}
-                            <a href="{% provider_login_url 'google' %}"
-                               class="app-nav-link app-nav-link--google">
-                                <i class="fab fa-google" aria-hidden="true"></i>
-                                <span class="app-nav-label">Google</span>
-                            </a>
-                        {% endif %}
                     </div>
                 {% endif %}
             </div>

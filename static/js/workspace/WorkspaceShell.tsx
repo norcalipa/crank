@@ -9,6 +9,7 @@
 // the main-region scroll save/restore.
 
 import * as React from 'react';
+import {createPortal} from 'react-dom';
 import {lockBackground, subscribeBackgroundLock, unlockBackground} from '../modalIsolation';
 import AssistantLauncher from './AssistantLauncher';
 import AssistantPanel from './AssistantPanel';
@@ -25,6 +26,15 @@ const MODE_CLASSES = Object.values(MODE_CLASS);
 // Open-state hook on the app shell (issue #479): host content reflows against
 // its own container width whenever the panel occupies the viewport edge.
 const OPEN_CLASS = 'assistant-open';
+
+// The last visible slot of the mode's kind: a hidden row (the results'
+// while a company view is open) never holds the entry.
+function findSlot(mode: WorkspaceMode): HTMLElement | null {
+    const name = mode === 'sheet' ? 'topbar' : 'title';
+    const slots = Array.from(document.querySelectorAll<HTMLElement>(`[data-assistant-slot="${name}"]`))
+        .filter((element) => !element.closest('[hidden]'));
+    return slots.length > 0 ? slots[slots.length - 1] : null;
+}
 
 function useWorkspaceSnapshot(): WorkspaceSnapshot {
     const [snapshot, setSnapshot] = React.useState<WorkspaceSnapshot>(getWorkspaceSnapshot);
@@ -231,34 +241,59 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
         }
     }, [open, focusRequest, snapshot.loaded, mode]);
 
+    // Where the entry point lives (issue #617): phones carry it in the top
+    // bar beside Menu; wider pages carry it in the page's title row. A page
+    // with neither slot gets a 44px icon-only floating circle, whose room the
+    // content reserves, so the entry never covers a row action. The slot is
+    // looked up again whenever the page's view changes (a company opens in
+    // place of the results, each with its own title row) and is the last one
+    // that is visible, so the entry never sits in a hidden row.
+    const [slot, setSlot] = React.useState<HTMLElement | null>(() => findSlot(mode));
+    React.useLayoutEffect(() => {
+        const resolve = (): void => setSlot((current) => {
+            const next = findSlot(mode);
+            return next === current ? current : next;
+        });
+        resolve();
+        const watched = document.querySelector('#organization-list') ?? document.body;
+        const observer = new MutationObserver(resolve);
+        observer.observe(watched, {childList: true, subtree: true, attributes: true, attributeFilter: ['hidden']});
+        return () => observer.disconnect();
+    }, [mode]);
+    const floating = slot === null;
+    const renderEntry = (): React.ReactNode => {
+        const entry = (
+            <div className={`assistant-dock${floating ? ' assistant-dock--floating' : ''}`} data-testid="assistant-dock">
+                {!minimized && <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility} floating={floating}/>}
+                {minimized && (
+                    <button
+                        ref={restoreRef}
+                        type="button"
+                        className={`assistant-restore${floating ? ' assistant-restore--floating' : ''}`}
+                        data-testid="assistant-restore"
+                        aria-label="Assistant"
+                        onClick={() => openAssistant()}
+                    >
+                        <i className="fa-solid fa-comments" aria-hidden="true"></i>
+                        <span className="assistant-restore-label">Assistant</span>
+                    </button>
+                )}
+            </div>
+        );
+        return slot ? createPortal(entry, slot) : entry;
+    };
+
     return (
         <>
             {/* Minimized state (visual review #472 round 5): exactly one
-                entry point — the restore pill. The launcher leaves the DOM
+                entry point — the restore chip, named "Assistant" like the launcher. The launcher leaves the DOM
                 so the two co-located controls never stack in the same
                 corner with the launcher's focus ring painted underneath.
                 The launcher also leaves the DOM while the panel is OPEN
                 (issue #469 re-critique): a pressed floating launcher beside
                 the already-open docked panel is a redundant second entry
                 point, so it renders only while closed. */}
-            {!open && (
-                <div className="assistant-dock" data-testid="assistant-dock">
-                    {!minimized && <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility}/>}
-                    {minimized && (
-                        <button
-                            ref={restoreRef}
-                            type="button"
-                            className="assistant-restore"
-                            data-testid="assistant-restore"
-                            aria-label="Reopen assistant"
-                            onClick={() => openAssistant()}
-                        >
-                            <i className="fa-solid fa-comments" aria-hidden="true"></i>
-                            <span className="assistant-restore-label">Reopen assistant</span>
-                        </button>
-                    )}
-                </div>
-            )}
+            {!open && renderEntry()}
             {open && (
                 mode === 'sheet' ? (
                     <section

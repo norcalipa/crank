@@ -29,7 +29,7 @@ function privateStorageKeys(page: import('@playwright/test').Page): Promise<stri
 test.describe('company handoff through sign-in (issue #465 AC-7)', () => {
     test('the dialog CTA carries a signed-out visitor through login and back to the same company', async ({page}) => {
         await page.goto('/');
-        const trigger = page.locator('tr[aria-label="View details for E2E Alpha Corp"]');
+        const trigger = page.locator('article[aria-label="View company: E2E Alpha Corp"]');
         await trigger.click();
         await expect(page.getByTestId('company-view')).toBeVisible();
 

@@ -136,7 +136,7 @@ test.describe('shared request form', () => {
         await login(page);
         await page.goto('/?search=E2E+Nonexistent+Company+Probe');
 
-        const emptyState = page.getByRole('alert').filter({hasText: 'No organizations found'});
+        const emptyState = page.getByRole('alert').filter({hasText: 'No companies found'});
         await expect(emptyState).toBeVisible();
         await emptyState.getByRole('button', {name: 'Suggest a company'}).click();
         await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
@@ -146,7 +146,7 @@ test.describe('shared request form', () => {
         await login(page);
         await page.goto('/');
 
-        await page.locator('tr[aria-label="View details for E2E Alpha Corp"]').click();
+        await page.locator('article[aria-label="View company: E2E Alpha Corp"]').click();
         const details = page.getByTestId('company-view');
         await expect(details).toBeVisible();
 
