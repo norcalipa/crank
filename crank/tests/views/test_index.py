@@ -44,7 +44,6 @@ class IndexViewTests(TestCase):
             secret='test',
         )
         social_app.sites.add(Site.objects.get_current())
-        cache.set('social_app_google', social_app)  # Set the cache
 
     def setup_scores(self):
         # Create some test data

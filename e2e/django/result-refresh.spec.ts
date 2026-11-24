@@ -494,6 +494,36 @@ test.describe('Updated rankings available (company rankings)', () => {
     const notice = (page: Page) => page.getByTestId('rankings-updated-notice');
     const firstThree = async (page: Page) => (await rowNames(page)).slice(0, 3);
 
+    // The count line keeps one height while the labels load: a font wider than
+    // the runner's (letter-spacing stands in) must not wrap "most rated on" onto
+    // a second line when the labels land after the reader's row was held.
+    for (const position of ['top', 'mid-list'] as ReaderPosition[]) {
+        test(`the row being read does not move when the labels land after the notice, wide text: ${position}, 375px`, async ({page}) => {
+            await page.setViewportSize({width: 375, height: 667});
+            rankingsFixture('pad');
+            let release: () => void = () => {};
+            const gate = new Promise<void>((resolve) => { release = resolve; });
+            await page.route(/\/api\/(funding-round|rto-policy)-choices\//, async (route) => {
+                await gate;
+                await route.continue();
+            });
+            await openRankings(page);
+            await page.addStyleTag({content: '.rankings-toolbar-count-text { letter-spacing: .7px; }'});
+            await placeRankingsReader(page, position);
+            const reading = (await readingOrg(page))!;
+            const count = page.locator('.rankings-toolbar-count-text');
+            const lineHeight = (await count.boundingBox())!.height;
+            raiseGamma();
+            await page.clock.runFor(POLL_INTERVAL_MS + 1000);
+            await expect(notice(page)).toBeVisible();
+            await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+            release();
+            await expect(page.getByTestId('choices-status-loading')).toHaveCount(0);
+            expect(Math.abs((await count.boundingBox())!.height - lineHeight)).toBeLessThanOrEqual(1);
+            await expect.poll(async () => Math.abs((await orgTop(page, reading.id))! - reading.top)).toBeLessThanOrEqual(2);
+        });
+    }
+
     for (const [width, height] of [[1280, 800], [375, 800]] as const) {
         test(`a score raised behind the page shows a notice, changes nothing, and Refresh results applies it at ${width}px`, async ({page}) => {
             await page.setViewportSize({width, height});

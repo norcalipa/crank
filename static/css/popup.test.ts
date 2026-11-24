@@ -980,7 +980,17 @@ describe('job-match panel result refresh styles (issue #485)', () => {
         expect(popupCss).toMatch(/\.organization-results-count \.badge \{ white-space: nowrap; \}/);
         // Under 360px the mark keeps a reserved line of its own under the count.
         expect(popupCss).toMatch(/@media \(max-width: 359\.98px\) \{\s*\.organization-results-count \{\s*position: relative;\s*padding-bottom: 1\.5rem;\s*\}\s*\.organization-results-count \.badge \{\s*position: absolute;\s*left: 0;\s*bottom: 0;\s*margin-left: 0 !important;/);
-        expect(popupCss).toMatch(/\.choices-status-slot:empty\s*\{\s*display:\s*none/);
+        // The empty slot is a live region: it is visually hidden, never display:none, so it
+        // stays in the accessibility tree and an error that fills it is announced.
+        const slotRule = popupCss.match(/\.choices-status-slot:empty\s*\{([^}]*)\}/)![1];
+        expect(slotRule).not.toMatch(/display\s*:/);
+        for (const decl of ['position: absolute', 'width: 1px', 'height: 1px', 'margin: -1px', 'overflow: hidden',
+            'clip-path: inset(50%)', 'white-space: nowrap']) {
+            expect(slotRule).toContain(decl);
+        }
+        // From 360px the count is one line before, during and after the labels load: it never
+        // wraps, and "most rated on" is what gives way (CI repair of the held-row race).
+        expect(popupCss).toMatch(/@media \(min-width: 360px\) and \(max-width: 575\.98px\) \{\s*\.organization-results-count \{\s*display: flex;\s*flex-wrap: nowrap;\s*align-items: baseline;\s*white-space: nowrap;\s*\}\s*\.organization-results-count \.organization-common-coverage \{\s*flex: 0 1 auto;\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;/);
         // The status takes a full-width line of its own after the count and the pager, so the
         // top pager never moves between states; its words stay at every width.
         expect(popupCss).toMatch(/\.rankings-toolbar-count > \.choices-status-slot \{\s*flex: 1 1 100%;\s*order: 3;/);
@@ -1063,6 +1073,11 @@ describe('rankings round 2 palette, header and mobile first screen (issue #617)'
         }
         expect(dark).toMatch(/\.btn-primary \{\s*--bs-btn-color: #0b1220;\s*--bs-btn-bg: #60a5fa;/);
         expect(dark).toMatch(/--bs-pagination-active-color: #0b1220;\s*--bs-pagination-active-bg: #60a5fa;/);
+        expect(dark).toMatch(/\.text-bg-primary \{\s*color: #0b1220 !important;/);
+        // Forced colors: the score bar and the chips keep a system-colour fill and border.
+        const forced = popupCss.slice(popupCss.indexOf('@media (forced-colors: active)'));
+        expect(forced).toMatch(/\.organization-score-bar > span \{\s*background: CanvasText;\s*forced-color-adjust: none;/);
+        expect(forced).toMatch(/\.crank-chip \{\s*border: 1px solid CanvasText;/);
         expect(popupCss).not.toMatch(/#0d6efd/i);
         expect(popupCss).not.toMatch(/#38bdf8/i);
     });

@@ -42,6 +42,55 @@ test('single page renders no pager', async ({page}) => {
     await expect(page.getByText(/Page \d+ of/)).toHaveCount(0);
 });
 
+test('on a phone a paged list hides the top pager and keeps the bottom one', async ({page}) => {
+    await page.setViewportSize({width: 375, height: 812});
+    await page.goto(PAGED_FIXTURE);
+    // Rendered, so its hiding is the phone rule's doing and not an absent pager.
+    await expect(page.locator('.rankings-toolbar-pager')).toBeAttached();
+    await expect(page.locator('.rankings-toolbar-pager')).toBeHidden();
+    await expect(page.locator('.rankings-pager-bottom')).toBeVisible();
+    await page.setViewportSize({width: 1280, height: 800});
+    await expect(page.locator('.rankings-toolbar-pager')).toBeVisible();
+});
+
+// jsdom cannot see the media-query CSS that swaps the two spellings, so the
+// name a screen reader gets is read from the browser's accessibility tree.
+for (const [width, name] of [[375, 'Vests < 1 yr'], [1440, 'First vesting < 1 year']] as const) {
+    test(`the vesting checkbox is named "${name}" at ${width}px`, async ({page}) => {
+        await page.setViewportSize({width, height: 800});
+        await page.goto(ORG_FIXTURE);
+        await expect(page.getByRole('checkbox', {name, exact: true})).toBeVisible();
+        await expect(page.getByRole('checkbox', {name: /vest/i})).toHaveCount(1);
+    });
+}
+
+test('the labels status region is in the accessibility tree before a failure and announces it', async ({page}) => {
+    // Two requests that fail: the region exists, empty, while they are out, so the
+    // error that fills it is a change to a live region and not a new region.
+    let fail: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { fail = resolve; });
+    await page.unroute('**/api/funding-round-choices/');
+    await page.unroute('**/api/rto-policy-choices/');
+    await page.route('**/api/funding-round-choices/', async (route) => { await gate; await route.fulfill({status: 500, body: 'no'}); });
+    await page.route('**/api/rto-policy-choices/', async (route) => { await gate; await route.fulfill({status: 500, body: 'no'}); });
+    await page.goto(ORG_FIXTURE);
+    const slot = page.locator('.choices-status-slot');
+    await expect(page.getByTestId('choices-status-loading')).toBeVisible();
+    await expect(slot).toBeEmpty();
+    await expect(page.getByRole('status').and(slot)).toHaveCount(1);
+    fail();
+    await expect(page.getByTestId('choices-status-error')).toBeVisible();
+    await expect(page.getByRole('status').and(slot).getByTestId('choices-status-error')).toBeVisible();
+    // Retry goes back through the same empty, still-exposed region.
+    await page.unroute('**/api/funding-round-choices/');
+    await page.unroute('**/api/rto-policy-choices/');
+    await page.route('**/api/funding-round-choices/', (route) => route.fulfill({json: {A: 'Series A'}}));
+    await page.route('**/api/rto-policy-choices/', (route) => route.fulfill({json: {H: 'Hybrid'}}));
+    await page.getByTestId('choices-retry').click();
+    await expect(page.getByTestId('choices-status-error')).toHaveCount(0);
+    await expect(page.getByRole('status').and(slot)).toHaveCount(1);
+});
+
 test('pager works with the keyboard', async ({page}) => {
     await page.goto(PAGED_FIXTURE);
     await expect(page.getByRole('link', {name: 'Page 1'}).first()).toHaveAttribute('aria-current', 'page');

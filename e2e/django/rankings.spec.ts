@@ -151,7 +151,8 @@ test('on a phone the first card clears y=300 and three cards fit the first scree
     await page.goto('/');
     const rows = page.locator('ol.organization-list > li > .organization-row');
     await expect(rows).toHaveCount(4);
-    await expect(page.locator('.rankings-toolbar-pager')).toBeHidden();
+    // Four companies are one page: neither pager renders (the phone's hiding of the top one is asserted on a paged list in e2e/rankings-toolbar.spec.ts).
+    await expect(page.locator('.rankings-toolbar-pager')).toHaveCount(0);
     await expect(page.locator('.rankings-pager-bottom')).toHaveCount(0);
     await expect(page.locator('.rankings-toolbar-count-text')).toContainText('Showing 1–4 of 4 companies');
     const top = await rows.first().evaluate((el) => el.getBoundingClientRect().top);

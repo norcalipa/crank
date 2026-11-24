@@ -100,10 +100,14 @@ test.describe('shared assistant workspace (issue #472)', () => {
         // Compact rows leave the seeded list short: scroll to the middle of what can scroll.
         const target = await page.evaluate(() => {
             const to = Math.floor((document.documentElement.scrollHeight - window.innerHeight) / 2);
-            window.scrollTo(0, to);
+            // Bootstrap sets scroll-behavior:smooth, so a plain scrollTo animates
+            // and the sheet (clickable at once, in the sticky top bar) would save
+            // an intermediate position. Jump instantly, then wait for it to land.
+            window.scrollTo({top: to, behavior: 'instant'});
             return to;
         });
         expect(target).toBeGreaterThan(0);
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(target);
         await page.locator('[data-testid="assistant-launcher"]').click();
         const panel = page.locator('[data-testid="assistant-panel"]');
         await expect(panel).toBeVisible();

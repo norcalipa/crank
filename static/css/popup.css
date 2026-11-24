@@ -4290,9 +4290,18 @@ body.assistant-open .app-content .table-responsive {
     }
 }
 
-/* Rankings toolbar loading placeholders. */
+/* Rankings toolbar loading placeholders. The empty slot is a live region: it
+   stays in the accessibility tree (display:none would drop it, and a region
+   that appears together with its text is not reliably announced) but takes no
+   room, so the list and the count stay where they are. */
 .choices-status-slot:empty {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
 }
 
 /* The loading status keeps its words at every width (issue #617) and sits on
@@ -6333,6 +6342,32 @@ span.priority-chip-button { cursor: default; }
         display: inline-flex;
         align-items: center;
         min-height: 44px;
+    }
+}
+
+/* From 360px to the tablet breakpoint the count is one line, always (issue
+   #617 CI repair). The labels' arrival swaps the loading words for "most rated
+   on N of M" on that line; if the pair did not fit, the count would wrap to a
+   second line and push every row down by a line after the reader's row was
+   held. The count never wraps: "most rated on" gives way with an ellipsis, so
+   the line keeps one height before, during and after the labels load. */
+@media (min-width: 360px) and (max-width: 575.98px) {
+    .organization-results-count {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: baseline;
+        white-space: nowrap;
+    }
+
+    .organization-results-count .organization-common-coverage {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .organization-results-count .badge {
+        flex: 0 0 auto;
     }
 }
 
